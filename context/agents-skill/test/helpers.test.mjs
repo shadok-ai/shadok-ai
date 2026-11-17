@@ -36,3 +36,25 @@ test("state: write, read, delete", () => {
   deleteState("abc");
   assert.equal(readState("abc"), null);
 });
+
+test("reapCandidates: only our ids outside a restricted peer, never busy/watched/recent", async () => {
+  const { reapCandidates } = await import("../pilotctl.mjs");
+  const rows = [
+    { id: "mine-idle", busy: false, clients: 0, idleSec: 4000 },
+    { id: "theirs-idle", busy: false, clients: 0, idleSec: 4000 },
+    { id: "mine-busy", busy: true, clients: 0, idleSec: 4000 },
+  ];
+  const ownIds = new Set(["mine-idle", "mine-busy"]);
+  assert.deepEqual(reapCandidates(rows, { restricted: false, ownIds, idleSec: 1800 }), ["mine-idle"]);
+  assert.deepEqual(reapCandidates(rows, { restricted: true, ownIds: new Set(), idleSec: 1800 }), ["mine-idle", "theirs-idle"]);
+});
+
+test("parseIdle reads 30m / 2h / 90s / bare minutes", async () => {
+  const { parseIdle } = await import("../pilotctl.mjs");
+  assert.equal(parseIdle(undefined), 1800);
+  assert.equal(parseIdle("30m"), 1800);
+  assert.equal(parseIdle("2h"), 7200);
+  assert.equal(parseIdle("90s"), 90);
+  assert.equal(parseIdle("45"), 2700);
+  assert.throws(() => parseIdle("soon"));
+});

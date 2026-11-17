@@ -294,6 +294,11 @@ function withTempHome(fn: (cwd: string, sid: string) => void) {
         type: "assistant",
         message: { content: [{ type: "text", text: "NOTHING TO SHOW" }] },
       }),
+      // Claude Code's own placeholder on a resume after a cut-off turn: nobody said it.
+      JSON.stringify({
+        type: "assistant",
+        message: { model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] },
+      }),
       JSON.stringify({ type: "user", message: { content: "[Request interrupted…" } }),
       // A turn fired by a cron: the prompt is written into the transcript like
       // any other user message, but must never be rendered.

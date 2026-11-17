@@ -28,7 +28,8 @@ and automatically starts the shadok-ai server when it is not running (port
 | `freetext <id> <n> "text"` | the "Type something" option: a free answer |
 | `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions. With `--peer X`: the agents running ON X (from X itself, tagged `peer`), plus X's resumable sessions only for a `--cwd` you name — a path on X |
 | `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
-| `stop <id>` | ends the session (for ALL its clients) |
+| `stop <id> [--force]` | ends the session (for ALL its clients), whether it is running or dormant — sent by id, nothing is resumed — and answers `stopped:true` only once the server confirms. Works over `--peer` with no local state (a restricted peer may close only what it spawned). A local agent this pilotctl never drove needs `--force` |
+| `reap [--idle 30m] [--dry-run]` | closes every finished agent you spawned: not busy, nobody watching, idle for `--idle` (default 30m). Over a restricted `--peer` that is every agent the peer lists for you (its own, dormant ones included); anywhere else only the ids in your local state. Use it to clear a backlog |
 | `set-parent <id> <parent-id\|none>` | re-link an agent to a parent, or **detach** it with `none` (it then reports to nobody). The link is what makes the parent hear when the agent finishes, blocks or dies — set automatically at spawn, flipped here when a side task is done and you want it off a lead's back |
 | `screen <id>` | raw TUI screen (debug) |
 | `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
@@ -92,9 +93,16 @@ Write the **whole** prompt: it replaces the old one, it does not add to it.
 5. task finished: `diff <id>` and present the changes to the user. The
    `shadok-ai/<tag>` branch and its worktree are NEVER merged or deleted
    automatically — the user is the one who merges.
+6. result delivered, nothing left to ask it: `stop <id>`. An agent left open
+   stays a channel in the human's cockpit and a process resumed at every
+   restart. Stopping loses no work (the branch, and a checkout with uncommitted
+   changes, are kept — only an empty worktree is pruned). Keep it only when the
+   human wants to steer it, when it must still answer a review, or when it owns
+   a schedule or a webhook: those are deleted with the channel.
 
 Parallel agents: repeat `spawn` (one id per agent), and launch the `prompt`
-calls in the background simultaneously.
+calls in the background simultaneously — and `stop` each one as its result
+comes in.
 
 ## You get told: your agents report back
 
@@ -118,8 +126,8 @@ attaches it elsewhere. To change the link on an agent that is **already
 running** — detach one whose notifications you no longer want, or move it under
 a different lead — use `set-parent <id> <parent-id|none>`. In the cockpit the
 same thing is a click: an agent's tab menu offers "Detach from…" (child side)
-and, on the parent, "Children reporting here…", and a 🔗 on the tab marks any
-agent that has a link.
+and, on the parent, "Children reporting here…"; the agents column draws the
+link as a tree, children indented under their parent.
 
 ## Talking across groups: a letter, not a remote control (`talk`)
 
@@ -183,7 +191,8 @@ pilotctl peer add brasdroit1 https://brasdroit1.example.com <token>   # once
 pilotctl spawn --peer brasdroit1 --profile dev --cwd /workspace       # spawn there
 pilotctl prompt <id> "run the migration" --peer brasdroit1            # drive it
 pilotctl diff <id> --peer brasdroit1                                  # read its work
-pilotctl stop <id> --peer brasdroit1
+pilotctl stop <id> --peer brasdroit1                                  # close it when done
+pilotctl reap --peer brasdroit1 --dry-run                             # what you left open there
 ```
 
 - The **token** is minted by the REMOTE instance's admin (a human, in its
@@ -193,8 +202,10 @@ pilotctl stop <id> --peer brasdroit1
 - What you may touch on X depends on the **scope** its admin gave you when they
   invited you:
   - **restricted** (the default) — only the agents YOU spawned on X; `--peer X
-    list` and a diff of someone else's agent come back refused (`peer-scope` /
-    `403`). Assume this one unless you were told otherwise.
+    list` shows those (dormant ones included) and nothing else, and a diff or
+    stop of someone else's agent comes back refused (`peer-scope` / `403`). An
+    older X refuses `list` outright. Assume this scope unless you were told
+    otherwise.
   - **member** — you act like an invited user: `list`, `diff`, resume/drive/stop
     **any** agent on X, spawn more, read its usage. You are not an admin (no
     account or peer management).

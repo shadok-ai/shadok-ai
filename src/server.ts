@@ -37,8 +37,9 @@ import {
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
+import { claudeUpdateState } from "../public/update-ready.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
+import { backgroundTasks, screenShowsWork, inputBoxVisible, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
 import {
   submitRecoveryVerdict,
   submitWithRecovery,
@@ -50,6 +51,7 @@ import {
 } from "./submit-recovery.js";
 import { busyLatchVerdict, busyLatchLog, BUSY_LATCH_GRACE_MS } from "./busy-latch.js";
 import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
+import { autoInstallVerdict, autoInstallEnabled, failingOnInstalled, newerPublished, lockHeld } from "./claude-auto-update.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
@@ -445,6 +447,7 @@ import {
   sessionSecret,
   signSession,
   readSessionFull,
+  sessionRenewal,
   sessionAlive,
   bootstrapSessionsAfter,
   saveAccounts,
@@ -511,7 +514,7 @@ import {
   type Worktree,
 } from "./worktree.js";
 import { latestVersion, update } from "./updater.js";
-import { resolveChannel, type UpdateChannel } from "./update-channel.js";
+import { resolveAutoUpdate, resolveChannel, type UpdateChannel } from "./update-channel.js";
 import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
@@ -554,6 +557,7 @@ import {
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
+import { accentFor, escapeXml, mascotSvg, previewMeta, renderCard, TAGLINE } from "./share-card.js";
 import { newAttempt, decryptPayload, PendingAttempts, type TokenPayload } from "./connect-crypto.js";
 import {
   accountsFileFor,
@@ -706,6 +710,15 @@ if (!instanceLock.ok) {
 process.on("exit", () => releaseInstanceLock());
 
 const app = express();
+// Nothing a cockpit serves belongs in a search index: the login page and the
+// share card are public on purpose (a link preview needs them), but a
+// preview bot ignores this header while a search crawler honours it. A
+// header rather than robots.txt: a robots.txt Disallow would also stop the
+// preview bots that respect it, and the preview is the point.
+app.use((_req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+  next();
+});
 app.use(express.json({ limit: "1mb" }));
 /** A screenshot is a few hundred kB, but any file can be pasted now (a PDF
  *  easily tops 12 MB); past this a paste is really an upload it shouldn't be. */
@@ -813,6 +826,12 @@ function presentsSecret(req: { headers: Record<string, unknown> }, name: string,
 // the cookie ride a top-level GET the user themselves initiated.
 /** A week, matching the cookie's Max-Age: one is the other's enforcement. */
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+/** A cookie older than this is re-issued on the next request, so the week above
+ *  counts from the last VISIT rather than from the sign-in (`sessionRenewal`). */
+const SESSION_RENEW_AFTER_MS = 24 * 3600 * 1000;
+/** ...up to this long after the sign-in. Then the password is asked again,
+ *  however active the session: the ceiling on what a stolen cookie is worth. */
+const SESSION_MAX_LIFE_MS = 30 * 24 * 3600 * 1000;
 // Sessions are signed with a per-instance secret, NOT with the password: the
 // password reaches every agent's environment, so signing with it would let an
 // agent mint a cookie for anyone. Drawn lazily, so an instance with no password
@@ -998,6 +1017,69 @@ type CheckResult =
   | { kind: "quiet" }
   | { kind: "failed"; detail: string };
 
+/** The environment a guard for `sessionId` would run in — or why it cannot. */
+type GuardEnvPlan =
+  | { ok: true; env: NodeJS.ProcessEnv; user: string | null; secrets: Record<string, string> }
+  | { ok: false; detail: string };
+
+/**
+ * Build the environment a cron guard runs with, for ONE session. Extracted so
+ * that `runCronCheck` and the `/crons/env` preview cannot disagree about it.
+ *
+ * That split is the whole point. The scheduler skill used to answer "what will
+ * my guard see?" by reading the PROFILE's `secrets` list, which is only half of
+ * a two-homed link: a secret bound from the SECRET's side (`PUT /secrets/profiles`,
+ * the vault panel's chip row) reaches the guard and was reported absent — and a
+ * `*` binding reached a profile-less agent the tool told to expect nothing. Both
+ * are false negatives, which is the expensive direction: an operator shown a
+ * correct setup as broken goes looking for a fault that is not there. There is
+ * now one builder, and the preview calls it instead of re-deriving it.
+ */
+function cronGuardEnv(sessionId: string, target: SessionTarget): GuardEnvPlan {
+  const profile = target.profile ? getProfile(target.profile) : undefined;
+  // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
+  // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
+  const secrets = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
+  // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
+  // multi-tenant — with the server's whole environment: a root shell for
+  // anyone able to write a cron, holding the GUI password and every token the
+  // server has. Now it runs as the TARGET agent's own OS user (the same
+  // `setpriv` drop as its spawn) with an allow-listed environment plus the
+  // profile's secrets. Mono-tenant keeps the server's user — there is only one
+  // — but gets the same clean environment.
+  let user: string | null = null;
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    if (!target.known) return { ok: false, detail: "no channel for this session — refusing to guess whose rights to run the check with" };
+    const who = osUserForChannelGroup(
+      target.group,
+      loadGroups(),
+      commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+    );
+    if (!who.ok) return { ok: false, detail: "the agent's group no longer exists — check not run" };
+    user = who.user;
+  }
+  const env = cronCheckEnv({
+    base: process.env,
+    secrets,
+    session: {
+      id: sessionId,
+      port: String(boundPort || START_PORT),
+      key: sessionKeyFor(sessionId),
+      // The TARGET agent's own registry, resolved exactly like its spawn's.
+      peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+    },
+    user,
+    home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+    // The same `gh` token the agent itself is spawned with (`makePilot`), and
+    // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
+    // own empty home, so without this every `gh` call in it fails — silently,
+    // because guards swallow a failed call to survive a network hiccup. Only
+    // when dropping; the server's own user reads its config dir directly.
+    ghToken: user ? serverGhToken() : undefined,
+  });
+  return { ok: true, env, user, secrets };
+}
+
 /**
  * Run a cron's optional guard command WITHOUT the LLM (in the channel's cwd,
  * with the profile's secrets). stdout is the only content signal: whatever it
@@ -1006,47 +1088,9 @@ type CheckResult =
 function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
-    const profile = target.profile ? getProfile(target.profile) : undefined;
-    // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
-    // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
-    // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
-    // multi-tenant — with the server's whole environment: a root shell for
-    // anyone able to write a cron, holding the GUI password and every token the
-    // server has. Now it runs as the TARGET agent's own OS user (the same
-    // `setpriv` drop as its spawn) with an allow-listed environment plus the
-    // profile's secrets. Mono-tenant keeps the server's user — there is only one
-    // — but gets the same clean environment.
-    let user: string | null = null;
-    if (DEPLOYMENT_MODE === "multi-tenant") {
-      if (!target.known) return resolve({ kind: "failed", detail: "no channel for this session — refusing to guess whose rights to run the check with" });
-      const who = osUserForChannelGroup(
-        target.group,
-        loadGroups(),
-        commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
-      );
-      if (!who.ok) return resolve({ kind: "failed", detail: "the agent's group no longer exists — check not run" });
-      user = who.user;
-    }
-    const env = cronCheckEnv({
-      base: process.env,
-      secrets: secretEnv,
-      session: {
-        id: c.sessionId,
-        port: String(boundPort || START_PORT),
-        key: sessionKeyFor(c.sessionId),
-        // The TARGET agent's own registry, resolved exactly like its spawn's.
-        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
-      },
-      user,
-      home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
-      // The same `gh` token the agent itself is spawned with (`makePilot`), and
-      // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
-      // own empty home, so without this every `gh` call in it fails — silently,
-      // because guards swallow a failed call to survive a network hiccup. Only
-      // when dropping; the server's own user reads its config dir directly.
-      ghToken: user ? serverGhToken() : undefined,
-    });
+    const plan = cronGuardEnv(c.sessionId, target);
+    if (!plan.ok) return resolve({ kind: "failed", detail: plan.detail });
+    const { env, user, secrets: secretEnv } = plan;
     const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
       action: "cron-check",
@@ -1472,9 +1516,9 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 /** The session a request's cookie carries, verified, or null. */
-function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number } | null {
+function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number; since: number } | null {
   const tok = cookieToken(req.headers.cookie as string | undefined);
-  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS) : null;
+  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS, SESSION_MAX_LIFE_MS) : null;
 }
 /**
  * Who this request is, or null. Re-reads the account file every time, so
@@ -1594,8 +1638,8 @@ function secureAttr(req: CookieReq): string {
   const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
   return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq, since?: number): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa, since)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
 function pendingCookie(name: string, req: CookieReq): string {
   return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
@@ -1684,19 +1728,78 @@ function passwordMatches(input: string): boolean {
 // the CSP forbids handler attributes (that is exactly what neutralises an
 // `<img onerror>` injected elsewhere), and a login page exempting itself from
 // its own policy would send an odd message.
-const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>shadok-ai — login</title><style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#14161a;color:#e8e8ea;font-family:system-ui}
-form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
-h1{font-size:16px;margin:0 0 14px;color:#e0a44a}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #333;background:#0d0f12;color:inherit;font-size:14px}
-button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}
-input+input{margin-top:8px}.hint{font-size:13px;color:#aab;margin:0 0 10px}.alt{display:block;margin-top:12px;font-size:12px;color:#aab}</style>
-<form id=f data-action="/login">
-<h1>◆ shadok-ai</h1><input id=u placeholder="User (blank = admin)" autocomplete=username><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
-<form id=pk hidden><h1>◆ second step</h1><p class=hint>Confirm with this device's passkey (fingerprint, face, or device PIN).</p><button id=pkGo type=button>Use my passkey</button><a href=# id=pkCode class=alt>New device? Use a code from another one</a><div class=err></div></form>
-<form id=en hidden><h1>◆ register this device</h1><p class=hint>Enter the code shown on a device already signed in (Users panel → Add a device), or the one an admin gave you.</p><input id=enCode placeholder="Code" autocomplete=one-time-code autocapitalize=characters><input id=enLabel placeholder="Name this device (e.g. MacBook)"><button>Register with my fingerprint / face</button><div class=err></div></form>
+/** What the login shell shows around its form. Everything here is the
+ *  operator's input or derived from it, and goes through `escapeXml`. */
+interface LoginView {
+  /** The cockpit's title, or "" (the default name is shown then). */
+  instance: string;
+  theme: string | null;
+  /** A shared link to one agent (`/a/<id>`): name it under the heading. */
+  agent?: string | null;
+  /** `og:*` tags for a shared link's preview (`previewMeta`). */
+  meta?: string;
+  /** The invitation variant: a greeting, no user field, a new password. */
+  invite?: { name: string; token: string };
+}
+
+/**
+ * The login page. A shared link lands here for anyone without a session — and
+ * so does a chat app's preview bot, which is why it names the instance and
+ * carries the `og:*` tags. The mascot is the same drawing as the share card's.
+ *
+ * Its typeface is a Latin-1 WOFF2 subset of Inter (~34 KB a weight), not the
+ * full TTFs: those are ~410 KB each and exist for the share card's server-side
+ * rasteriser, which needs every glyph. A character outside the subset falls
+ * back to the system font, glyph by glyph. `swap`: the form is usable at once.
+ * Regenerated from the TTFs with the `subset-font` package (U+0020–007E,
+ * U+00A0–00FF and the typographic punctuation ‘’“”–—…·•→), target `woff2`.
+ */
+function loginHtml(v: LoginView): string {
+  const e = escapeXml;
+  const accent = accentFor(v.theme);
+  const name = v.instance || "Shadok-AI";
+  const heading = v.invite ? `Welcome, ${e(v.invite.name)}` : e(name);
+  const sub = v.invite
+    ? "Choose a password to join this cockpit."
+    : v.agent
+      ? `Sign in to open <b>${e(v.agent)}</b>.`
+      : "Sign in to continue.";
+  const action = v.invite ? `/invite/${encodeURIComponent(v.invite.token)}` : "/login";
+  const user = v.invite ? "" : '<input id=u placeholder="User (blank = admin)" autocomplete=username>';
+  const pw = v.invite
+    ? '<input id=pw type=password placeholder="Choose a password (8+ characters)" autofocus autocomplete=new-password>'
+    : '<input id=pw type=password placeholder="Password" autofocus autocomplete=current-password>';
+  const title = v.invite ? `${e(name)} — choose a password` : `${e(name)} — sign in`;
+  return `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow"><link rel=icon href="/icons/icon-192.png">
+<title>${title}</title>${v.meta ? "\n" + v.meta : ""}
+<style>@font-face{font-family:Inter;src:url(/fonts/inter-latin-400.woff2) format("woff2");font-weight:400;font-display:swap}@font-face{font-family:Inter;src:url(/fonts/inter-latin-700.woff2) format("woff2");font-weight:700;font-display:swap}
+:root{--accent:${accent}}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 28%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 55%),#12151c;color:#e8e8ea;font-family:Inter,system-ui,sans-serif}
+form{background:#1b1f29;border:1px solid #2c3140;padding:30px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.55);width:min(340px,88vw);text-align:center}
+.brand{font-size:12px;font-weight:700;letter-spacing:.18em;color:var(--accent);margin-top:4px}
+h1{font-size:24px;margin:6px 0 4px;color:#f2f2f4;overflow-wrap:anywhere}.sub{font-size:14px;color:#a1a6b3;margin:0 0 20px}.sub b{color:#e8e8ea}
+input{width:100%;box-sizing:border-box;padding:11px 12px;border-radius:8px;border:1px solid #333a48;background:#0d0f14;color:inherit;font:inherit;font-size:16px}
+button{margin-top:14px;width:100%;padding:11px;border-radius:8px;border:none;background:var(--accent);color:#12151c;font:inherit;font-weight:700;cursor:pointer}.err{color:#f87171;font-size:13px;margin-top:10px;min-height:16px}
+input+input{margin-top:9px}.hint{font-size:13px;color:#a1a6b3;margin:0 0 12px}.alt{display:block;margin-top:12px;font-size:12px;color:#a1a6b3}
+.tag{margin-top:18px;font-size:12px;color:#6b7280}</style>
+<form id=f data-action="${action}">
+${mascotSvg(96)}<div class=brand>SHADOK-AI</div><h1>${heading}</h1><p class=sub>${sub}</p>${user}${pw}<button>Sign in</button><div class=err></div><div class=tag>${e(TAGLINE.join(" "))}</div></form>
+<form id=pk hidden>${mascotSvg(72)}<h1>Second step</h1><p class=hint>Confirm with this device's passkey (fingerprint, face, or device PIN).</p><button id=pkGo type=button>Use my passkey</button><a href=# id=pkCode class=alt>New device? Use a code from another one</a><div class=err></div></form>
+<form id=en hidden>${mascotSvg(72)}<h1>Register this device</h1><p class=hint>Enter the code shown on a device already signed in (Users panel → Add a device), or the one an admin gave you.</p><input id=enCode placeholder="Code" autocomplete=one-time-code autocapitalize=characters><input id=enLabel placeholder="Name this device (e.g. MacBook)"><button>Register with my fingerprint / face</button><div class=err></div></form>
 <script src="/vendor/simplewebauthn.js"></script>
 <script nonce="${NONCE_PLACEHOLDER}">
 const $ = (id) => document.getElementById(id);
+// Where to go once signed in: back to the shared agent link this page answered
+// for (\`/a/<id>\`, whose hash carries the message), else the cockpit.
+const home = () => (/^[/]a[/][0-9a-f-]{36}[/]?$/i.test(location.pathname) ? location.pathname : "/") + location.hash;
+// Signing in on the page a link opened usually means the target IS the current
+// address, and assigning it is an in-page hash jump, not a load. Reload then.
+const goHome = () => {
+  const to = home();
+  if (to === location.pathname + location.hash) location.reload();
+  else location.assign(to);
+};
 const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) })
   .then(async (r) => ({ ok: r.ok, j: await r.json().catch(() => ({})) }));
 const show = (id) => { for (const f of ["f", "pk", "en"]) $(f).hidden = f !== id; };
@@ -1707,7 +1810,7 @@ const webauthn = () => window.isSecureContext && window.SimpleWebAuthnBrowser &&
 function nextStep(j) {
   if (j.next === "passkey") return show("pk");
   if (j.next === "enroll") { show("en"); if (j.code) $("enCode").value = j.code; return; }
-  location.assign("/" + location.hash);
+  goHome();
 }
 document.getElementById("f").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -1731,7 +1834,7 @@ $("pkGo").addEventListener("click", async () => {
   try { response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: o.j.options }); }
   catch (err) { return fail("pk", "Cancelled or not available: " + (err && err.message || err)); }
   const r = await post("/login/passkey", { challengeId: o.j.challengeId, response });
-  if (r.ok) return location.assign("/" + location.hash);
+  if (r.ok) return goHome();
   fail("pk", r.j.error || "Not accepted");
 });
 $("pkCode").addEventListener("click", (e) => { e.preventDefault(); show("en"); });
@@ -1745,10 +1848,11 @@ $("en").addEventListener("submit", async (e) => {
   try { response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: o.j.options }); }
   catch (err) { return fail("en", "Cancelled or not available: " + (err && err.message || err)); }
   const r = await post("/login/enroll", { challengeId: o.j.challengeId, response, code, label: $("enLabel").value });
-  if (r.ok) return location.assign("/" + location.hash);
+  if (r.ok) return goHome();
   fail("en", r.j.error || "Not registered");
 });
 </script>`;
+}
 
 /** Serves a login-shaped page with its CSP and nonce (these sit outside the
  *  gate, so they do not go through the index route). */
@@ -1758,22 +1862,40 @@ function sendAuthPage(res: express.Response, html: string, status: number): void
   res.status(status).type("html").send(injectNonce(html, nonce));
 }
 
-function sendLogin(res: express.Response): void {
-  sendAuthPage(res, LOGIN_HTML, 401);
+/** The instance's title and palette, as the login page and the share card show them. */
+function brandView(): { instance: string; theme: string | null } {
+  const cfg = loadConfig();
+  return { instance: titleForCwd(cfg, process.cwd()) || "", theme: themeForCwd(cfg, process.cwd()) };
+}
+
+/** This request's own origin, as a preview bot reached it — `og:image` and
+ *  `og:url` must be absolute. Behind a TLS proxy, its forwarded scheme. */
+function requestOrigin(req: express.Request): string {
+  const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
+  const https = requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers);
+  return `${https ? "https" : "http"}://${req.headers.host ?? "localhost"}`;
+}
+
+/**
+ * The login page, with the preview of what was shared. Answered **200**, not
+ * 401: a page that renders fine is not an error to a browser either way, but
+ * a preview bot may drop a 401 body without reading its tags — and then the
+ * link shows nothing at all. JSON callers still get their 401 from the gate.
+ */
+function sendLogin(req: express.Request, res: express.Response, agentId?: string): void {
+  const brand = brandView();
+  const agent = agentId ? loadChannels().find((c) => c.sessionId === agentId)?.name ?? null : null;
+  const origin = requestOrigin(req);
+  const image = `${origin}/share/card.png${agent ? `?a=${agentId}` : ""}`;
+  const meta = previewMeta({ ...brand, agent }, image, origin + req.originalUrl);
+  sendAuthPage(res, loginHtml({ ...brand, agent, meta }), 200);
 }
 
 /** The page an invited person lands on: the login shell, pointed at the
  *  redemption route. Same CSP and same nonce — a page that exempted itself from
  *  the policy protecting every other page would be a strange message. */
 function invitePage(name: string, token: string): string {
-  return LOGIN_HTML
-    .replace("<title>shadok-ai — login</title>", "<title>shadok-ai — choose a password</title>")
-    .replace('data-action="/login"', `data-action="/invite/${encodeURIComponent(token)}"`)
-    // The name is the admin's input: it must never be able to close the tag.
-    .replace("◆ shadok-ai", `Welcome, ${name.replace(/[<>&"']/g, "")}`)
-    .replace('<input id=u placeholder="User (blank = admin)" autocomplete=username>', "")
-    .replace('placeholder="Password"', 'placeholder="Choose a password (8+ characters)"')
-    .replace("autocomplete=current-password", "autocomplete=new-password");
+  return loginHtml({ ...brandView(), invite: { name, token } });
 }
 
 /** This server's same-origin guard (see `originAllowed`). */
@@ -2361,6 +2483,54 @@ app.post("/hooks/:id", express.raw({ type: () => true, limit: "256kb" }), (req, 
 
 // Who am I? The client labels itself with this, and a tab whose session expired
 // finds out here rather than by a silent failure.
+// A shared link to one agent. The agent rides in the PATH, not the hash, so
+// the server — and a chat app's preview bot — can name it: the preview shows
+// the agent and the instance, never a message (`src/share-card.ts`). Signed
+// in, it is just the cockpit; the page moves the id back into the hash
+// (`#agent=`), which is what every deep-link path of the client reads.
+const SHARE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+app.get("/a/:id", (req, res) => {
+  const id = String(req.params.id ?? "").toLowerCase();
+  if (!SHARE_ID.test(id)) return res.redirect(302, "/");
+  if (requestAuthed(req)) return sendIndex(res);
+  return sendLogin(req, res, id);
+});
+
+// The preview card itself. Public by design — a preview bot carries no
+// session — and it reveals exactly what the login page's tags already say: the
+// instance's title, and the agent's name for an id that exists. An unknown id
+// gets the instance card, so probing ids learns nothing a 404 would not.
+app.get("/share/card.png", async (req, res) => {
+  const id = String(req.query.a ?? "").toLowerCase();
+  const agent = SHARE_ID.test(id) ? loadChannels().find((c) => c.sessionId === id)?.name ?? null : null;
+  try {
+    const png = await renderCard({ ...brandView(), agent });
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    if (png) return res.type("png").send(png);
+  } catch (e) {
+    console.warn(`share card: ${(e as Error).message}`);
+  }
+  // No rasteriser on this platform: the plain icon still beats no picture.
+  return res.sendFile(path.join(__dirname, "..", "public", "icons", "icon-512.png"));
+});
+
+// Renew a PERSON's session on use. `cookieAccount` is the test, not
+// `currentAccount`: it is null for an agent, a peer and the server's own
+// client, none of which holds a browser cookie worth extending — and it has
+// already applied every refusal (reset access, two-factor, the retired
+// bootstrap cookies), so a dead session is never brought back. `since` rides
+// along unchanged. A handler that sets its own cookie afterwards (sign-out, a
+// passkey change) simply replaces this header.
+app.use((req, res, next) => {
+  if (!GUI_PASSWORD) return next();
+  const sess = cookieSession(req);
+  if (sess && sessionRenewal(sess, Date.now(), { renewAfterMs: SESSION_RENEW_AFTER_MS, maxLifeMs: SESSION_MAX_LIFE_MS })) {
+    const acct = cookieAccount(req);
+    if (acct) res.setHeader("Set-Cookie", sessionCookie(acct.name, sess.mfa, req, sess.since));
+  }
+  next();
+});
+
 app.get("/me", (req, res) => {
   const me = currentAccount(req);
   return me ? res.json(me) : res.status(401).json({ error: "unauthorized" });
@@ -2371,14 +2541,18 @@ app.get("/me", (req, res) => {
 app.use((req, res, next) => {
   // `/icons/`: the Home Screen icon is fetched by the OS, which may not carry
   // the session cookie, and it is the same static Shadok for every instance.
-  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || req.path.startsWith("/icons/") || requestAuthed(req)) return next();
+  // `/fonts/`: the login page's own typeface, the same for every instance.
+  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || req.path.startsWith("/icons/") || req.path.startsWith("/fonts/") || requestAuthed(req)) return next();
   // A peer is a NARROW principal, not a member: over HTTP it may reach ONLY
   // `GET /diff` (of its own agents — the handler ownership-checks). Everything
   // else stays denied, so a peer never touches B's vault, profiles, crons, other
   // agents or the account routes. Its spawn/drive path is the WS (verifyClient).
   if (req.method === "GET" && req.path === "/diff" && peerName(req)) return next();
+  // And `GET /live`, so a peer can find the agents it left behind: the handler
+  // narrows a restricted peer to the ones it spawned (`restrictedBoxOf`).
+  if (req.method === "GET" && req.path === "/live" && peerName(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
-    return sendLogin(res);
+    return sendLogin(req, res);
   return res.status(401).json({ error: "unauthorized" });
 });
 
@@ -2413,12 +2587,15 @@ app.get("/manifest.webmanifest", (_req, res) => {
 });
 
 const INDEX_PATH = path.join(__dirname, "..", "public", "index.html");
-app.get(["/", "/index.html"], (_req, res) => {
+app.get(["/", "/index.html"], (_req, res) => sendIndex(res));
+
+function sendIndex(res: express.Response): void {
   let html: string;
   try {
     html = fs.readFileSync(INDEX_PATH, "utf8");
   } catch {
-    return res.status(500).type("text").send("index.html not found");
+    res.status(500).type("text").send("index.html not found");
+    return;
   }
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
@@ -2426,7 +2603,7 @@ app.get(["/", "/index.html"], (_req, res) => {
   // demander que les modules de sa propre version, jamais ceux d'une plus
   // ancienne restés en cache (cf. invariant 10).
   res.type("html").send(injectInstanceKey(injectAssetVersion(injectNonce(html, nonce), OWN_VERSION), instanceKey()));
-});
+}
 
 /**
  * Any file pasted into the composer — an image, a PDF, a CSV, anything. The web
@@ -2618,18 +2795,34 @@ app.get("/live", (req, res) => {
     if (!g) return false; // unresolvable → fail closed
     return canSeeGroup(g, viewer);
   };
-  res.json(
-    [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited && visible(s.id))
-      .map((s) => ({
-        id: s.id,
-        cwd: s.cwd,
-        branch: s.worktree?.branch ?? null,
-        busy: s.busy,
-        clients: s.clients.size,
-        lastPrompt: s.lastPrompt,
-      })),
-  );
+  type LiveRow = { id: string; cwd: string; branch: string | null; busy: boolean; clients: number; idleSec: number; lastPrompt?: string; running?: false };
+  const running: LiveRow[] = [...sessions.values()]
+    .filter((s) => !s.pilot.hasExited && visible(s.id))
+    .map((s) => ({
+      id: s.id,
+      cwd: s.cwd,
+      branch: s.worktree?.branch ?? null,
+      busy: s.busy,
+      clients: s.clients.size,
+      // How long nothing has happened on it — what `pilotctl reap --idle` sorts by.
+      idleSec: Math.round((Date.now() - Math.max(s.lastActivityAt ?? 0, s.lastContentAt ?? 0)) / 1000),
+      lastPrompt: s.lastPrompt,
+    }));
+  // A RESTRICTED PEER also gets the agents it spawned that are no longer
+  // running: a process reclaimed after its idle window still leaves its channel
+  // row in this cockpit, and this list is the only one such a peer can read —
+  // without these rows its leftovers were invisible to the one caller entitled
+  // to close them. Nobody else's list changes. The scope rides in a header so
+  // the shape stays an array for every existing reader.
+  if (box && peerName(req)) {
+    res.setHeader("x-shadok-peer-scope", "restricted");
+    const live = new Set(running.map((r) => r.id));
+    for (const c of chans) {
+      if (live.has(c.sessionId) || !ownedByPeer(c, box)) continue;
+      running.push({ id: c.sessionId, cwd: c.cwd, branch: c.branch ?? null, busy: false, clients: 0, idleSec: -1, running: false });
+    }
+  }
+  res.json(running);
 });
 // Current 5-hour and 7-day subscription usage, each window enriched with how it
 // compares to the time already elapsed (for the quota gauges and the send guard).
@@ -3762,6 +3955,49 @@ app.get("/instance/stats", async (req, res) => {
 // Scoped like every other per-session read (invariant 60): a cron carries its
 // prompt and its guard command, i.e. another group's monitoring logic.
 app.get("/crons", (req, res) => res.json(loadCrons().filter((c) => mayActFor(req, c.sessionId))));
+/**
+ * What a guard for this session would ACTUALLY receive — variable names only,
+ * never a value. Built by the same `cronGuardEnv` the real tick uses, so the
+ * preview cannot drift from the thing it previews.
+ *
+ * This exists because the honest answer is not computable client-side. The
+ * secret↔profile link has two writable homes — the profile's `secrets` list and
+ * the secret's own `profiles` list — and `GET /secrets` withholds the second
+ * from an agent for commons secrets, so the scheduler skill could only ever see
+ * half of it. There is no reload or propagation delay to account for either:
+ * `cronGuardEnv` reads `profiles.json` and the vault on every call, so this is
+ * what the NEXT tick gets.
+ */
+app.get("/crons/env", (req, res) => {
+  const sessionId = String(req.query.session ?? "").trim();
+  if (!sessionId) return res.status(400).json({ error: "session required" });
+  // Scoped exactly like GET /crons (invariant 60): the guard command of another
+  // group is already gated there, and its secret NAMES are no more public.
+  if (!mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  const target = resolveSessionTarget(loadChannels(), sessionId, process.cwd());
+  const plan = cronGuardEnv(sessionId, target);
+  if (!plan.ok) return res.status(409).json({ error: plan.detail });
+  // Declared by the profile but NOT resolvable: a typo, or a secret owned by a
+  // group this agent neither belongs to nor was lent. The caller cannot work
+  // this out for itself — `GET /secrets` lists what the CALLER sees, which is
+  // not what the guard resolves (own → shared-in → commons, by the AGENT's
+  // group). `secretsFor` skips an unknown name silently, so without this a typo
+  // looks exactly like a working guard until the day it runs.
+  const declared = (target.profile ? getProfile(target.profile)?.secrets : undefined) ?? [];
+  res.json({
+    cwd: target.cwd,
+    known: target.known,
+    profile: target.profile,
+    profileMissing: !!target.profile && !getProfile(target.profile),
+    secrets: Object.keys(plan.secrets).sort(),
+    unresolved: [...new Set(declared.filter((n) => !Object.hasOwn(plan.secrets, n)))].sort(),
+    // The whole key list, plumbing included: the allow-list is short and
+    // invisible from the agent's own shell, so "does my guard even have TZ?" is
+    // a real question — and one the agent used to answer by guessing.
+    env: Object.keys(plan.env).sort(),
+    user: plan.user,
+  });
+});
 // Create (no id) or update (id present). Body: { id?, sessionId, prompt,
 // schedule:{kind,...}, enabled? }.
 app.post("/crons", (req, res) => {
@@ -7689,11 +7925,18 @@ let latestKnown: string | null = null;
 // How often to poll npm for a newer release (minutes; 0 disables the check).
 const VERSION_CHECK_MIN = Number(process.env.SHADOK_VERSION_CHECK_MIN ?? 15);
 // Auto-apply a newer release: notify clients, then exit 75 so the supervisor
-// installs it and respawns. Runtime-toggleable via the GUI checkbox; the
-// persisted config wins, falling back to the SHADOK_AUTOUPDATE env var. The
+// installs it and respawns. ON by default where a supervisor is there to do
+// that respawn — so an ordinary `npx shadok-ai` deployment tracks its channel
+// (beta, unless changed) with nothing to configure, while a hand-run
+// `dist/server.js` still never exits out from under its operator. An explicit
+// choice wins either way: the GUI checkbox, or SHADOK_AUTOUPDATE, which can now
+// force it OFF (`0`/`false`) and not just on. See `resolveAutoUpdate`. The
 // display poll runs regardless of this flag.
-let autoUpdate: boolean =
-  loadConfig().autoUpdate ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_AUTOUPDATE ?? "");
+let autoUpdate: boolean = resolveAutoUpdate(
+  loadConfig().autoUpdate,
+  process.env.SHADOK_AUTOUPDATE,
+  process.env.SHADOK_SUPERVISED === "1",
+);
 // Shared-ledger reflex: ON by default. An explicit choice always wins — the
 // config (GUI toggle / POST /ledger), or SHADOK_LEDGER, which can now force it
 // EITHER way (`0`/`false` turns it off, not just `1` on). Only an instance that
@@ -8378,21 +8621,18 @@ app.get(["/media/:name", "/media/:key/:name"], (req, res) => {
 // footer reports "Auto-update failed"; running agents still need a reload
 // afterwards to pick up the new binary (the client does that). BROWSER-ONLY: a
 // deliberate operator action, not something an agent should trigger for the
-// whole machine (cf. the profile-guardrail boundary). Single-flight so two
-// clicks don't race two installs (ENOTEMPTY, see `rewriteInProgress`).
-let claudeUpdateInFlight: Promise<void> | null = null;
+// whole machine (cf. the profile-guardrail boundary). The server now also does
+// it by itself (`claudeAutoInstallSweep`); both go through `installClaudeOnce`,
+// so a click and the sweep can never run two installs.
 app.post("/claude-update", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "browser-only" });
   try {
-    if (!claudeUpdateInFlight) {
-      console.log("claude-update: installing @anthropic-ai/claude-code (npm i -g)…");
-      claudeUpdateInFlight = installClaudeCli().finally(() => { claudeUpdateInFlight = null; });
+    // The sweep may have installed it a minute ago: the badge on an agent not
+    // reloaded yet still says "install", and a click must not reinstall.
+    if (!claudeUpdateInFlight && Date.now() - claudeInstallSettledAt < CLAUDE_INSTALL_SETTLE_MS) {
+      return res.json({ ok: true, already: true });
     }
-    await claudeUpdateInFlight;
-    // The cached binary path rots on any reinstall (invariant 32): drop it so the
-    // next spawn re-resolves the freshly installed launcher.
-    claudeReady = null;
-    rememberClaudeBin(null);
+    await installClaudeOnce("button");
     console.log("claude-update: install ok");
     res.json({ ok: true });
   } catch (e) {
@@ -8401,6 +8641,127 @@ app.post("/claude-update", async (req, res) => {
     res.status(500).json({ ok: false, error });
   }
 });
+
+// ── Claude Code auto-install (see src/claude-auto-update.ts) ─────────────────
+const CLAUDE_AUTO_INSTALL = autoInstallEnabled(process.env.SHADOK_CLAUDE_AUTO_INSTALL);
+const CLAUDE_INSTALL_SETTLE_MS = 60 * 60_000;
+const CLAUDE_INSTALL_BACKOFF_MS = 30 * 60_000;
+const CLAUDE_INSTALL_LOCK_STALE_MS = 20 * 60_000;
+let claudeUpdateInFlight: Promise<void> | null = null;
+let claudeInstallSettledAt = 0;
+let claudeInstallFailedAt = 0;
+
+/** Cross-process half of the single-flight: two shadok servers on one host share
+ *  the global npm directory, and two concurrent `npm i -g` collide (ENOTEMPTY).
+ *  `wx` creates the file only if absent — the one atomic test-and-set the fs has. */
+function claudeInstallLockFile(): string {
+  return path.join(os.homedir(), ".shadok-ai", "claude-install.lock");
+}
+function readClaudeInstallLock(): number | null {
+  try {
+    const t = Number(fs.readFileSync(claudeInstallLockFile(), "utf8").trim());
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return null;
+  }
+}
+function takeClaudeInstallLock(): boolean {
+  const file = claudeInstallLockFile();
+  if (lockHeld(readClaudeInstallLock(), Date.now(), CLAUDE_INSTALL_LOCK_STALE_MS)) return false;
+  try { fs.rmSync(file, { force: true }); } catch { /* a stale lock we cannot remove: wx below fails */ }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, String(Date.now()), { flag: "wx" });
+    return true;
+  } catch {
+    return false; // someone took it between our read and our write
+  }
+}
+
+/** THE one way to install Claude Code once it is running: the button, the
+ *  auto-install sweep and the missing-binary path all share this promise, and the
+ *  lock keeps another process out. The cached binary path rots on any reinstall
+ *  (invariant 32), and the version cache would hide the change from the staleness
+ *  sweep for a minute: both are dropped on success, so the reload half starts at
+ *  once. */
+function installClaudeOnce(by: string): Promise<void> {
+  if (claudeUpdateInFlight) return claudeUpdateInFlight;
+  if (!takeClaudeInstallLock()) return Promise.reject(new Error("another Claude Code install is already running on this machine"));
+  console.log(`claude-update: installing @anthropic-ai/claude-code (npm i -g) — ${by}`);
+  claudeUpdateInFlight = installClaudeCli()
+    .then(() => {
+      claudeInstallSettledAt = Date.now();
+      claudeReady = null;
+      rememberClaudeBin(null);
+      claudeVerCache = null;
+    })
+    .catch((e) => {
+      claudeInstallFailedAt = Date.now();
+      throw e;
+    })
+    .finally(() => {
+      claudeUpdateInFlight = null;
+      try { fs.rmSync(claudeInstallLockFile(), { force: true }); } catch { /* stale after 20 min anyway */ }
+    });
+  return claudeUpdateInFlight;
+}
+
+/** The version npm would install, or null when the registry cannot say. */
+function publishedClaudeVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFile(npm, ["view", "@anthropic-ai/claude-code", "version"], { timeout: 30_000 }, (err, out) =>
+      resolve(err ? null : parseClaudeVersion(String(out)) ?? (String(out).trim() || null)),
+    );
+  });
+}
+
+/** Every 30 s, beside the auto-reload sweep: an agent's footer says its own
+ *  update failed → install it for everyone, once. The reload follows through the
+ *  `claude` staleness reason. */
+let claudeAutoInstallChecking = false;
+async function claudeAutoInstallSweep(): Promise<void> {
+  if (!CLAUDE_AUTO_INSTALL || claudeAutoInstallChecking) return;
+  const channels = loadChannels();
+  let failing = 0;
+  let current: string | null | undefined;
+  for (const s of sessions.values()) {
+    if (s.pilot.hasExited || claudeUpdateState(s.pilot.screen()) !== "failed") continue;
+    if (current === undefined) current = currentClaudeVersion();
+    const spawnVer = channels.find((c) => c.sessionId === s.id)?.spawnClaudeVer ?? null;
+    if (failingOnInstalled(spawnVer, current)) failing++;
+  }
+  const now = Date.now();
+  const verdict = autoInstallVerdict({
+    enabled: CLAUDE_AUTO_INSTALL,
+    failingOnCurrent: failing,
+    inFlight: !!claudeUpdateInFlight,
+    externalInstall: claudeInstallInProgress() || lockHeld(readClaudeInstallLock(), now, CLAUDE_INSTALL_LOCK_STALE_MS),
+    sinceLastSettledMs: now - claudeInstallSettledAt,
+    sinceLastFailureMs: now - claudeInstallFailedAt,
+    settleMs: CLAUDE_INSTALL_SETTLE_MS,
+    failureBackoffMs: CLAUDE_INSTALL_BACKOFF_MS,
+  });
+  if (!verdict.install) return;
+  claudeAutoInstallChecking = true;
+  try {
+    // A footer is a screen heuristic (invariant 2): ask the registry before
+    // pulling a few hundred MB. Nothing newer → settle, nothing installed.
+    const installed = current ?? currentClaudeVersion();
+    const published = await publishedClaudeVersion();
+    if (!newerPublished(installed, published)) {
+      claudeInstallSettledAt = Date.now();
+      console.log(`claude-update: ${failing} agent(s) report a failed auto-update, but ${installed} is already the latest — nothing to install`);
+      return;
+    }
+    await installClaudeOnce(`auto: ${failing} agent(s) report a failed auto-update (${installed ?? "?"} → ${published ?? "latest"})`);
+    console.log(`claude-update: auto-install ok (now ${currentClaudeVersion() ?? "?"}) — idle agents reload onto it one at a time`);
+  } catch (e) {
+    console.log(`claude-update: auto-install FAILED — ${e instanceof Error ? e.message : e} (next try in ${CLAUDE_INSTALL_BACKOFF_MS / 60_000} min)`);
+  } finally {
+    claudeAutoInstallChecking = false;
+  }
+}
 
 // The shared-ledger table — ONE per instance (keyed by the launch dir). Read by
 // the GUI viewer (the version-menu / header button) AND by the `shadok-ledger`
@@ -9651,6 +10012,12 @@ interface Live {
   /** Identity of the dialog last broadcast, so the screen watcher can surface a
    *  NEW question without re-sending the current one 3 times a second. */
   lastDialogKey: string | null;
+  /** Dialog answers in flight (`choose` / `freetext` / `confirm`). While one
+   *  runs, the HANDLER owns what happens next — the screen watcher must stay
+   *  out: it used to catch the next question of a multi-question form in the
+   *  gap between the keystroke and `finishTurn`, publish it, and `finishTurn`
+   *  (which clears the dedup key on purpose) published it a second time. */
+  answering: number;
   /** Context-window fill (%), computed from the transcript's token usage. */
   contextPct: number | null;
   /** What the pane says is still running (its footer's counts). Live, never stored. */
@@ -10099,6 +10466,12 @@ let autoReloadRunning = false;
 function pendingReloadReasons(s: Live, channels: Channel[]): string[] {
   const out = sessionStaleness(s, channels).map((r) => r.kind as string);
   if ((s.appliedProfile ?? null) !== (s.profile ?? null)) out.push("profile");
+  // Claude Code's own footer: "Update installed · Restart to apply". Its updater
+  // may have written a binary the server's `claude --version` never sees (a
+  // per-user install), so the `claude` reason above can miss it. The backoff in
+  // autoReloadVerdict keeps a footer that survives the reload from looping.
+  if (!out.includes("claude") && !s.pilot.hasExited && claudeUpdateState(s.pilot.screen()) === "restart")
+    out.push("claude-restart");
   return out;
 }
 
@@ -10332,7 +10705,7 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
     // transient, so failing hard on the first sample would report a healthy
     // install as broken. Nothing here runs at boot.
     find: () => findClaudeBinWithRetry(liveClaudeDeps()),
-    install: installClaudeCli,
+    install: () => installClaudeOnce("missing binary"),
     // Claude Code's auto-updater reinstalls the package in place; installing
     // over it is how a fresh instance's first agent died on ENOTEMPTY.
     installInProgress: claudeInstallInProgress,
@@ -10406,6 +10779,7 @@ async function createSession(
     screenTimer: null,
     lastScreen: "",
     lastDialogKey: null,
+    answering: 0,
     contextWindow,
     backend: backend.kind,
     // A reattached session must show its bar at once, not only after the next
@@ -10679,7 +11053,7 @@ async function attachPilot(s: Live): Promise<void> {
       // screen change closes that hole for `key` and for any future path that
       // bypasses `finishTurn`. `publishDialog` dedups, so a dialog sitting
       // there while the footer clock ticks is announced exactly once.
-      if (settled && !s.busy) {
+      if (settled && !s.busy && !s.answering) {
         const d = detectDialog(scr);
         if (d) publishDialog(s, d);
         else s.lastDialogKey = null;
@@ -10690,7 +11064,7 @@ async function attachPilot(s: Live): Promise<void> {
     // finishTurn, so watch for it here and signal the turn like any other.
     // SAY it when that fails: this is the one `finishTurn` call with nobody to
     // report to, and swallowing it is how a flag left up here stayed invisible.
-    if (settled && !s.busy && pilot.isWorking())
+    if (settled && !s.busy && !s.answering && pilot.isWorking())
       finishTurn(s).catch((e) =>
         console.error(`[sk-${s.id}] finishTurn (spontaneous resume) failed — ${e instanceof Error ? e.message : e}`),
       );
@@ -10731,14 +11105,14 @@ async function attachPilot(s: Live): Promise<void> {
   // restarts, and turns can run for many minutes) must not block on idle —
   // the screen watcher above signals the running turn right after `settled`.
   const isUp = (scr: string) =>
-    /do you trust the files/i.test(scr) || screenShowsWork(scr) || scr.includes("❯");
+    /do you trust the files/i.test(scr) || screenShowsWork(scr) || inputBoxVisible(scr);
   let screen: string;
   try {
     screen = await pilot.waitFor(isUp, { timeoutMs: 60_000 });
     if (/do you trust the files/i.test(screen)) {
       pilot.press("enter");
       screen = await pilot.waitFor(
-        (scr) => screenShowsWork(scr) || scr.includes("❯"),
+        (scr) => screenShowsWork(scr) || inputBoxVisible(scr),
         { timeoutMs: 30_000 },
       );
     }
@@ -10764,7 +11138,7 @@ async function attachPilot(s: Live): Promise<void> {
     if (full && /resum|summary/i.test(rd!.question)) {
       await selectOption(pilot, full.n);
       await pilot
-        .waitFor((scr) => screenShowsWork(scr) || scr.includes("❯"), { timeoutMs: 30_000 })
+        .waitFor((scr) => screenShowsWork(scr) || inputBoxVisible(scr), { timeoutMs: 30_000 })
         .catch(() => {});
     }
   }
@@ -12325,9 +12699,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // running — either way there's nothing to select here.
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
-          await selectOption(session.pilot, msg.n);
-          await sleep(500);
-          await finishTurn(session);
+          // Keep the screen watcher out until finishTurn has published whatever
+          // comes next (see `Live.answering`).
+          session.answering++;
+          try {
+            await selectOption(session.pilot, msg.n);
+            await sleep(500);
+            await finishTurn(session);
+          } finally {
+            session.answering--;
+          }
           break;
         }
 
@@ -12353,15 +12734,25 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           const t = msg.text.trim();
           if (!t) return;
-          session.pilot.write(String(msg.n));
-          await sleep(700);
-          session.pilot.write(`\x1b[200~${t}\x1b[201~`);
-          await sleep(400);
-          session.pilot.press("enter");
-          await sleep(600);
-          const d = detectDialog(session.pilot.screen());
-          if (d) broadcast(session, dialogMessage(session, d));
-          else await finishTurn(session);
+          session.answering++;
+          try {
+            session.pilot.write(String(msg.n));
+            await sleep(700);
+            session.pilot.write(`\x1b[200~${t}\x1b[201~`);
+            await sleep(400);
+            session.pilot.press("enter");
+            await sleep(600);
+            const d = detectDialog(session.pilot.screen());
+            if (d) {
+              // The next question of a form, or the same one again: either way a
+              // fresh ask. Through publishDialog, so the key is recorded and the
+              // watcher does not announce it a second time once we let go.
+              session.lastDialogKey = null;
+              publishDialog(session, d);
+            } else await finishTurn(session);
+          } finally {
+            session.answering--;
+          }
           break;
         }
 
@@ -12379,24 +12770,29 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // — in the multi-question case that Enter answered the next question
           // with its default (silently, wrongly), corrupting the form. Wait for
           // whichever screen Tab produced, then decide.
-          session.pilot.press("tab");
-          await session.pilot
-            .waitFor(
-              (scr) => SUBMIT_PAGE.test(scr) || (detectDialog(scr)?.question ?? before.question) !== before.question,
-              { timeoutMs: 5000 },
-            )
-            .catch(() => {}); // neither settled in time: fall through and inspect
-          await sleep(300);
-          const scr = session.pilot.screen();
-          const next = detectDialog(scr);
-          if (SUBMIT_PAGE.test(scr) || !next) {
-            // The recap/submit page (this was the last question), or the form is
-            // gone: let finishTurn drive it — it auto-confirms the recap.
-            await finishTurn(session);
-          } else {
-            // Tab landed on a FURTHER question — hand it back to the user to
-            // answer rather than auto-picking its default with Enter.
-            publishDialog(session, next);
+          session.answering++;
+          try {
+            session.pilot.press("tab");
+            await session.pilot
+              .waitFor(
+                (scr) => SUBMIT_PAGE.test(scr) || (detectDialog(scr)?.question ?? before.question) !== before.question,
+                { timeoutMs: 5000 },
+              )
+              .catch(() => {}); // neither settled in time: fall through and inspect
+            await sleep(300);
+            const scr = session.pilot.screen();
+            const next = detectDialog(scr);
+            if (SUBMIT_PAGE.test(scr) || !next) {
+              // The recap/submit page (this was the last question), or the form is
+              // gone: let finishTurn drive it — it auto-confirms the recap.
+              await finishTurn(session);
+            } else {
+              // Tab landed on a FURTHER question — hand it back to the user to
+              // answer rather than auto-picking its default with Enter.
+              publishDialog(session, next);
+            }
+          } finally {
+            session.answering--;
           }
           break;
         }
@@ -12599,8 +12995,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const ch = loadChannels().find((c) => c.sessionId === id);
             if (!ownedByPeer(ch, callerPeer)) return fail("a restricted peer may only stop its own agents", "peer-scope");
           }
-          await endChannel(id);
+          const ended = await endChannel(id);
           if (session?.id === id) session = null;
+          // Answer the SENDER, attached or not. `stopped` is broadcast only to the
+          // viewers of a LIVE session, so a caller that stopped a dormant agent by
+          // id (pilotctl, whose holder is long gone) heard nothing and could not
+          // tell "gone" from "ignored". `ended: false` = the home base, kept.
+          send({ type: "stop-result", sessionId: id, ok: ended });
           break;
         }
       }
@@ -13066,7 +13467,12 @@ server.listen(port, HOST, () => {
   staleTimer.unref();
   // Auto-reload: twice a minute, respawn (at most) one idle agent that is
   // behind — the "reload to apply" badge applying itself. See autoReloadSweep.
-  const autoReloadTimer = setInterval(() => void autoReloadSweep().catch(() => {}), 30_000);
+  // The install half first: a failed Claude Code self-update on any agent is
+  // installed once, server-side, and the reload sweep then picks it up.
+  const autoReloadTimer = setInterval(() => {
+    void claudeAutoInstallSweep().catch(() => {});
+    void autoReloadSweep().catch(() => {});
+  }, 30_000);
   autoReloadTimer.unref();
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts

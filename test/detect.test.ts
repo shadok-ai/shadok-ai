@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { idleStep, screenShowsWork, inputHasProbe, inputText, boxText, boxRaw, shouldHardClear, describeStuckScreen, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS, typeIntoBox } from "../src/detect.js";
+import { readFileSync } from "node:fs";
+import { idleStep, screenShowsWork, inputHasProbe, inputText, boxText, boxRaw, shouldHardClear, describeStuckScreen, inputBoxVisible, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS, typeIntoBox } from "../src/detect.js";
 
 const idle = [
   "⏺ Done.",
@@ -674,4 +675,116 @@ test("describeStuckScreen: a full input box is named, instead of pointing at the
   // the box shows at rest, which looks exactly like text in a capture.
   assert.equal(describeStuckScreen(screenWith("❯ ")), null);
   assert.equal(describeStuckScreen(screenWith("❯ R4-B: answer with the single word BETA")), null);
+});
+
+// A prompt taller than the pane makes the input box SCROLL: its `❯` line leaves
+// the screen and the top border turns into `─── ↑ N more ───`. Shape captured
+// from a live 100x40 pane (2.1.326); the content is neutral.
+const scrolledBox = (more: number, tail = "  what decides whether the banner shows?") =>
+  [
+    "● Done.",
+    "",
+    "✻ Worked for 4m 45s · done 12:09 AM",
+    "",
+    `─── ↑ ${more} more ${"─".repeat(60)}`,
+    "  [a1b2] nightly import — resolved • [c3d4] report export — resolved",
+    "  ⟦web · 2026-01-01 00:33 · Ada⟧",
+    tail,
+    "─".repeat(80),
+    "  ⏵⏵ auto mode on (shift+tab to cycle)",
+  ].join("\n");
+
+test("boxText: a box scrolled past its ❯ line is not an empty box", () => {
+  const box = boxText(scrolledBox(244));
+  assert.notEqual(box, "");
+  assert.ok(box.includes("what decides whether the banner shows?"));
+  // The status line under the bottom border is not part of it.
+  assert.ok(!box.includes("auto mode"));
+  // Growing or shrinking by a line changes what is read, even when the visible
+  // rows happen to be the same — that is what makes a paste and a Ctrl-U visible.
+  assert.notEqual(boxText(scrolledBox(244)), boxText(scrolledBox(245)));
+});
+
+test("boxText: an earlier ❯ line above a scrolled box is not the box", () => {
+  const screen = "❯ an older prompt still on screen\n● Answer.\n" + scrolledBox(12);
+  assert.ok(!boxText(screen).includes("an older prompt"));
+  assert.ok(boxText(screen).includes("what decides"));
+});
+
+test("boxText: a '↑ N more' in ordinary output does not pass for a box", () => {
+  const screen = ["● Listing", "  ↑ 3 more above", "─── notes ───", "❯ hello", "─".repeat(40)].join("\n");
+  assert.equal(boxText(screen), "hello");
+});
+
+test("describeStuckScreen names a scrolled box as a full one", () => {
+  assert.match(describeStuckScreen(scrolledBox(244)) ?? "", /input box was not empty/);
+});
+
+test("typeIntoBox: a prompt that scrolls the box is seen to land", async () => {
+  // The fake grows a scrolled box by one row per paste — the state in which
+  // every paste used to read as "nothing arrived" and was pasted again.
+  let more = 0;
+  let pastes = 0;
+  const empty = ["● Done.", "", "❯ ", "─".repeat(80), "  ⏵⏵ auto mode on"].join("\n");
+  const pilot = {
+    screen: () => (more === 0 ? empty : scrolledBox(more)),
+    paste: () => { pastes++; more += 30; },
+    clearInput: () => { if (more > 0) more--; },
+    hardClear: () => { more = 0; },
+    waitFor: async (p: (s: string) => boolean) => {
+      if (!p(pilot.screen())) throw new Error("timeout");
+      return pilot.screen();
+    },
+  };
+  const ok = await typeIntoBox(pilot as any, "what decides whether the banner shows?", { prelude: ["chunk one", "chunk two"], appearMs: 10, settleMs: 0, clearMs: 10 });
+  assert.equal(ok, true);
+  assert.equal(pastes, 3, "two prelude chunks and the message, each pasted exactly once");
+});
+
+test("typeIntoBox: a box left FULL by a failed attempt is emptied, not pasted into", async () => {
+  // Where the junk above a message comes from. `survives` compares the box's
+  // first VISIBLE line, and a box taller than the pane has scrolled that line
+  // away — so a leftover reads as an empty box and the message goes out with it
+  // glued on top. Measured on a live pane: 113 hidden rows where a clean box
+  // gives 50. A box the pane cannot hold is the one case where clearing first
+  // is a fact rather than a guess.
+  const st = { more: 50, pastes: 0, clears: 0, hardClears: 0 }; // 50 = the leftover
+  const empty = ["● Done.", "", "❯ ", "─".repeat(80), "  ⏵⏵ auto mode on"].join("\n");
+  const pilot = {
+    screen: () => (st.more === 0 ? empty : scrolledBox(st.more)),
+    paste: () => { st.pastes++; st.more += 30; },
+    clearInput: () => { st.clears++; if (st.more > 0) st.more--; },
+    hardClear: () => { st.hardClears++; st.more = 0; },
+    waitFor: async (p: (s: string) => boolean) => {
+      if (!p(pilot.screen())) throw new Error("timeout");
+      return pilot.screen();
+    },
+  };
+  const ok = await typeIntoBox(pilot as any, "the user's words", {
+    prelude: ["chunk one", "chunk two"],
+    appearMs: 10,
+    settleMs: 0,
+    clearMs: 10,
+  });
+  assert.equal(ok, true);
+  assert.equal(st.hardClears, 1, "ONE Ctrl-C, which is what empties a box that size");
+  assert.ok(st.clears <= 1, `Ctrl-U is not hammered at it (was ${st.clears})`);
+  // Three pastes on a box that was emptied first: the leftover is gone, not
+  // carried along under the message.
+  assert.equal(st.pastes, 3);
+  assert.equal(st.more, 90, "90 = our three pastes; 140 would be the junk still under them");
+});
+
+test("inputBoxVisible: a scrolled box still counts as the TUI being up", () => {
+  // The session start waits on this; keyed on the ❯ alone it timed out on an
+  // agent whose box a failed submit had left full, so it could not be reopened.
+  assert.equal(inputBoxVisible(scrolledBox(244)), true);
+  assert.equal(inputBoxVisible("● Done.\n❯\u00a0\n" + "─".repeat(40)), true);
+  assert.equal(inputBoxVisible("Welcome to Claude Code\n  ↑ 3 more above"), false);
+});
+
+test("the session start waits on inputBoxVisible, not on a bare ❯", () => {
+  const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.ok(!src.includes('scr.includes("❯")'), "a bare ❯ check misses a scrolled input box");
+  assert.ok(src.includes("inputBoxVisible(scr)"));
 });

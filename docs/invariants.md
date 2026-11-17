@@ -389,6 +389,14 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     multi-question recap page is excluded from `settleOn` — right after the Enter
     that confirms it the screen still shows it, and settling there would end the
     wait before the submitted turn even starts.
+    Clearing the key in `finishTurn` has a price: whoever ELSE published the
+    same dialog first gets a duplicate. The watcher did exactly that in the
+    `choose` handler's gap — `busy` is down between the keystroke and
+    `finishTurn`, so answering question 1 of a form showed question 2 twice. A
+    handler that answers a dialog (`choose`, `freetext`, `confirm`) therefore
+    holds `Live.answering` for its whole run, and the watcher stays out while
+    it is up; `freetext` publishes the next question through `publishDialog`,
+    never a raw broadcast the watcher would announce again.
 
 <a id="inv-22"></a>
 
@@ -580,6 +588,17 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     browser's rescue scroll has nothing left to do. Guarded on `(pointer: coarse)`:
     on a desktop `visualViewport` also tracks pinch-zoom, and resizing the page on
     every pinch would be a regression for nobody's benefit.
+    **The keyboard's height is NOT `innerHeight - vv.height`.** That assumes the
+    layout viewport keeps its height when the keyboard opens; a cockpit installed
+    on the Home Screen of a recent iOS shrinks both, so the difference stayed 0:
+    no `kb-up`, the header never folded away, and the composer kept its
+    home-indicator padding above the keyboard as a dead band. It is measured
+    against the tallest visible height seen since the last rotation (`fullH`).
+    And iOS reports the CLOSING height only once the keyboard has finished
+    sliding away, so the chassis stayed keyboard-sized for the whole animation —
+    the composer floating mid-screen, then snapping down. Leaving a text field
+    is the keyboard closing (unless focus moves to another one), so `focusout`
+    restores the full height at once and the real resize lands later and agrees.
     The sideways drift had the same single root cause as the jump, and it is not
     where anyone looks: **Safari zooms into any focused field whose font is under
     16px.** The zoom makes the layout viewport wider than the screen, so the whole
@@ -2445,3 +2464,85 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     knows both, placed where every caller reaches it. A second reader that
     knows one home is not a smaller version of the feature, it is a feature
     that silently does nothing for half its inputs.
+    **It bit a third reader, and that one was a DIAGNOSTIC — which is worse.**
+    The scheduler skill's `schedule.mjs env` answers "what will my guard see?",
+    and it answered it by reading the profile's `secrets` list and diffing
+    against `GET /secrets`. So a secret bound from the vault side reached the
+    guard and was reported absent, and a `*` binding reached a profile-less
+    agent the tool told to expect nothing at all ("guard secrets: NONE — this
+    channel has no profile"). Both are FALSE NEGATIVES on a working setup, and
+    a tool that reports a correct configuration as broken is more expensive than
+    no tool: an agent trusted it over testing the guard, told the operator the
+    credential was missing, and the operator went looking for a fault that did
+    not exist. What settled it was running the guard itself: it printed the
+    variable the tool had just reported absent. (The incident is what surfaced
+    this; the blindness is not inferred from it — a vault-side binding is
+    invisible to that code path by construction, every time.)
+    Two things it could not have got right on its own, and they are the reason
+    the answer now comes from the server. `GET /secrets` **withholds** the
+    `profiles` list from an AGENT for commons secrets (`mainWritable` is false
+    for an agent viewer), so the vault side was not merely unread, it was
+    unavailable. And "is this name resolvable?" depends on the AGENT's group
+    (own → shared-in → commons), which a caller cannot compute from the list of
+    names it happens to see. `GET /crons/env` therefore returns what
+    `cronGuardEnv` — the one builder the real tick uses — would inject: secret
+    names, the names the profile asks for that do NOT resolve, and every
+    variable name in the guard's environment. Names only, never a value, so it
+    is safe for the agent whose guard it is to read.
+
+<a id="inv-78"></a>
+
+74. **The input box is not always where its `❯` is — a box that scrolled reads
+    as empty unless you look for its border.** Every submit check (`boxText`,
+    `boxRaw`, `src/detect.ts`) located the box by its `❯` line. A prompt taller
+    than the pane makes the box scroll: the `❯` line leaves the screen and the
+    top border turns into `─── ↑ 244 more ───`. With no `❯` in sight the box
+    read as EMPTY while holding hundreds of lines, and everything built on
+    that reading went wrong at once: the paste "never appeared", so it was
+    pasted again on top of itself for all six attempts; the clearing step saw
+    nothing to clear; Enter was never pressed.
+    What made it permanent is the recovery. A respawn is the right answer to a
+    wedged TUI, and here the TUI was fine: the fresh process received the same
+    prompt, which scrolled the fresh box exactly as before. And the prompt
+    could only grow — the ledger watermark advances after a submit that LANDS
+    (deliberately, so a failed one does not burn the block), so each retry
+    carried the whole backlog again plus whatever had been recorded since. An
+    agent left idle while its siblings were busy was the one most likely to
+    hit it, and it then looked idle and healthy while refusing every message.
+    `boxRaw` now reads from the scroll border when it sits below the last `❯`
+    (an `❯` further up is then an older line of the conversation), and keeps
+    the border's count in what it returns: the visible rows can be identical
+    before and after a paste or a Ctrl-U, the count cannot.
+    The generalisation: a screen reader keyed on ONE landmark must say what it
+    does when the landmark scrolls away, and "nothing there" is the one answer
+    it may not give by default — absence of the marker is not absence of the
+    thing.
+    The same landmark guarded the DOOR. The session start registered an agent
+    once `screen.includes("❯")`, so a pane left with a scrolled box could not
+    be adopted: opening the agent timed out after a minute and "Reload agent",
+    which goes through the same wait, failed with it. The submit bug made the
+    state, and this made it impossible to leave from the cockpit.
+    `inputBoxVisible` is now the one answer to "is the box on screen", used by
+    all three waits.
+    **And once it is READ, it is also the only signal the screen gives for
+    free: a box the pane cannot hold is text, never furniture.** Everything
+    else that asks "is there something in there" has to tell content from the
+    TUI's own decoration — the resting example, the greyed previous message —
+    and both of those are ONE line. That matters because `survives` (the check
+    that catches a paste landing on top of a leftover) compares the box's first
+    VISIBLE line, and a box this tall has scrolled that line off the top: the
+    leftover of a failed attempt therefore reads as a clean box, and the
+    message goes out with the junk glued above it. Measured on a live pane
+    (2.1.326), pasting an eight-chunk prelude onto an eight-chunk leftover: the
+    paste reported "landed" and the box ended on 113 hidden rows where a clean
+    one gives 50 — the shape a person reads as "it recopied things". So
+    `boxScrolled` is checked BEFORE the first paste of every attempt and the box
+    emptied when it answers yes, which costs nothing on the normal path (a box
+    at rest is one line) and is a fact rather than the guess `survives` has to
+    make.
+    The clearing itself needed the same correction. Ctrl-U clears a VISUAL row,
+    so `MAX_CLEARS` (40) does not reach a box of sixty: measured, 120 presses
+    did not empty an eight-chunk prelude, while ONE Ctrl-C does. The rescue kept
+    for "a box that will not clear" is therefore tried FIRST on a scrolled box
+    instead of after forty presses have spent sixteen seconds of the message's
+    own path getting nowhere.

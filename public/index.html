@@ -326,9 +326,6 @@
   /* Same for the opposite: an agent with scheduled prompts can speak without
      anyone having asked it anything. */
   .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
-  /* A parent/child link exists on this agent (it reports to another, or others
-     report to it). Clicking opens the tab menu, where the link can be cut. */
-  .tab .link { font-size: 9px; opacity: 0.75; flex: 0 0 auto; cursor: pointer; }
   /* Background shells the agent left running. Last of the row on purpose: it is
      the most transient thing a tab says, so it must not shift the icons that sit
      still. It TURNS because a stopped hourglass and a running one look the same,
@@ -541,6 +538,16 @@
      Hidden entirely when nothing overflowed. */
   .mm-tools { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--line); }
   .mm-tools:empty { display: none; }
+  /* An agent-bar icon with no room on a phone: it lives in the agent ⋯ menu
+     instead (reflowChanBar, bar-overflow.js). */
+  #chanBar .chan-actions .bar-ovf { display: none !important; }
+  /* A badge-carrying header icon (Security, Reports) pushed into ⋯ for lack of
+     room: its badge must still be seen, so ⋯ wears a dot. */
+  .more-wrap:has(#overflowTools .sec-badge:not([hidden])) #moreBtn { position: relative; }
+  .more-wrap:has(#overflowTools .sec-badge:not([hidden])) #moreBtn::after {
+    content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--err);
+  }
   #moreMenu .mm-tools button { width: auto; }  /* override #moreMenu button width:100% */
   #moreMenu .mm-sep { height: 1px; background: var(--line); margin: 4px 2px; }
   #moreMenu .mm-label { padding: 2px 4px; font-size: 12px; font-weight: 500; color: var(--text-dim); }
@@ -626,6 +633,10 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* The status icons, pushed to the right of row 2 (under the ✕). */
+  .tab-row2 .tab-icons { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; align-self: center; }
+  .tab-row2 .tab-icons + .ctxnum { margin-left: 0; }
+  .tab-row2 .tab-icons [hidden] { display: none; }
   /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
      glance lands (paintGlance) — a quick cascade top to bottom instead of one
      late burst. --gi is the row's rank, capped so the tail never drags. */
@@ -841,6 +852,20 @@
   .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 12px; padding-left: 6px; border-left: 1px solid var(--line); }
   .agent-folder.folded > .folder-body { display: none; }
   body.dragging-tab .folder-body:empty { min-height: 22px; border: 1px dashed var(--line); border-radius: 4px; }
+  /* Agent families: the agents a parent launched sit indented under it. DERIVED
+     from the parent link on every layout, never stored — so nothing here can be
+     dragged into being; the tab menu's "Report to…" is what changes it. */
+  .kin-body { display: flex; flex-direction: column; gap: 2px; margin-left: 10px; padding-left: 5px; border-left: 1px solid var(--line); }
+  .kin-body.folded { display: none; }
+  /* The fold toggle on a parent's tab: caret + how many agents sit under it.
+     Folded, it carries the mood of what it hides (same three as a folder). */
+  .tab .kin { flex: 0 0 auto; cursor: pointer; font-size: 10px; line-height: 1; padding: 1px 4px; border-radius: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .tab .kin:hover { color: var(--amber); background: var(--amber-soft); }
+  .tab .kin.needs-answer { background: color-mix(in srgb, var(--amber) 28%, transparent); color: var(--text); font-weight: 700; animation: breathe 1.2s ease-in-out infinite; }
+  .tab .kin.unread { color: var(--phosphor); font-weight: 700; }
+  .tab .kin.working { animation: breathe 1.8s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .tab .kin { animation: none !important; } }
+  .tab.kin-holds-active { box-shadow: inset 0 0 0 1px var(--line); }
   /* While dragging a tab, empty drop zones become visible targets. */
   body.dragging-tab #ungrouped:empty,
   body.dragging-tab .group-body:empty {
@@ -2057,6 +2082,10 @@
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
     #chanBar .gauge .label { display: none; }   /* values only, more compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
+    /* The status word ("idle", "working") never yields to the name: squeezed, it
+       read as a bare "…". The agent's name is the elastic item, and when it gets
+       too short reflowChanBar moves icons into the ⋯ menu instead. */
+    #chanBar .gauge:has(#state) { flex-shrink: 0; }
     /* One header row: brand + dials + ⋯. reflowHeaderTools (JS) moves ALL tool
        icons into the ⋯ menu, and `nowrap` makes the brand — the one elastic item
        — ABSORB the squeeze instead of shoving a dial onto a second line. Before
@@ -2095,6 +2124,9 @@
        and it costs a good third of the conversation still visible; it comes back
        the moment the keyboard closes. */
     body.kb-up header { display: none; }
+    /* The keyboard covers the home indicator: the safe-area padding that keeps
+       the field clear of it would only leave a dead band above the keyboard. */
+    body.kb-up #composer { padding-bottom: 8px; }
   }
   /* iOS Safari ZOOMS INTO any focused field whose font is under 16px. That zoom is
      the single cause of two symptoms that look unrelated: the layout viewport
@@ -2333,6 +2365,14 @@
   /* Above the other popins: during the tour it is the thing being interacted
      with, and the sign-in card may already be on screen behind it. */
   #tourOverlay { z-index: 60; }
+  /* The tour's example scene (tourDemoOn). The rows borrow `.tab` for their
+     look and nothing else; the note stays on screen for the whole tour. */
+  #tourDemoList .tab { cursor: default; }
+  #tourDemoList .tab .lastat, #tourDemoChat .tour-demo-note { font-style: italic; }
+  #tourDemoChat .tour-demo-note {
+    align-self: center; margin: 4px 0 14px; padding: 6px 12px; border-radius: 999px;
+    font-size: 12px; color: var(--text-dim); background: var(--bg-inset); text-align: center;
+  }
   #tourBubble {
     max-width: 340px;
     background: var(--bg-raised);
@@ -2353,8 +2393,8 @@
     position: fixed;
     border-radius: 10px;
     box-shadow: 0 0 0 9999px rgba(8, 9, 13, 0.72);
-    /* Clicks in the hole fall through to the overlay, which ends the tour —
-       the same "click outside" gesture as everywhere else. */
+    /* Clicks in the hole fall through to the overlay, which swallows them: the
+       tour ends on Skip, Done or Escape, never on a click that missed. */
     pointer-events: none;
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
@@ -3220,7 +3260,27 @@
     background-color: color-mix(in srgb, var(--text) 7%, transparent);
     box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
   }
-  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  /* Light mode: the selection is a SHAPE, not a fill. It used to be a white pill
+     with a soft shadow on a white card — white on white, so the agent you were
+     on was the quietest row of the list, quieter than a working (tinted) or
+     unread one. An accent bar, a hairline edge and a real lift mark it without
+     taking the fill, which stays free to carry the state: a selected agent that
+     is working still shows its tint (the `.working.active` rule below wins the
+     background, and this shadow rides on top of it). */
+  :root[data-mode="light"] .tab.active {
+    background-color: var(--bg-raised);
+    box-shadow: inset 4px 0 0 var(--amber), 0 6px 18px -8px rgba(30, 30, 60, .35), 0 0 0 1px rgba(0, 0, 0, .06);
+  }
+  :root[data-mode="light"] .tab.active .name { font-weight: 700; }
+  /* The case that matters most is the agent you are WATCHING work — and
+     `breathe` fades the whole row to 35% opacity, bar, name and avatar with it,
+     so the mark above washed out exactly then. For that one row the fill
+     breathes instead of the row: same pulse, and what says "you are here"
+     stays solid. */
+  @keyframes breathe-fill { 50% { background-color: var(--bg-raised); } }
+  @media (prefers-reduced-motion: no-preference) {
+    :root[data-mode="light"] .tab.working.active { animation-name: breathe-fill; }
+  }
   .tab.unread { border-radius: 12px; }
   .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
   .rail-item.active { border-color: transparent; }
@@ -3233,6 +3293,30 @@
 
   /* Channel header melts into the conversation instead of a ruled band. */
   #chanBar { background: transparent; border-bottom: 0; }
+  /* Frosted glass: the header floats OVER the conversation, which scrolls
+     underneath and shows through, blurred. The bar stays in the flow and pulls
+     what follows up under itself by its own height (--chanbar-h, measured in JS
+     since the bar wraps on a phone); the transcript gives that height back as
+     top padding, so the first message still starts below the bar. Only where
+     the blur exists: without it a see-through bar is just unreadable text over
+     text, so those browsers keep the plain header. */
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    #chanBar {
+      position: relative; z-index: 6;
+      margin-bottom: calc(-1 * var(--chanbar-h, 0px));
+      background: color-mix(in srgb, var(--pane-main, var(--bg)) 58%, transparent);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent), 0 8px 20px -16px rgba(0, 0, 0, 0.45);
+    }
+    .transcript { padding-top: calc(22px + var(--chanbar-h, 0px)); scroll-padding-top: var(--chanbar-h, 0px); }
+    /* The engine room is not a conversation: nothing gives the height back
+       there, so the bar must not overlap it — its first rows would sit under
+       the glass. */
+    .chat-pane.terminal-mode #chanBar { margin-bottom: 0; }
+    @media (max-width: 640px) { .transcript { padding-top: calc(14px + var(--chanbar-h, 0px)); } }
+  }
 
   /* Messages: rounder bubbles with a tail corner; yours carry the accent. */
   .bubble { border-radius: 18px; }
@@ -3277,14 +3361,39 @@
      the rail, the agents column and the engine room, so a wide window can still
      hold a narrow composer. */
   #composer { container: composer / inline-size; }
+  /* The "+" and its menu exist only for the narrow composer below. */
+  #cmpPlus, .cmp-plus-menu { display: none; }
+  #sendBtn .send-ico { display: none; }
   @container composer (max-width: 560px) {
+    /* ONE row on a phone: + · field · mic · ↑. It used to be two (the field on
+       its own row, five buttons beneath), which spent a whole extra row of a
+       small screen on buttons. Folding the paperclip and the skill button behind
+       "+" and reducing Send to an arrow leaves the field ~220px at 390px — the
+       old one-row layout had ~110px, which is why it was split. */
+    #composer { gap: 6px; align-items: flex-end; }
     #composer .cmp-mic-msg { order: -3; }
     #composer .cmp-atts { order: -2; }
-    #composer textarea { order: -1; flex-basis: 100%; }
-    #composer .cmp-mic { margin-left: auto; }
-    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
-    #composer .cmp-attach { width: 38px; }
+    #composer #attachBtn, #composer #skillBtn { display: none; }
+    #composer #cmpPlus { display: inline-flex; }
+    #composer .cmp-plus-menu:not([hidden]) { display: flex; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 42px; }
+    #composer .cmp-attach { width: 42px; }
+    #composer .cmp-mic { border-radius: 21px; }  /* round like + and ↑; a pill while the timer shows */
+    #composer #sendBtn { width: 42px; min-width: 42px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; align-self: flex-end; }
+    #composer #sendBtn .send-txt { display: none; }
+    #composer #sendBtn .send-ico { display: block; }
   }
+  .cmp-plus-menu {
+    position: absolute; left: 12px; bottom: 100%; z-index: 30; margin-bottom: 6px;
+    flex-direction: column; gap: 2px; padding: 4px; min-width: 190px;
+    background: var(--bg-raised); border-radius: 14px;
+    box-shadow: 0 22px 50px -18px rgba(0, 0, 0, .6), 0 0 0 1px var(--line);
+  }
+  .cmp-plus-menu button { text-align: left; border: 0; background: transparent; color: var(--text); padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 15px; }
+  .cmp-plus-menu button:hover:not(:disabled) { background: var(--amber-soft); }
+  .cmp-plus-menu button:disabled { opacity: 0.45; }
+  /* A room has no skills: the skill button is hidden there, so is its twin. */
+  body.room-active #cmpPlusSkill { display: none; }
 
   /* Floating menus: lifted, not outlined. */
   #moreMenu, #tabMenu, #verMenu, .slash-menu {
@@ -3375,6 +3484,16 @@
      stays the ABSENCE of the attribute, which every `:not([data-mode="light"])`
      rule relies on — only the default this script picks has flipped. -->
 <script nonce="__CSP_NONCE__">
+  // A shared link to an agent is `/a/<id>#msg=<uuid>` — the id in the PATH so
+  // the server can name the agent in the link preview. Every deep-link path of
+  // this page reads the HASH (`#agent=<id>&msg=…`), so put it back there before
+  // anything parses it, and leave the address bar on `/`.
+  (function () {
+    var m = /^\/a\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(location.pathname);
+    if (!m) return;
+    var msg = /(?:^#|&)msg=([0-9a-f-]{36})(?:&|$)/i.exec(location.hash);
+    history.replaceState(history.state, "", "/#agent=" + m[1].toLowerCase() + (msg ? "&msg=" + msg[1].toLowerCase() : ""));
+  })();
   try {
     if (localStorage.getItem("cp.mode") === "dark") document.documentElement.removeAttribute("data-mode");
     else document.documentElement.setAttribute("data-mode", "light");
@@ -3456,7 +3575,7 @@
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
       <button id="instanceStatsBtn">📊 Instance stats</button>
-      <button id="tourReplay">Guided tour</button>
+      <button id="tourReplay">Replay the guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
       <button id="starMenuItem">★ Star on GitHub</button>
@@ -4485,6 +4604,16 @@
       <div id="composerAtts" class="cmp-atts" hidden></div>
       <!-- Transient status for the dictate button (permission, nothing heard…). -->
       <div id="micMsg" class="cmp-mic-msg" role="status" aria-live="polite" hidden></div>
+      <!-- A narrow composer (a phone) keeps ONE row: the paperclip and the skill
+           button fold behind this "+", which opens a two-item menu that clicks
+           the real buttons (so their handlers and disabled state still apply). -->
+      <button type="button" id="cmpPlus" class="cmp-attach" title="Attach a file or add a skill" aria-label="More" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div id="cmpPlusMenu" class="cmp-plus-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-for="attachBtn">📎 Attach a file</button>
+        <button type="button" role="menuitem" data-for="skillBtn" id="cmpPlusSkill">✨ Add a skill</button>
+      </div>
       <!-- Pick a file to send: the same path as a paste or a drop (attachFile). -->
       <button type="button" id="attachBtn" class="cmp-attach" title="Attach a file" aria-label="Attach a file">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -4505,7 +4634,7 @@
         <svg class="mic-rec" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
         <span class="mic-time" aria-hidden="true"></span>
       </button>
-      <button type="submit" class="primary" id="sendBtn">Send</button>
+      <button type="submit" class="primary" id="sendBtn" aria-label="Send"><span class="send-txt">Send</span><svg class="send-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </form>
 
     <!-- Interactive terminal, per channel, filling the main area (toggled by ⌨️
@@ -4629,9 +4758,10 @@
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers, secretDeleteConfirmText } from "/profile-card.js?v=__ASSET_V__";
   import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick, secretReceivers, plusReloadPlan } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
+  import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
-  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
+  import { TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
   import { EFFORT_CHOICES, effortLabel } from "/effort-choice.js?v=__ASSET_V__";
@@ -4668,6 +4798,10 @@
   window.folderChildren = folderChildren;
   window.effectiveFolder = effectiveFolder;
   window.removeFolder = removeFolder;
+  import { familyParents, familyChildren, familyDescendants } from "/agent-family.js?v=__ASSET_V__";
+  window.familyParents = familyParents;
+  window.familyChildren = familyChildren;
+  window.familyDescendants = familyDescendants;
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
   import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
@@ -4720,6 +4854,9 @@
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
   window.visibleSteps = visibleSteps;
+  window.tourStanding = tourStanding;
+  window.TOUR_DEMO = TOUR_DEMO;
+  window.tourNeedsDemo = tourNeedsDemo;
   window.extractLiveText = extractLiveText;
   window.livePreviewDecision = livePreviewDecision;
   window.profileBlurb = profileBlurb;
@@ -4727,6 +4864,12 @@
   window.defaultAgentName = defaultAgentName;
   window.secretUsers = secretUsers;
   window.secretDeleteConfirmText = secretDeleteConfirmText;
+  window.shrinkToFit = shrinkToFit;
+  window.nameReads = nameReads;
+  window.chanOverflowIds = chanOverflowIds;
+  window.chanOverflowItems = chanOverflowItems;
+  // The module is deferred: the first reflow ran on the stubs, so run it again.
+  window.scheduleBarReflow?.();
   window.secretsPanelMode = secretsPanelMode;
   window.secretSections = secretSections;
   window.panelGroupOptions = panelGroupOptions;
@@ -4887,6 +5030,11 @@
     profileSaveBody: (form) => ({ ...form }),
     secretUsers: () => [],
     secretDeleteConfirmText: (name) => "Remove the secret " + name + " from the vault?",
+    // Before the module lands: hide nothing, report "fits" — the bars keep their icons.
+    shrinkToFit: () => 0,
+    nameReads: () => true,
+    chanOverflowIds: () => [],
+    chanOverflowItems: () => [],
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
     secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
@@ -4916,6 +5064,9 @@
     bubblePlacement: () => null,
     unionRect: () => null,
     visibleSteps: (steps) => steps ?? [],
+    tourStanding: () => ({ step: null, index: 0, total: 0 }),
+    // No bridge, no set: an example scene must never be staged on a guess.
+    tourNeedsDemo: () => false,
     // The viewer is opened by a click, so the module is long since loaded —
     // but a stub is still the rule (invariant 10), and the honest one here
     // shows the table UNFILTERED rather than an empty panel that reads as
@@ -5001,6 +5152,10 @@
     folderChildren: () => () => [],
     effectiveFolder: () => null,
     removeFolder: (folders) => ({ folders, refile: new Map() }),
+    // Families before the module lands: a flat column, every agent a root.
+    familyParents: () => new Map(),
+    familyChildren: () => () => [],
+    familyDescendants: () => [],
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
@@ -5092,7 +5247,9 @@
   // synchronously, then `prefAppliers[key]` re-applies the server's value once
   // it lands. A key the server has never seen but this browser has is pushed
   // up once, so a person's existing choice becomes their account's instead of
-  // being reset by the first device that asks.
+  // being reset by the first device that asks — EXCEPT "tour seen", which is
+  // only pushed from a copy known to be this account's (public/pref-sync.js):
+  // inherited from the browser, it hid the tour from every later account.
   const PREF_CACHE = {
     mode:       { key: "cp.mode",         enc: (v) => v,               dec: (s) => (s === "light" || s === "dark" ? s : undefined) },
     soundMuted: { key: "cp.muteNotif",    enc: (v) => (v ? "1" : "0"), dec: (s) => (s === "1" ? true : s === "0" ? false : undefined) },
@@ -5118,26 +5275,39 @@
   // Started at once and awaited only by what must not act on a stale cache (the
   // tour). Bounded: a server that does not answer must not hold the page — the
   // cache is then what we go by, exactly as before this existed.
+  // Whose preferences the localStorage copy holds. localStorage is the
+  // BROWSER's; the preferences are an ACCOUNT's — and several accounts pass
+  // through one browser (public/pref-sync.js).
+  const PREFS_OWNER_KEY = "cp.prefsOwner";
   const prefsReady = (async () => {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 3000);
     try {
-      const r = await fetch("/prefs", { signal: ctl.signal });
+      const [r, who, mod] = await Promise.all([
+        fetch("/prefs", { signal: ctl.signal }),
+        fetch("/me", { signal: ctl.signal }).then((x) => (x.ok ? x.json() : null)).catch(() => null),
+        import("/pref-sync.js?v=__ASSET_V__"),
+      ]);
       if (!r.ok) return; // an agent/peer view or logged out: keep the cache
       const server = await r.json();
-      const push = {};
-      for (const name of Object.keys(PREF_CACHE)) {
-        const local = cachedPref(name);
-        if (server[name] !== undefined) {
-          if (server[name] !== local) {
-            cachePref(name, server[name]);
-            try { prefAppliers[name]?.(server[name]); } catch { /* one bad applier must not stop the rest */ }
-          }
-        } else if (local !== undefined) {
-          push[name] = local;
+      const owner = who && typeof who.name === "string" ? who.name : null;
+      let cacheOwner = null;
+      try { cacheOwner = localStorage.getItem(PREFS_OWNER_KEY); } catch { /* private mode */ }
+      const names = Object.keys(PREF_CACHE);
+      const local = {};
+      for (const name of names) { const v = cachedPref(name); if (v !== undefined) local[name] = v; }
+      const plan = mod.prefSyncPlan({ names, owner, cacheOwner, server, local });
+      for (const [name, value] of Object.entries(plan.cache)) {
+        if (value === null) {
+          // Someone else's "I did this" (the tour): not this account's to keep.
+          try { localStorage.removeItem(PREF_CACHE[name].key); } catch { /* private mode */ }
+          continue;
         }
+        cachePref(name, value);
+        try { prefAppliers[name]?.(value); } catch { /* one bad applier must not stop the rest */ }
       }
-      if (Object.keys(push).length) putPrefs(push);
+      if (owner != null) { try { localStorage.setItem(PREFS_OWNER_KEY, owner); } catch { /* private mode */ } }
+      if (Object.keys(plan.push).length) putPrefs(plan.push);
     } catch { /* timeout or offline: the cache stands */ }
     finally { clearTimeout(timer); }
   })();
@@ -5166,6 +5336,11 @@
   // One channel = one WebSocket connection = one claude session server-side
   // (sessions are shared: several clients can attach to the same id).
   let tabs = [];
+  // True while the guided tour stages its example scene (tourDemoOn, far
+  // below). Declared HERE because applyView / renderRail / refreshChrome read
+  // it from the first paint on: beside its functions it would still be in its
+  // temporal dead zone, and the boot would throw.
+  let tourDemo = false;
   let active = null;
   let seq = 0;
   // The server's launch directory — the sensible default for new channels.
@@ -5428,21 +5603,21 @@
     update.className = "update";
     update.hidden = true;
     update.addEventListener("click", (e) => { e.stopPropagation(); handleClaudeUpdate(tab); });
-    // Parent/child link indicator. Shown when this agent reports to another OR
-    // others report to it; clicking opens the tab menu, where either link can be
-    // cut (both the child-side "Detach from…" and the parent-side children list).
-    const link = document.createElement("span");
-    link.className = "link";
-    link.hidden = true;
-    link.textContent = "🔗";
-    link.addEventListener("click", (e) => {
+    // Fold toggle for the agents this one launched (drawn indented under it).
+    // Hidden until it has any; painted by paintKin.
+    const kin = document.createElement("span");
+    kin.className = "kin";
+    kin.hidden = true;
+    kin.addEventListener("click", (e) => {
       e.stopPropagation();
-      const r = link.getBoundingClientRect();
-      openTabMenu(tab, r.left, r.bottom + 4);
+      if (!tab.sessionId) return;
+      if (!foldedKin.delete(tab.sessionId)) foldedKin.add(tab.sessionId);
+      saveFoldedKin();
+      paintKin();
     });
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
-    // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
-    // left, context % hard right (no longer hidden behind the icons).
+    // Two rows: row 1 = name + timer + ✕; row 2 FULL WIDTH = "xxx ago" on the
+    // left, the status icons and the context % on the right.
     // Teams-style avatar: initials on a colour derived from the name, with the
     // state LED riding its corner as a presence dot. Follows renames.
     const avatar = document.createElement("span");
@@ -5454,10 +5629,15 @@
     paintAvatar();
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(name, timer, mute, cron, tg, shells, monitors, update, link, close);
+    // Row 1 keeps the name, the running timer and the ✕; every status icon sits
+    // on row 2, so a long name is no longer truncated to make room for them.
+    row1.append(name, timer, close);
+    const icons = document.createElement("span");
+    icons.className = "tab-icons";
+    icons.append(mute, cron, tg, shells, monitors, update, kin);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
-    row2.append(lastAt, ctxNum);
+    row2.append(lastAt, icons, ctxNum);
     btn.append(avatar, row1, row2);
     // Context-window usage no longer paints on the tab — it lives in the agent
     // menu now (tm-ctxbar), kept as `tab.contextPct` and read when the menu opens.
@@ -5486,7 +5666,7 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link,
+      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, kinEl: kin,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -5994,26 +6174,6 @@
   }
 
   /**
-   * Light the 🔗 on a tab when it has a parent OR any children, and say which in
-   * the tooltip. A parent change moves the badge on BOTH ends (the child gains a
-   * parent, the parent gains a child), so callers refresh every tab — cheap, and
-   * it never leaves one side stale.
-   */
-  function refreshLinkBadge(tab) {
-    if (!tab.linkEl) return;
-    const kids = childTabsOf(tab);
-    const hasParent = !!tab.parent;
-    tab.linkEl.hidden = !hasParent && kids.length === 0;
-    const bits = [];
-    if (hasParent) bits.push("Reports to " + parentLabel(tab.parent));
-    if (kids.length) bits.push(kids.length + (kids.length > 1 ? " agents report here" : " agent reports here"));
-    tab.linkEl.title = bits.join(" · ");
-  }
-  function refreshAllLinkBadges() {
-    for (const t of tabs) refreshLinkBadge(t);
-  }
-
-  /**
    * Second page of the tab menu: which agent this one reports to.
    *
    * Candidates are NOT filtered here. Deciding what is a legal link (cycles,
@@ -6101,7 +6261,7 @@
     } catch { return ""; }
   }
 
-  function openTabMenu(tab, x, y) {
+  function openTabMenu(tab, x, y, extra = []) {
     tabMenu.replaceChildren();
     if (tab.roomId) return openRoomMenu(tab, x, y);
     // Header: WHO this agent is. The profile is what qualifies it (role,
@@ -6160,6 +6320,7 @@
     }
     tabMenu.appendChild(head);
     const items = [
+      ...extra,
       [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications",
        () => setMuted(tab, !tab.muted)],
       ["↻ Reload agent", () => reloadTab(tab)],
@@ -6503,6 +6664,10 @@
   // directory), so it survives a wiped browser, another device or a reboot.
   let channelPushTimer = null;
   let restoring = true; // suppress pushes until the initial restore is done
+  // Resolved once the boot restore has painted its tabs (or found none) — what
+  // the guided tour waits for before counting its steps.
+  let markBootSettled = () => {};
+  const bootSettled = new Promise((r) => { markBootSettled = r; });
   // Set once the server on this origin turns out to be a DIFFERENT instance than
   // the one this page was loaded from (its port was taken over after a stop).
   // From then on the tab must not write — it would only poison the new
@@ -6658,6 +6823,14 @@
   function saveFolded() {
     try { localStorage.setItem(FOLD_KEY(), JSON.stringify([...foldedFolders])); } catch {}
   }
+  // Families fold the same way: this browser's choice, keyed by the PARENT's
+  // session id (the tree itself is derived and has no id of its own).
+  const KIN_FOLD_KEY = () => dirKey("cp.kinCollapsed", instanceKey);
+  let foldedKin = new Set();
+  try { foldedKin = new Set(JSON.parse(localStorage.getItem(KIN_FOLD_KEY()) || "[]")); } catch { foldedKin = new Set(); }
+  function saveFoldedKin() {
+    try { localStorage.setItem(KIN_FOLD_KEY(), JSON.stringify([...foldedKin])); } catch {}
+  }
   // A local edit not yet confirmed by the server: a poll in between must not
   // put the old tree back under the user's hands.
   let folderPushTimer = null;
@@ -6788,29 +6961,56 @@
       folderEls.delete(id);
     }
     paintFolderHeads();
+    paintKin();
   }
   function layoutScope(key, scope) {
     if (scope.querySelector("input.rename")) return; // a re-nest would eat the typing
-    const own = folders.some((f) => (f.group ?? null) === key);
-    if (!own && !scope.querySelector(".agent-folder")) return;
     const kids = window.folderChildren(folders, key);
     const tabEls = [...scope.querySelectorAll(".tab")];
     const place = (b) => window.effectiveFolder(folders, b._tab?.folder ?? null, key);
+    // Families nest INSIDE a level: a child sits under its parent only when both
+    // were filed in the same place (public/agent-family.js) — the tree is
+    // derived, so it must never pull an agent out of the folder it was put in.
+    const sid = (b) => b._tab?.sessionId ?? null;
+    const items = tabEls.map((b) => ({ id: sid(b), parent: b._tab?.parent ?? null, slot: place(b) }));
+    const shown = window.familyParents(items);
+    const own = folders.some((f) => (f.group ?? null) === key);
+    if (!own && !shown.size && !scope.querySelector(".agent-folder, .kin-body")) return;
+    const kidIds = window.familyChildren(items, shown);
+    const elBySid = new Map(tabEls.filter(sid).map((b) => [String(sid(b)), b]));
+    const isRoot = (b) => !sid(b) || !shown.has(String(sid(b)));
+    const kidEls = (b) => (sid(b) ? kidIds(sid(b)).map((id) => elBySid.get(id)).filter(Boolean) : []);
+    const tabSig = (b) => {
+      const k = kidEls(b);
+      return "t" + (b._tab?.id ?? "") + (k.length ? ",[" + k.map(tabSig).join(",") + "]" : "");
+    };
     const desired = (parent) =>
       [...kids(parent).map((f) => "f" + f.id + "(" + desired(f.id) + ")"),
-       ...tabEls.filter((b) => place(b) === parent).map((b) => "t" + (b._tab?.id ?? ""))].join(",");
+       ...tabEls.filter((b) => place(b) === parent && isRoot(b)).map(tabSig)].join(",");
     const actual = (box) =>
       [...box.children].map((ch) =>
         ch.classList.contains("agent-folder") ? "f" + ch.dataset.folder + "(" + actual(ch._folderBody) + ")"
+          : ch.classList.contains("kin-body") ? "[" + actual(ch) + "]"
           : ch.classList.contains("tab") ? "t" + (ch._tab?.id ?? "") : "?").join(",");
     if (desired(null) === actual(scope)) return;
+    // One body per parent, kept on its tab across layouts.
+    const usedKin = new Set();
+    const putTab = (box, b) => {
+      box.appendChild(b);
+      const k = kidEls(b);
+      if (!k.length) return;
+      const body = b._tab.kinBodyEl || (b._tab.kinBodyEl = Object.assign(document.createElement("div"), { className: "kin-body" }));
+      usedKin.add(body);
+      box.appendChild(body);
+      for (const c of k) putTab(body, c);
+    };
     const build = (box, parent) => {
       for (const f of kids(parent)) {
         const rec = folderEl(f);
         box.appendChild(rec.el);
         build(rec.body, f.id);
       }
-      for (const b of tabEls) if (place(b) === parent) box.appendChild(b);
+      for (const b of tabEls) if (place(b) === parent && isRoot(b)) putTab(box, b);
     };
     const keep = new Set();
     const mark = (parent) => { for (const f of kids(parent)) { keep.add(f.id); mark(f.id); } };
@@ -6819,6 +7019,30 @@
     // A folder of another group that ended up here (its group was dissolved):
     // it is empty by now, every tab having been placed above.
     for (const el of [...scope.querySelectorAll(".agent-folder")]) if (!keep.has(el.dataset.folder)) el.remove();
+    // Same for a family body whose parent closed or lost its last child.
+    for (const el of [...scope.querySelectorAll(".kin-body")]) if (!usedKin.has(el)) el.remove();
+  }
+
+  /** The fold toggle of every parent: caret + count, and — folded — the mood of
+   *  the agents it hides. Guarded writes, for the same reason as the folders'. */
+  function paintKin() {
+    for (const t of tabs) {
+      if (!t.kinEl) continue;
+      const body = t.kinBodyEl;
+      const inside = body && body.isConnected ? [...body.querySelectorAll(".tab")] : [];
+      const folded = inside.length > 0 && foldedKin.has(t.sessionId);
+      if (body) body.classList.toggle("folded", folded);
+      if (t.kinEl.hidden !== !inside.length) t.kinEl.hidden = !inside.length;
+      const label = inside.length ? (folded ? "▸" : "▾") + inside.length : "";
+      if (t.kinEl.textContent !== label) t.kinEl.textContent = label;
+      const title = inside.length
+        ? (folded ? "Show" : "Hide") + " the " + inside.length + (inside.length > 1 ? " agents" : " agent") + " under this one"
+        : "";
+      if (t.kinEl.title !== title) t.kinEl.title = title;
+      const mood = folded ? window.groupMood(inside.map((b) => b._tab).filter(Boolean).map(moodOf)) : null;
+      for (const m of ["needs-answer", "unread", "working"]) t.kinEl.classList.toggle(m, m === mood);
+      t.btnEl.classList.toggle("kin-holds-active", folded && inside.some((b) => b.classList.contains("active")));
+    }
   }
 
   /** Count, fold caret, icon and mood of every folder header. Guarded writes:
@@ -7225,7 +7449,7 @@
   function applyView() {
     const v = currentView();
     // No group → no column (invariant: the rail earns its space, see the CSS).
-    document.body.classList.toggle("has-groups", groups.length > 0);
+    document.body.classList.toggle("has-groups", groups.length > 0 || tourDemo);
     tabbar.dataset.view = v;
     layoutFolders();
     for (const g of groups) {
@@ -7439,6 +7663,15 @@
   // Collapsing the rail, resizing the window, or a group renamed to a longer
   // name moves the rows: follow without gliding.
   if (window.ResizeObserver) new ResizeObserver(() => placeRailPill({ animate: false })).observe(railList);
+  // The glass header overlaps the conversation by its own height (see the CSS
+  // of #chanBar): publish that height, 0 while the bar is hidden. Measured, not
+  // assumed — the bar wraps on a narrow screen and its height follows.
+  {
+    const bar = $("chanBar"), pane = bar.closest(".chat-pane");
+    const publish = () => pane.style.setProperty("--chanbar-h", (bar.hidden ? 0 : bar.offsetHeight) + "px");
+    if (window.ResizeObserver) new ResizeObserver(publish).observe(bar);
+    publish();
+  }
 
   let railFrame = 0;
   let railSig = "";
@@ -7450,6 +7683,11 @@
       { view: "ungrouped", icon: "📥", name: "Main" },
       ...[...groupsEl.children].map((el) =>
         ({ view: String(el._group.id), icon: el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
+      // The guided tour's set (tourDemoOn): example groups, only when there is
+      // none of your own. No `group` behind them, so nothing to rename or drag.
+      ...(tourDemo && !groupsEl.children.length
+        ? window.TOUR_DEMO.groups.map((g, i) => ({ view: "tour-demo-" + i, icon: g.icon, name: g.name }))
+        : []),
     ];
     // The column mutates all the time (LEDs, timers, reconnects): rebuild only
     // when what the rail SHOWS changed, or every click would land on an item
@@ -7864,9 +8102,10 @@
       }
     }
     lastChannelIds = current;
-    // Parents are re-applied above from the registry; refresh every 🔗 once the
-    // pass has settled, so a link made on another device lights up here too.
-    refreshAllLinkBadges();
+    // Parents are re-applied above from the registry; re-nest once the pass has
+    // settled, so a link made on another device redraws the tree here too. A
+    // changed `parent` is not a DOM mutation, so nothing else would trigger it.
+    layoutFolders();
   }
 
   // Is the server currently starting this instance's lead agent? Never inferred
@@ -8500,6 +8739,15 @@
   function rebuildChanSelect() {
     const led = $("pickerLed"), name = $("pickerName");
     if (!led || !name) return;
+    // The guided tour's set stands in for the agent that is not there yet.
+    // Here, not only in paintTourDemoChrome: this function has other callers,
+    // and each one wrote the "—" back over the example's name.
+    if (tourDemo && !active) {
+      const lead = window.TOUR_DEMO.agents.find((a) => a.active) || window.TOUR_DEMO.agents[0];
+      led.className = "led on";
+      name.textContent = lead.name;
+      return;
+    }
     led.className = active && active.ledEl ? active.ledEl.className : "led";
     name.textContent = active ? (active.nameEl ? active.nameEl.textContent : "agent " + active.id) : "—";
   }
@@ -8531,6 +8779,11 @@
   function refreshChrome() {
     rebuildChanSelect();   // keeps the mobile selector in step (list + active)
     const t = active;
+    // The guided tour's set: a real agent on screen strikes it; with none, the
+    // set IS the chrome, and this function must not paint "no agent" over it
+    // (the first-agent poll calls it every few seconds).
+    if (tourDemo && t) tourDemoOff({ repaint: false });
+    if (tourDemo) { paintTourDemoChrome(); return; }
     if (!t) {
       document.body.classList.remove("room-active");
       $("led").className = "led ";
@@ -11309,7 +11562,7 @@
         // Broadcast to every client, like `profile`: attaching from one tab
         // must update the others without a reload.
         t.parent = msg.parent;
-        refreshAllLinkBadges();   // moves the 🔗 on both ends of the link
+        layoutFolders();   // the tree is derived from this link: redraw it now
         break;
       case "tokens":
         t.tokens = msg.tokens;
@@ -12603,6 +12856,27 @@
       composer.requestSubmit();
     }
   });
+  // The phone "+": opens Attach / Add a skill, each clicking the real button.
+  // Disabled mirrors the real button at open time (no agent, upload running…).
+  {
+    const plus = $("cmpPlus"), menu = $("cmpPlusMenu");
+    const close = () => { menu.hidden = true; plus.setAttribute("aria-expanded", "false"); };
+    plus.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!menu.hidden) return close();
+      for (const b of menu.querySelectorAll("button[data-for]")) b.disabled = !!$(b.dataset.for)?.disabled;
+      menu.hidden = false;
+      plus.setAttribute("aria-expanded", "true");
+    });
+    menu.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-for]");
+      if (!b || b.disabled) return;
+      e.stopPropagation(); // the skill menu opens on this click: don't let the document close it
+      close();
+      $(b.dataset.for)?.click();
+    });
+    document.addEventListener("click", (e) => { if (!menu.hidden && !menu.contains(e.target)) close(); });
+  }
   function autosizePrompt() {
     promptInput.style.height = "auto";
     promptInput.style.height = Math.min(promptInput.scrollHeight, 160) + "px";
@@ -12633,14 +12907,20 @@
   if (window.visualViewport && matchMedia("(pointer: coarse)").matches) {
     const vv = window.visualViewport;
     let pending = 0;
+    // The keyboard-free height: the tallest the visible viewport has been since
+    // the last rotation. The keyboard used to be read as `innerHeight - vv.height`,
+    // but that assumes the LAYOUT viewport keeps its height when the keyboard
+    // opens — and an installed (Home Screen) cockpit on a recent iOS shrinks both,
+    // so the gap stayed 0: no `kb-up`, the header never folded away and the
+    // composer kept its home-indicator padding above the keyboard (a dead band).
+    let fullH = Math.max(window.innerHeight, vv.height);
+    const kbOpen = () => fullH - vv.height > 120; // a retracting URL bar is not a keyboard
     const syncViewport = () => {
       pending = 0;
+      fullH = Math.max(fullH, vv.height);
       document.documentElement.style.setProperty("--app-h", vv.height + "px");
       document.body.classList.add("vv-sized");
-      // `innerHeight` is the LAYOUT viewport: it does not move when the keyboard
-      // opens, so the gap between the two IS the keyboard. The threshold keeps a
-      // retracting URL bar from being read as one.
-      document.body.classList.toggle("kb-up", window.innerHeight - vv.height > 120);
+      document.body.classList.toggle("kb-up", kbOpen());
       // The chassis now fits above the keyboard: if the browser already dragged
       // the document, that offset hides nothing but the header.
       if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
@@ -12651,6 +12931,27 @@
     const schedule = () => { if (!pending) pending = requestAnimationFrame(syncViewport); };
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
+    // A rotation changes what "full height" means: start over from what is seen.
+    matchMedia("(orientation: portrait)").addEventListener("change", () => {
+      fullH = 0;
+      setTimeout(() => { fullH = Math.max(window.innerHeight, vv.height); schedule(); }, 300);
+    });
+    // Closing: iOS reports the new height only once the keyboard has finished
+    // sliding away, so for that whole animation the chassis stayed keyboard-sized
+    // and the composer floated mid-screen above an empty band, then snapped down.
+    // Leaving the field IS the keyboard closing (unless focus moves to another
+    // text field), so give the chassis its full height at once: the keyboard then
+    // slides off a page already in place. The real resize lands later and agrees.
+    const typesText = (el) => !!el && (el.isContentEditable || el.tagName === "TEXTAREA"
+      || (el.tagName === "INPUT" && !/^(button|submit|reset|checkbox|radio|file|range|color|image)$/i.test(el.type)));
+    document.addEventListener("focusout", (e) => {
+      if (!document.body.classList.contains("kb-up") || typesText(e.relatedTarget)) return;
+      if (pending) { cancelAnimationFrame(pending); pending = 0; }
+      document.documentElement.style.setProperty("--app-h", fullH + "px");
+      document.body.classList.remove("kb-up");
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+      if (active) pinBottom(active);
+    });
     syncViewport();
   }
 
@@ -12773,7 +13074,12 @@
     e.stopPropagation();
     if (!active) return;
     const r = e.currentTarget.getBoundingClientRect();
-    openTabMenu(active, r.right, r.bottom + 4);
+    // The bar icons hidden for lack of room come back as menu entries, at the
+    // top (bar-overflow.js): clicking one clicks the real button.
+    const hidden = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("bar-ovf")));
+    const on = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("on")));
+    const extra = window.chanOverflowItems(hidden, on).map((it) => [it.label, () => $(it.id).click()]);
+    openTabMenu(active, r.right, r.bottom + 4, extra);
   });
 
   // "⋯" overflow menu (rarely-used actions, e.g. Diff). stopPropagation on the
@@ -12818,15 +13124,74 @@
       if (el) overflow.appendChild(el);
     }
   }
+  // Then, on a phone, the icons that stay on the row (Security, Reports, Users
+  // — kept for their badge) still leave it when the row does not fit: the
+  // instance name is the one elastic item, and it was squeezed to nothing.
+  // Moved in this order; a badge on a moved one shows as a dot on ⋯ (CSS).
+  const SQUEEZE_TOOLS = ["usersBtn", "reportsBtn", "securityBtn"];
+  const NAME_MIN_PX = 64;
+  // The agent's name is what tells two agents apart: it gets more room.
+  const AGENT_NAME_MIN_PX = 120;
+  function reflowHeaderSqueeze() {
+    const hdrTools = document.querySelector(".hdr-tools");
+    const moreWrap = document.querySelector(".more-wrap");
+    const overflow = $("overflowTools");
+    if (!hdrTools || !moreWrap || !overflow) return;
+    const back = (id) => { const el = $(id); if (el) hdrTools.insertBefore(el, moreWrap); };
+    if (!matchMedia("(max-width: 640px)").matches) {
+      // Desktop: back in the header, in their original order.
+      for (const id of [...SQUEEZE_TOOLS].reverse()) back(id);
+      return;
+    }
+    const name = $("brandName");
+    window.shrinkToFit([...SQUEEZE_TOOLS], {
+      show: back,
+      hide: (id) => { const el = $(id); if (el) overflow.prepend(el); },
+      fits: () => !name || window.nameReads(name, NAME_MIN_PX),
+    });
+  }
+  // The agent bar: same rule, the agent's name in the picker is what must stay
+  // readable. Hidden icons get `.bar-ovf` (display: none) and reappear as items
+  // of the agent ⋯ menu — they are not moved, so their own state (`.on`) stays.
+  function reflowChanBar() {
+    const items = window.chanOverflowIds();
+    const name = $("pickerName");
+    const mobile = matchMedia("(max-width: 640px)").matches;
+    window.shrinkToFit(items, {
+      show: (id) => $(id)?.classList.remove("bar-ovf"),
+      hide: (id) => $(id)?.classList.add("bar-ovf"),
+      fits: () => !mobile || !name || $("chanBar").hidden || window.nameReads(name, AGENT_NAME_MIN_PX),
+    });
+  }
   let reflowPending = false;
   function scheduleReflow() {
     if (reflowPending) return;
     reflowPending = true;
-    requestAnimationFrame(() => { reflowPending = false; reflowHeaderTools(); });
+    requestAnimationFrame(() => {
+      reflowPending = false;
+      reflowHeaderTools();
+      reflowHeaderSqueeze();
+      reflowChanBar();
+    });
   }
+  window.scheduleBarReflow = scheduleReflow;
   window.addEventListener("resize", scheduleReflow);
-  document.addEventListener("DOMContentLoaded", reflowHeaderTools);
+  document.addEventListener("DOMContentLoaded", scheduleReflow);
   reflowHeaderTools();
+  // What changes the room without resizing the window: the agent switched or
+  // renamed, the cockpit renamed, a badge-carrying icon shown or hidden, the bar
+  // itself shown. Our own moves touch none of these, so this cannot loop.
+  {
+    const mo = new MutationObserver(scheduleReflow);
+    for (const id of ["pickerName", "brandName", "verView", "state"]) {
+      const el = $(id);
+      if (el) mo.observe(el, { childList: true, characterData: true, subtree: true });
+    }
+    for (const id of [...SQUEEZE_TOOLS, "chanBar", "chanUpdate", "branchGauge"]) {
+      const el = $(id);
+      if (el) mo.observe(el, { attributes: true, attributeFilter: ["hidden"] });
+    }
+  }
 
   // ── Diff panel ──────────────────────────────────────────
   function colorDiff(text) {
@@ -16817,7 +17182,7 @@
     $("peerName").value = ""; $("peerBrief").value = "";
     renderPeers();
   });
-  loadMe();
+  const meReady = loadMe(); // the guided tour waits for it: the role decides its people step
 
   $("profilesBtn").addEventListener("click", () => openProfilesPanel());
   $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
@@ -16986,8 +17351,95 @@
     else alert((await r.json()).error || "update failed");
   }
   // --- Guided tour --------------------------------------------------------
-  let tourSteps = [];
-  let tourAt = 0;
+  // The id of the step on screen, null before the first one. NOT an index into
+  // a list filtered at start: which steps exist is re-read from the page at
+  // every step (window.tourStanding), because the tour can start before the
+  // agents and the account have landed.
+  let tourId = null;
+
+  // ── The demo scene ──────────────────────────────────────────────────────
+  // What the tour stages when the cockpit holds no agent — see TOUR_DEMO in
+  // public/tour-steps.js for why. Three rules keep it harmless:
+  //  - it never goes through createTab: nothing here enters `tabs`, so it
+  //    cannot be persisted, resumed or counted (persistChannels keeps only
+  //    rows carrying a `_tab` with a session id, and these rows live in their
+  //    own container, outside the scopes the column lays out);
+  //  - it is text only (textContent), opens no socket and wires no handler —
+  //    the tour's overlay sits above it, so it cannot be clicked anyway;
+  //  - it is struck by endTour, and by refreshChrome the moment a real agent
+  //    takes the screen.
+  function tourDemoEl(tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function paintTourDemoChrome() {
+    const demo = window.TOUR_DEMO;
+    const lead = demo.agents.find((a) => a.active) || demo.agents[0];
+    $("emptyState").classList.remove("visible");
+    $("startingState").classList.remove("visible");
+    document.body.classList.remove("room-active");
+    $("chanBar").hidden = false;
+    $("chanBarName").textContent = lead.name;
+    $("chanBarName").title = "";
+    paintTabAvatar($("chanAvatar"), $("chanAvatar"), lead.name);
+    $("led").className = "led on";
+    $("state").textContent = demo.tag;
+    $("cwdView").textContent = "—";
+    $("sessionView").textContent = "—";
+    $("branchGauge").hidden = true;
+    // Shown at full strength: a dimmed button reads as "not for you".
+    for (const id of ["chanCron", "chanWebhooks", "chanGallery", "chanInfo"]) $(id).disabled = false;
+    composer.hidden = false;
+    promptInput.disabled = true;
+    // The bar just came out of hiding: on a phone its icons must give way to
+    // the name, exactly as for a real agent.
+    scheduleReflow();
+  }
+  function tourDemoOn() {
+    if (tourDemo) return;
+    const demo = window.TOUR_DEMO;
+    tourDemo = true;
+    document.body.classList.add("tour-demo");
+    const list = tourDemoEl("div");
+    list.id = "tourDemoList";
+    for (const a of demo.agents) {
+      const row = tourDemoEl("div", "tab" + (a.active ? " active" : "") + (a.working ? " working" : ""));
+      const avatar = tourDemoEl("span", "tav");
+      const initials = tourDemoEl("span");
+      avatar.append(initials, tourDemoEl("span", "led " + (a.working ? "busy" : "on")));
+      paintTabAvatar(avatar, initials, a.name);
+      const row1 = tourDemoEl("div", "tab-row1");
+      row1.append(tourDemoEl("span", "name", a.name));
+      const row2 = tourDemoEl("div", "tab-row2");
+      row2.append(tourDemoEl("span", "lastat", demo.tag));
+      row.append(avatar, row1, row2);
+      list.append(row);
+    }
+    ungroupedEl.before(list);
+    const chat = tourDemoEl("div", "transcript");
+    chat.id = "tourDemoChat";
+    chat.append(tourDemoEl("div", "tour-demo-note", demo.note));
+    for (const m of demo.chat) {
+      const turn = tourDemoEl("div", "turn " + m.role);
+      turn.append(tourDemoEl("span", "label", m.who), tourDemoEl("div", "bubble", m.text));
+      chat.append(turn);
+    }
+    transcripts.append(chat);
+    paintTourDemoChrome();
+    applyView(); // the rail: example groups, when there is none of your own
+  }
+  function tourDemoOff({ repaint = true } = {}) {
+    if (!tourDemo) return;
+    tourDemo = false;
+    document.body.classList.remove("tour-demo");
+    $("tourDemoList")?.remove();
+    $("tourDemoChat")?.remove();
+    promptInput.disabled = false;
+    if (repaint) refreshChrome();
+    applyView();
+  }
   let tourOnEnd = null;
 
   /** Every element a step points at, in DOM order. */
@@ -17004,14 +17456,15 @@
     });
   }
 
-  function paintTourStep() {
-    const step = tourSteps[tourAt];
+  function paintTourStep(advance = false) {
+    const { step, index, total } = window.tourStanding(window.TOUR_STEPS, tourId, tourVisible, advance);
     if (!step) return endTour();
+    tourId = step.id;
     const overlay = $("tourOverlay");
     $("tourTitle").textContent = step.title;
     $("tourBody").textContent = step.body;
-    $("tourCount").textContent = `${tourAt + 1}/${tourSteps.length}`;
-    $("tourNext").textContent = tourAt === tourSteps.length - 1 ? "Done" : "Next ›";
+    $("tourCount").textContent = `${index}/${total}`;
+    $("tourNext").textContent = index === total ? "Done" : "Next ›";
 
     if (step.target === null) {
       overlay.classList.remove("spotlight");
@@ -17025,7 +17478,7 @@
     const box = window.unionRect(rects);
     // The step was filtered in because it was visible; if it vanished since
     // (a closed tab), skip forward rather than frame nothing.
-    if (!box) { tourAt++; return paintTourStep(); }
+    if (!box) return paintTourStep(true);
     overlay.classList.add("spotlight");
     const pad = 6;
     Object.assign($("tourHole").style, {
@@ -17048,28 +17501,41 @@
   function startTour(onEnd) {
     // window.visibleSteps comes from the ESM bridge, which runs AFTER this
     // classic script — so this must never be called at parse time (invariant 10).
-    tourSteps = window.visibleSteps(window.TOUR_STEPS, tourVisible);
-    if (!tourSteps.length) { onEnd?.(); return; }
+    tourId = null;
+    // No agent and no room on screen: stage the example scene, so the steps
+    // about an agent have something to point at.
+    if (window.tourNeedsDemo(tabs.length)) tourDemoOn();
+    // Nothing to show (or the bridge never landed): hand over WITHOUT marking
+    // the tour as seen — endTour would, and the person never saw it.
+    if (!window.tourStanding(window.TOUR_STEPS, null, tourVisible).step) { tourDemoOff(); onEnd?.(); return; }
     tourOnEnd = onEnd ?? null;
-    tourAt = 0;
     $("tourOverlay").hidden = false;
     paintTourStep();
+    // One repaint a moment later: something that lands just after the first
+    // paint (the groups column is drawn a frame behind the tabs) should not
+    // leave the welcome card on a count the next step contradicts.
+    setTimeout(() => { if (!$("tourOverlay").hidden) paintTourStep(); }, 1200);
   }
 
   function endTour() {
     $("tourOverlay").hidden = true;
     $("tourOverlay").classList.remove("spotlight");
+    tourDemoOff();
     savePref("tourSeen", true);
     const done = tourOnEnd;
     tourOnEnd = null;
     done?.();
   }
 
-  $("tourNext").addEventListener("click", () => { tourAt++; paintTourStep(); });
+  $("tourNext").addEventListener("click", () => paintTourStep(true));
   $("tourSkip").addEventListener("click", endTour);
-  // A click on the overlay itself — including through the hole, which has
-  // pointer-events: none — ends it. Nobody is trapped in a tutorial.
-  $("tourOverlay").addEventListener("click", (e) => { if (e.target === $("tourOverlay")) endTour(); });
+  // A click beside the bubble does NOT end the tour. It used to ("the same
+  // click-outside gesture as everywhere else"), and that is the wrong gesture
+  // here: a popin is closed by someone who opened it, the tour is met by
+  // someone who did not ask for it and is reaching for a button behind the
+  // dim. One stray click threw the whole thing away, marked as seen. Leaving
+  // is a decision — Skip, Done, or Escape — and nobody is trapped: all three
+  // are always available, and ⋯ → "Replay the guided tour" brings it back.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("tourOverlay").hidden) { endTour(); e.preventDefault(); }
   });
@@ -17094,6 +17560,16 @@
     // gives up after 3s and leaves the cache in charge).
     await prefsReady;
     if (cachedPref("tourSeen") === true) { checkAuth(); return; }
+    // And for the page itself: the agents (boot restore) and the account
+    // (loadMe) decide which steps have a target. Started before them, the
+    // welcome card read "1/5" on a cockpit whose tour has eleven stops. Each
+    // step re-reads the page anyway, so this only makes the FIRST count right
+    // — hence bounded: a slow server delays the tour by 4s at most, never
+    // holds it.
+    await Promise.race([
+      Promise.all([bootSettled, meReady]).catch(() => {}),
+      new Promise((r) => setTimeout(r, 4000)),
+    ]);
     startTour(() => checkAuth());
   }
 
@@ -18167,6 +18643,10 @@
     // Only now: `syncChannels` is a no-op while `restoring`, so kicking the loop
     // off any earlier would leave the first EFFECTIVE pass a full period away —
     // which is the four-second blank this whole change is about.
+    // The tabs are painted (or there are none): the guided tour may count its
+    // steps. A restore that threw never gets here — the tour's own 4s bound is
+    // what releases it then.
+    markBootSettled();
     if (!followAgentHash()) followDeepLink();
     syncLoop();
   })();

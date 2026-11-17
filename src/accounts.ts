@@ -214,47 +214,79 @@ export function bootstrapSessionsAfter(now: number): number {
   }
 }
 
-/** `<user base64url>.<issuedAt>.<mfa>.<hmac>` — the name is encoded so a dot in
- *  it cannot shift the fields. The ROLE is deliberately absent: it is re-read
- *  from the account file at use time, so a demotion takes effect immediately
- *  instead of riding in a stale cookie. `mfa` says the second factor was
- *  presented when the cookie was issued: once two-factor is switched on, a
- *  cookie without it is refused, which kills every session issued before. */
-export function signSession(user: string, issuedAt: number, secret: Buffer, mfa = false): string {
+/** `<user base64url>.<issuedAt>.<mfa>.<since>.<hmac>` — the name is encoded so a
+ *  dot in it cannot shift the fields. The ROLE is deliberately absent: it is
+ *  re-read from the account file at use time, so a demotion takes effect
+ *  immediately instead of riding in a stale cookie. `mfa` says the second factor
+ *  was presented when the cookie was issued: once two-factor is switched on, a
+ *  cookie without it is refused, which kills every session issued before.
+ *  `since` is when the person actually SIGNED IN: a renewed cookie moves
+ *  `issuedAt` forward and carries `since` along unchanged, which is what lets
+ *  renewal have a ceiling (`sessionRenewal`). Omitted when it equals `issuedAt`
+ *  — a sign-in — so that shape stays the four-field one it always was. */
+export function signSession(user: string, issuedAt: number, secret: Buffer, mfa = false, since = issuedAt): string {
   const u = Buffer.from(user, "utf8").toString("base64url");
-  const body = `${u}.${issuedAt}.${mfa ? 1 : 0}`;
+  const body = `${u}.${issuedAt}.${mfa ? 1 : 0}` + (since === issuedAt ? "" : `.${since}`);
   return `${body}.${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
 /**
  * The user and second-factor flag a session cookie carries, or null. Reads the
  * pre-2FA three-field shape too — as `mfa: false`, which is what it was.
+ *
+ * Two clocks, two limits. `maxAgeMs` bounds the time since the cookie was last
+ * ISSUED (idle time, once cookies are renewed on use); `maxLifeMs` bounds the
+ * time since the SIGN-IN, which no renewal can push back.
  */
 export function readSessionFull(
   token: string,
   secret: Buffer,
   now: number,
   maxAgeMs: number,
-): { user: string; mfa: boolean; issuedAt: number } | null {
+  maxLifeMs = Infinity,
+): { user: string; mfa: boolean; issuedAt: number; since: number } | null {
   const parts = String(token ?? "").split(".");
-  if (parts.length !== 3 && parts.length !== 4) return null;
+  if (parts.length < 3 || parts.length > 5) return null;
   const mac = parts[parts.length - 1];
   const body = parts.slice(0, -1).join(".");
   const [u, at] = parts;
-  const mfa = parts.length === 4 ? parts[2] : "0";
+  const mfa = parts.length >= 4 ? parts[2] : "0";
   if (mfa !== "0" && mfa !== "1") return null;
   const issuedAt = Number(at);
   if (!at || !Number.isFinite(issuedAt)) return null;
+  const since = parts.length === 5 ? Number(parts[3]) : issuedAt;
+  if (!Number.isFinite(since) || since > issuedAt) return null;
   const want = createHmac("sha256", secret).update(body).digest("hex");
   if (mac.length !== want.length) return null;
   if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
   if (now - issuedAt > maxAgeMs) return null;
+  if (now - since > maxLifeMs) return null;
   try {
     const user = Buffer.from(u, "base64url").toString("utf8");
-    return user ? { user, mfa: mfa === "1", issuedAt } : null;
+    return user ? { user, mfa: mfa === "1", issuedAt, since } : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Should this session's cookie be re-issued now?
+ *
+ * A session used to last a week from the sign-in whatever happened in between,
+ * so someone working in the cockpit every day was still thrown out once a week
+ * per device, mid-task. Renewing on use turns that week into a week of
+ * ABSENCE. Two bounds keep it honest: not more often than `renewAfterMs` (a
+ * cookie per request would be noise, and the page polls every few seconds),
+ * and never once `maxLifeMs` has passed since the sign-in — past that the
+ * cookie is refused outright (`readSessionFull`), so a stolen one cannot be
+ * kept alive for ever just by being used.
+ */
+export function sessionRenewal(
+  sess: { issuedAt: number; since: number },
+  now: number,
+  o: { renewAfterMs: number; maxLifeMs: number },
+): boolean {
+  return now - sess.issuedAt >= o.renewAfterMs && now - sess.since < o.maxLifeMs;
 }
 
 export function readSession(token: string, secret: Buffer, now: number, maxAgeMs: number): string | null {
