@@ -2,7 +2,7 @@ import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { newestTranscriptById, isNothingToShow, stripTrailingNothingToShow, parseTimestamp } from "./tail.js";
+import { newestTranscriptById, isNothingToShow, isSyntheticPlaceholder, stripTrailingNothingToShow, parseTimestamp } from "./tail.js";
 import { toolFiles, fileCard } from "./download.js";
 import { userPromptText, classifyUserLine } from "./prompt-kind.js";
 
@@ -414,7 +414,7 @@ export function loadHistory(cwd: string, sessionId: string, home: string = os.ho
       if (line.kind === "compaction") turns.push({ role: "user", text: line.text, compaction: true, ...when });
       else turns.push({ role: "user", text: line.text, ...(line.from ? { from: line.from } : {}), ...(line.origin ? { origin: line.origin } : {}), ...ids, ...when });
       pendingHiddenPrompt = false;
-    } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
+    } else if (e.type === "assistant" && Array.isArray(e.message.content) && !isSyntheticPlaceholder(e.message)) {
       // A SendUserFile delivered files → a `file` turn survives the reload (the
       // rest of the tool blocks are dropped, but a sent file is content, not
       // noise). Emitted before the text of the same message, which is usually the
