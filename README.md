@@ -1606,7 +1606,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"key", key}` | raw keystroke (`enter`, `escape`, `up`, `down`, `tab`, `ctrl-c`, or a single character) |
 | `{type:"settle"}` | after a manual intervention: waits for the turn to finish |
 | `{type:"restart"}` | respawns the agent in place (picks up new secrets/profile) |
-| `{type:"set-parent", parent}` | attach this channel under another (`null` detaches). Refused **explicitly** on a self-link, a cycle, an unknown parent, or a chain/fan-out past its cap |
+| `{type:"set-parent", parent}` | attach this channel under another (`null` detaches). Refused **explicitly** on a self-link, a cycle, an unknown parent, or a chain past its depth cap |
 | `{type:"term-attach"}` · `{type:"term-detach"}` | **experimental, tmux only** — open/close the pane's raw byte pipe |
 | `{type:"term-input", data}` · `{type:"term-resize", cols, rows}` | raw input (base64) / match the pane to the viewport |
 | `{type:"stop", sessionId?}` | ends the session for all clients; `sessionId` targets another channel (zombie cleanup) |

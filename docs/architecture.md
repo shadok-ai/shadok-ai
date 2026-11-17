@@ -1723,7 +1723,7 @@ The link is set automatically at spawn — `pilotctl` reads `SHADOK_SESSION_ID`,
 which the server already exports on every piloted session, so nothing has to be
 configured — or by hand through `set-parent`, the only path allowed to write a
 server-owned field. `linkRefusal` refuses a self-link, a cycle, an unknown
-parent, and anything past `MAX_LINK_DEPTH` / `MAX_FANOUT`, always **explicitly**:
+parent, and a chain past `MAX_LINK_DEPTH`, always **explicitly**:
 the silent version would leave a parent believing it will be notified, waiting
 for a child it was never linked to.
 
@@ -1757,9 +1757,12 @@ hit the very refusal the queue exists to avoid. It doubles as free batching: a
 parent is busy precisely when it is working, so several children coalesce with
 no timer, and one wake carries the batch instead of re-paying the prefix N times.
 
-**Two bounds and one caveat.** `MAX_LINK_DEPTH` and `MAX_FANOUT` stop a
+**One bound and one caveat.** `MAX_LINK_DEPTH` stops a
 notification→spawn→notification cascade, which the pace guard cannot bound (it
-blocks one prompt at a time, never a chain). And answering a child's dialog is a
+blocks one prompt at a time, never a chain). There is deliberately no cap on
+how many children one parent holds: a cascade grows down, not wide, so the
+depth cap already bounds it, and a 12-child cap only refused legitimate wide
+teams. And answering a child's dialog is a
 **profile capability** (`canAnswerChildren`, set only on `Shadok-Boss`), not an
 ambient right: a `READONLY_DENY` boss could otherwise authorise a child to do
 what it is itself forbidden from doing, making the guardrail that forces

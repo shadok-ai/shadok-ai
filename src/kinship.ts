@@ -15,15 +15,17 @@ import type { Channel } from "./channels.js";
  */
 export const MAX_LINK_DEPTH = 4;
 
-/** How many children one parent may hold, for the same reason. */
-export const MAX_FANOUT = 12;
+// No cap on how many children one parent may hold. There used to be one (12),
+// for the same cascade reason as the depth cap — but a cascade grows DOWN, and
+// the depth cap alone already bounds it. A wide flat team is an ordinary thing
+// to want (a lead fanning out reviewers or one agent per repo), and refusing
+// the 13th child only cost the user an explicit error with nothing gained.
 
 export type LinkRefusal =
   | "self"
   | "cycle"
   | "unknown-parent"
-  | "too-deep"
-  | "too-many-children";
+  | "too-deep";
 
 /**
  * How many ancestors `sessionId` has (0 for a root, or for an unknown id).
@@ -94,10 +96,6 @@ export function linkRefusal(
   if (cur) return "cycle";
 
   if (chainDepth(channels, parent) + 1 >= MAX_LINK_DEPTH) return "too-deep";
-
-  // Re-asserting an existing child must not count it twice and refuse a no-op.
-  const siblings = childrenOf(channels, parent).filter((c) => c.sessionId !== child);
-  if (siblings.length >= MAX_FANOUT) return "too-many-children";
 
   return null;
 }
