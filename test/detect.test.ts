@@ -741,6 +741,40 @@ test("typeIntoBox: a prompt that scrolls the box is seen to land", async () => {
   assert.equal(pastes, 3, "two prelude chunks and the message, each pasted exactly once");
 });
 
+test("typeIntoBox: a box left FULL by a failed attempt is emptied, not pasted into", async () => {
+  // Where the junk above a message comes from. `survives` compares the box's
+  // first VISIBLE line, and a box taller than the pane has scrolled that line
+  // away — so a leftover reads as an empty box and the message goes out with it
+  // glued on top. Measured on a live pane: 113 hidden rows where a clean box
+  // gives 50. A box the pane cannot hold is the one case where clearing first
+  // is a fact rather than a guess.
+  const st = { more: 50, pastes: 0, clears: 0, hardClears: 0 }; // 50 = the leftover
+  const empty = ["● Done.", "", "❯ ", "─".repeat(80), "  ⏵⏵ auto mode on"].join("\n");
+  const pilot = {
+    screen: () => (st.more === 0 ? empty : scrolledBox(st.more)),
+    paste: () => { st.pastes++; st.more += 30; },
+    clearInput: () => { st.clears++; if (st.more > 0) st.more--; },
+    hardClear: () => { st.hardClears++; st.more = 0; },
+    waitFor: async (p: (s: string) => boolean) => {
+      if (!p(pilot.screen())) throw new Error("timeout");
+      return pilot.screen();
+    },
+  };
+  const ok = await typeIntoBox(pilot as any, "the user's words", {
+    prelude: ["chunk one", "chunk two"],
+    appearMs: 10,
+    settleMs: 0,
+    clearMs: 10,
+  });
+  assert.equal(ok, true);
+  assert.equal(st.hardClears, 1, "ONE Ctrl-C, which is what empties a box that size");
+  assert.ok(st.clears <= 1, `Ctrl-U is not hammered at it (was ${st.clears})`);
+  // Three pastes on a box that was emptied first: the leftover is gone, not
+  // carried along under the message.
+  assert.equal(st.pastes, 3);
+  assert.equal(st.more, 90, "90 = our three pastes; 140 would be the junk still under them");
+});
+
 test("inputBoxVisible: a scrolled box still counts as the TUI being up", () => {
   // The session start waits on this; keyed on the ❯ alone it timed out on an
   // agent whose box a failed submit had left full, so it could not be reopened.

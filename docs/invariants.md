@@ -2487,3 +2487,25 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     state, and this made it impossible to leave from the cockpit.
     `inputBoxVisible` is now the one answer to "is the box on screen", used by
     all three waits.
+    **And once it is READ, it is also the only signal the screen gives for
+    free: a box the pane cannot hold is text, never furniture.** Everything
+    else that asks "is there something in there" has to tell content from the
+    TUI's own decoration — the resting example, the greyed previous message —
+    and both of those are ONE line. That matters because `survives` (the check
+    that catches a paste landing on top of a leftover) compares the box's first
+    VISIBLE line, and a box this tall has scrolled that line off the top: the
+    leftover of a failed attempt therefore reads as a clean box, and the
+    message goes out with the junk glued above it. Measured on a live pane
+    (2.1.326), pasting an eight-chunk prelude onto an eight-chunk leftover: the
+    paste reported "landed" and the box ended on 113 hidden rows where a clean
+    one gives 50 — the shape a person reads as "it recopied things". So
+    `boxScrolled` is checked BEFORE the first paste of every attempt and the box
+    emptied when it answers yes, which costs nothing on the normal path (a box
+    at rest is one line) and is a fact rather than the guess `survives` has to
+    make.
+    The clearing itself needed the same correction. Ctrl-U clears a VISUAL row,
+    so `MAX_CLEARS` (40) does not reach a box of sixty: measured, 120 presses
+    did not empty an eight-chunk prelude, while ONE Ctrl-C does. The rescue kept
+    for "a box that will not clear" is therefore tried FIRST on a scrolled box
+    instead of after forty presses have spent sixteen seconds of the message's
+    own path getting nowhere.
