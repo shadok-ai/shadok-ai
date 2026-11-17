@@ -538,6 +538,16 @@
      Hidden entirely when nothing overflowed. */
   .mm-tools { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--line); }
   .mm-tools:empty { display: none; }
+  /* An agent-bar icon with no room on a phone: it lives in the agent ⋯ menu
+     instead (reflowChanBar, bar-overflow.js). */
+  #chanBar .chan-actions .bar-ovf { display: none !important; }
+  /* A badge-carrying header icon (Security, Reports) pushed into ⋯ for lack of
+     room: its badge must still be seen, so ⋯ wears a dot. */
+  .more-wrap:has(#overflowTools .sec-badge:not([hidden])) #moreBtn { position: relative; }
+  .more-wrap:has(#overflowTools .sec-badge:not([hidden])) #moreBtn::after {
+    content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--err);
+  }
   #moreMenu .mm-tools button { width: auto; }  /* override #moreMenu button width:100% */
   #moreMenu .mm-sep { height: 1px; background: var(--line); margin: 4px 2px; }
   #moreMenu .mm-label { padding: 2px 4px; font-size: 12px; font-weight: 500; color: var(--text-dim); }
@@ -2072,6 +2082,10 @@
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
     #chanBar .gauge .label { display: none; }   /* values only, more compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
+    /* The status word ("idle", "working") never yields to the name: squeezed, it
+       read as a bare "…". The agent's name is the elastic item, and when it gets
+       too short reflowChanBar moves icons into the ⋯ menu instead. */
+    #chanBar .gauge:has(#state) { flex-shrink: 0; }
     /* One header row: brand + dials + ⋯. reflowHeaderTools (JS) moves ALL tool
        icons into the ⋯ menu, and `nowrap` makes the brand — the one elastic item
        — ABSORB the squeeze instead of shoving a dial onto a second line. Before
@@ -4698,6 +4712,7 @@
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers, secretDeleteConfirmText } from "/profile-card.js?v=__ASSET_V__";
   import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick, secretReceivers, plusReloadPlan } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
+  import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
@@ -4800,6 +4815,12 @@
   window.defaultAgentName = defaultAgentName;
   window.secretUsers = secretUsers;
   window.secretDeleteConfirmText = secretDeleteConfirmText;
+  window.shrinkToFit = shrinkToFit;
+  window.nameReads = nameReads;
+  window.chanOverflowIds = chanOverflowIds;
+  window.chanOverflowItems = chanOverflowItems;
+  // The module is deferred: the first reflow ran on the stubs, so run it again.
+  window.scheduleBarReflow?.();
   window.secretsPanelMode = secretsPanelMode;
   window.secretSections = secretSections;
   window.panelGroupOptions = panelGroupOptions;
@@ -4960,6 +4981,11 @@
     profileSaveBody: (form) => ({ ...form }),
     secretUsers: () => [],
     secretDeleteConfirmText: (name) => "Remove the secret " + name + " from the vault?",
+    // Before the module lands: hide nothing, report "fits" — the bars keep their icons.
+    shrinkToFit: () => 0,
+    nameReads: () => true,
+    chanOverflowIds: () => [],
+    chanOverflowItems: () => [],
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
     secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
@@ -6178,7 +6204,7 @@
     } catch { return ""; }
   }
 
-  function openTabMenu(tab, x, y) {
+  function openTabMenu(tab, x, y, extra = []) {
     tabMenu.replaceChildren();
     if (tab.roomId) return openRoomMenu(tab, x, y);
     // Header: WHO this agent is. The profile is what qualifies it (role,
@@ -6237,6 +6263,7 @@
     }
     tabMenu.appendChild(head);
     const items = [
+      ...extra,
       [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications",
        () => setMuted(tab, !tab.muted)],
       ["↻ Reload agent", () => reloadTab(tab)],
@@ -12919,7 +12946,12 @@
     e.stopPropagation();
     if (!active) return;
     const r = e.currentTarget.getBoundingClientRect();
-    openTabMenu(active, r.right, r.bottom + 4);
+    // The bar icons hidden for lack of room come back as menu entries, at the
+    // top (bar-overflow.js): clicking one clicks the real button.
+    const hidden = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("bar-ovf")));
+    const on = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("on")));
+    const extra = window.chanOverflowItems(hidden, on).map((it) => [it.label, () => $(it.id).click()]);
+    openTabMenu(active, r.right, r.bottom + 4, extra);
   });
 
   // "⋯" overflow menu (rarely-used actions, e.g. Diff). stopPropagation on the
@@ -12964,15 +12996,74 @@
       if (el) overflow.appendChild(el);
     }
   }
+  // Then, on a phone, the icons that stay on the row (Security, Reports, Users
+  // — kept for their badge) still leave it when the row does not fit: the
+  // instance name is the one elastic item, and it was squeezed to nothing.
+  // Moved in this order; a badge on a moved one shows as a dot on ⋯ (CSS).
+  const SQUEEZE_TOOLS = ["usersBtn", "reportsBtn", "securityBtn"];
+  const NAME_MIN_PX = 64;
+  // The agent's name is what tells two agents apart: it gets more room.
+  const AGENT_NAME_MIN_PX = 120;
+  function reflowHeaderSqueeze() {
+    const hdrTools = document.querySelector(".hdr-tools");
+    const moreWrap = document.querySelector(".more-wrap");
+    const overflow = $("overflowTools");
+    if (!hdrTools || !moreWrap || !overflow) return;
+    const back = (id) => { const el = $(id); if (el) hdrTools.insertBefore(el, moreWrap); };
+    if (!matchMedia("(max-width: 640px)").matches) {
+      // Desktop: back in the header, in their original order.
+      for (const id of [...SQUEEZE_TOOLS].reverse()) back(id);
+      return;
+    }
+    const name = $("brandName");
+    window.shrinkToFit([...SQUEEZE_TOOLS], {
+      show: back,
+      hide: (id) => { const el = $(id); if (el) overflow.prepend(el); },
+      fits: () => !name || window.nameReads(name, NAME_MIN_PX),
+    });
+  }
+  // The agent bar: same rule, the agent's name in the picker is what must stay
+  // readable. Hidden icons get `.bar-ovf` (display: none) and reappear as items
+  // of the agent ⋯ menu — they are not moved, so their own state (`.on`) stays.
+  function reflowChanBar() {
+    const items = window.chanOverflowIds();
+    const name = $("pickerName");
+    const mobile = matchMedia("(max-width: 640px)").matches;
+    window.shrinkToFit(items, {
+      show: (id) => $(id)?.classList.remove("bar-ovf"),
+      hide: (id) => $(id)?.classList.add("bar-ovf"),
+      fits: () => !mobile || !name || $("chanBar").hidden || window.nameReads(name, AGENT_NAME_MIN_PX),
+    });
+  }
   let reflowPending = false;
   function scheduleReflow() {
     if (reflowPending) return;
     reflowPending = true;
-    requestAnimationFrame(() => { reflowPending = false; reflowHeaderTools(); });
+    requestAnimationFrame(() => {
+      reflowPending = false;
+      reflowHeaderTools();
+      reflowHeaderSqueeze();
+      reflowChanBar();
+    });
   }
+  window.scheduleBarReflow = scheduleReflow;
   window.addEventListener("resize", scheduleReflow);
-  document.addEventListener("DOMContentLoaded", reflowHeaderTools);
+  document.addEventListener("DOMContentLoaded", scheduleReflow);
   reflowHeaderTools();
+  // What changes the room without resizing the window: the agent switched or
+  // renamed, the cockpit renamed, a badge-carrying icon shown or hidden, the bar
+  // itself shown. Our own moves touch none of these, so this cannot loop.
+  {
+    const mo = new MutationObserver(scheduleReflow);
+    for (const id of ["pickerName", "brandName", "verView", "state"]) {
+      const el = $(id);
+      if (el) mo.observe(el, { childList: true, characterData: true, subtree: true });
+    }
+    for (const id of [...SQUEEZE_TOOLS, "chanBar", "chanUpdate", "branchGauge"]) {
+      const el = $(id);
+      if (el) mo.observe(el, { attributes: true, attributeFilter: ["hidden"] });
+    }
+  }
 
   // ── Diff panel ──────────────────────────────────────────
   function colorDiff(text) {
