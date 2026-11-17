@@ -726,6 +726,10 @@
     text-align: left;
   }
   #newRoom { margin-top: 0; }
+  /* Line icons in the column's buttons (the header toolbar's style), in place of
+     emojis: they take the text colour, hover included. */
+  .side-ico { vertical-align: -2px; margin-right: 6px; flex: 0 0 auto; }
+  #newFolder .side-ico { margin-right: 3px; } /* label lines up with the ＋ rows */
   #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover, #newFolder:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
   #newGroup { margin-top: 4px; }
   /* The fallback "new group" entry: only on desktop, only while the rail (which
@@ -3577,7 +3581,7 @@
       <button id="signOut" hidden>Sign out</button>
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
-      <button id="instanceStatsBtn">📊 Instance stats</button>
+      <button id="instanceStatsBtn"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 19v-6M12 19V6M18 19v-9"/></svg>Instance stats</button>
       <button id="tourReplay">Guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
@@ -4497,7 +4501,7 @@
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
     <button id="newTab" title="New agent">＋ new agent</button>
     <button id="newRoom" title="New room — a conversation between people, no agent">＋ new room</button>
-    <button id="newFolder" type="button" title="New folder in this group — arranges its agents, changes nothing about who sees them">📁 new folder</button>
+    <button id="newFolder" type="button" title="New folder in this group — arranges its agents, changes nothing about who sees them"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v7.8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>new folder</button>
     <!-- The rail carries "+ new group" at its foot, but the rail is gone until a
          group exists — so this is the way to create the FIRST one. Desktop-only
          and only while there are no groups (CSS); it hands off to the rail's
@@ -4506,7 +4510,7 @@
     <div id="tweakSlot">
       <button id="tweakCta" type="button"
               title="Change shadok-ai itself — the agent works on a branch and opens a pull request">
-        <span class="tweak-row"><span class="tweak-title">🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span></span><span class="tweak-ver" id="tweakVer"></span></span>
+        <span class="tweak-row"><span class="tweak-title"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>Tweak Shadok-AI <span class="tweak-arrow">›</span></span><span class="tweak-ver" id="tweakVer"></span></span>
         <span class="tweak-sub">change the cockpit itself</span>
       </button>
     </div>
@@ -18160,7 +18164,7 @@
       tweakSub.textContent = "click to retry";
     } else {
       // A fixed literal of this file, never text written by an agent.
-      tweakTitle.innerHTML = '🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span>';
+      tweakTitle.innerHTML = '<svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>Tweak Shadok-AI <span class="tweak-arrow">›</span>';
       tweakSub.textContent = "change the cockpit itself";
     }
   }
