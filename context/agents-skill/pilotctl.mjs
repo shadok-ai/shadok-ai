@@ -149,10 +149,10 @@ export function parseArgs(argv) {
   const pos = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--worktree" || a === "--continue" || a === "--readonly") flags[a.slice(2)] = true;
+    if (a === "--worktree" || a === "--continue" || a === "--readonly" || a === "--force" || a === "--dry-run") flags[a.slice(2)] = true;
     else if (
       a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent" ||
-      a === "--name" || a === "--peer" || a === "--peer-url" || a === "--peer-token"
+      a === "--name" || a === "--peer" || a === "--peer-url" || a === "--peer-token" || a === "--idle"
     ) flags[a.slice(2)] = rest[++i];
     // Repeatable: a Skill Factory skill the new agent is born with, `name` or `name@N`.
     else if (a === "--skill") (flags.skill ||= []).push(rest[++i]);
@@ -565,45 +565,113 @@ async function cmdSetParent(id, parentArg, flags) {
   return { sessionId: id, parent: r.parent ?? null };
 }
 
-async function cmdStop(id) {
+/**
+ * Send `stop` for `id` on a BARE socket — no `start`, so nothing is resumed —
+ * and wait for the server's `stop-result`. The old path went through the local
+ * holder: with the holder gone (it is, once a `prompt` over a peer link returns
+ * and its socket drops) it sent NOTHING and only cleared local state, so the
+ * agent stayed open on the other instance for ever. Whether the caller may stop
+ * it is the server's call (a restricted peer: only its own), not the holder's.
+ */
+async function stopById(id) {
+  const ws = await connect();
+  try {
+    return await new Promise((resolve) => {
+      const t = setTimeout(() => resolve({ type: "timeout" }), 30_000);
+      ws.on("message", (raw) => {
+        let m;
+        try {
+          m = JSON.parse(String(raw));
+        } catch {
+          return;
+        }
+        if ((m.type === "stop-result" && m.sessionId === id) || m.type === "error") {
+          clearTimeout(t);
+          resolve(m);
+        }
+      });
+      ws.on("close", () => {
+        clearTimeout(t);
+        resolve({ type: "socket-closed" });
+      });
+      ws.send(JSON.stringify({ type: "stop", sessionId: id }));
+    });
+  } finally {
+    ws.close();
+  }
+}
+
+/** Pure: what a `stop-result` / refusal means for the caller. */
+export function stopOutcome(id, reply) {
+  if (reply.type === "stop-result" && reply.ok) return { stopped: true, sessionId: id };
+  if (reply.type === "stop-result") return { stopped: false, sessionId: id, note: "the server kept it (the home agent is never closed)" };
+  if (reply.type === "error") return { stopped: false, sessionId: id, error: reply.message, ...(reply.code ? { code: reply.code } : {}) };
+  return {
+    stopped: false,
+    sessionId: id,
+    note: "the server did not confirm the stop within 30s (an older shadok-ai answers nothing) — check with `list`",
+  };
+}
+
+async function cmdStop(id, flags = {}) {
   await ensureServer();
   const st = readState(id);
-  const holderLive = !!(st?.holderPid && pidAlive(st.holderPid));
-  if (!holderLive) {
-    // No holder → we never kept this session alive; don't resurrect it just
-    // to stop it (it may belong to a browser client). Clear local state only.
-    deleteState(id);
-    return { stopped: false, sessionId: id, note: "no live holder; local state cleared" };
-  }
-  let client;
-  try {
-    client = await openSession({ resume: id, cwd: st?.cwd ?? undefined });
-  } catch (err) {
-    // Holder pid is alive but session is dead (zombie holder, dead server session).
-    // Kill the holder and clean up state.
-    if (st.holderPid !== process.pid && pidAlive(st.holderPid)) {
+  // A LOCAL agent this pilotctl never drove may be someone's in the web UI: ask
+  // for --force. Over a peer link the peer's own scope already decides (a
+  // restricted peer can only close what it spawned).
+  if (!st && !PEER && !flags.force)
+    return { stopped: false, sessionId: id, note: "not an agent this pilotctl drove — pass --force to stop it anyway" };
+  const out = stopOutcome(id, await stopById(id));
+  if (out.stopped) {
+    if (st?.holderPid && st.holderPid !== process.pid && pidAlive(st.holderPid)) {
       try {
         process.kill(st.holderPid);
       } catch {}
     }
     deleteState(id);
-    const msg = err instanceof Error ? err.message : String(err);
-    return { stopped: false, sessionId: id, note: `session not reattachable (${msg}); holder killed and local state cleared` };
   }
-  client.send({ type: "stop" });
-  const result = await client.waitFor(["stopped", "socket-closed"], 30_000);
-  client.ws.close();
-  if (result.type === "timeout") {
-    // Stop was not confirmed within 30s; don't kill holder or delete state (leave for retry).
-    return { stopped: false, sessionId: id, note: "stop not confirmed within 30s; session may still be running" };
-  }
-  if (st.holderPid !== process.pid && pidAlive(st.holderPid)) {
-    try {
-      process.kill(st.holderPid);
-    } catch {}
-  }
-  deleteState(id);
-  return { stopped: true, sessionId: id };
+  return out;
+}
+
+/**
+ * Pure: which agents `reap` closes. Never a busy one, never one with someone
+ * watching it, never one active more recently than `idleSec` (a non-running
+ * row, idleSec -1, is idle by definition). Over a RESTRICTED peer link the list
+ * is already narrowed to what this peer spawned, so every row is ours; anywhere
+ * else the list holds other people's agents too, so only the ids this pilotctl
+ * spawned (its state files) are eligible.
+ */
+export function reapCandidates(rows, { restricted, ownIds, idleSec }) {
+  return rows
+    .filter((r) => restricted || ownIds.has(r.id))
+    .filter((r) => !r.busy && !(r.clients > 0) && (r.idleSec < 0 || r.idleSec >= idleSec))
+    .map((r) => r.id);
+}
+
+/** Parse `30m` / `2h` / `90s` / a bare number of minutes → seconds. */
+export function parseIdle(v, dflt = 1800) {
+  if (v === undefined || v === true) return dflt;
+  const m = /^(\d+)\s*([smh]?)$/.exec(String(v).trim());
+  if (!m) throw new Error(`--idle: expected e.g. 30m, 2h, 90s — got "${v}"`);
+  return Number(m[1]) * ({ s: 1, m: 60, h: 3600 }[m[2] || "m"]);
+}
+
+/** Close every finished agent this caller spawned — the backlog `stop` left behind. */
+async function cmdReap(flags) {
+  await ensureServer();
+  const r = await fetch(`${httpBase()}/live`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(`${httpBase()} answered HTTP ${r.status} to /live`);
+  const rows = await r.json();
+  const dir = stateDir();
+  const ownIds = new Set(
+    fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5)) : [],
+  );
+  const restricted = r.headers.get("x-shadok-peer-scope") === "restricted";
+  const ids = reapCandidates(rows, { restricted, ownIds, idleSec: parseIdle(flags.idle) });
+  if (flags["dry-run"]) return { wouldStop: ids };
+  const results = [];
+  for (const id of ids) results.push(await cmdStop(id, { force: true }));
+  return { stopped: results.filter((x) => x.stopped).map((x) => x.sessionId), failed: results.filter((x) => !x.stopped) };
 }
 
 /**
@@ -690,7 +758,7 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|set-parent|screen|profile-prompt|talk|talk-handle|peer> …\n" +
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|reap|set-parent|screen|profile-prompt|talk|talk-handle|peer> …\n" +
   "       pilotctl set-parent <id> <parent-id|none>   # re-link or detach an agent from its parent\n" +
   "       add --peer <alias> to any command to run it against another instance's agents\n" +
   "       pilotctl peer <add <alias> <url> <ticket> [--token]|list|rm <alias>>";
@@ -797,7 +865,9 @@ export async function run(argv) {
     case "diff":
       return cmdDiff(pos[0]);
     case "stop":
-      return cmdStop(pos[0]);
+      return cmdStop(pos[0], flags);
+    case "reap":
+      return cmdReap(flags);
     case "set-parent":
       return cmdSetParent(pos[0], pos[1], flags);
     case "screen":

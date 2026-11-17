@@ -314,7 +314,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 
 **client → server:** `start`, `prompt`, `run`, `choose`, `toggle`, `confirm`, `freetext`, `key`, `settle`, `restart`, `set-parent`, `set-profile`, `set-model`, `set-effort`, `stop`; for a ROOM link only (never mixed with an agent link on one socket): `room-join`, `room-post`.
 
-**server → client:** `agent-report` (admins only), `starting`, `ready`, `working`, `turn-done`, `stream-text`, `stream-tool`, `stream-result`, `stream-bash`, `history`, `dialog`, `screen`, `tokens`, `context`, `background`, `parent`, `profile`, `prompt-echo`, `prompt-id`, `pace-blocked`/`pace-hold`/`pace-resumed`, `auto-retry-*`, `version`, `server-reload`, `gone`, `error` (optional `code`: `unresponsive`/`busy`/`link-refused`/`logged-out`/`resume-refused`), `exited`, `stopped`; rooms: `room-history`, `room-message`, `room-error` (with `code`), `room-closed`.
+**server → client:** `agent-report` (admins only), `starting`, `ready`, `working`, `turn-done`, `stream-text`, `stream-tool`, `stream-result`, `stream-bash`, `history`, `dialog`, `screen`, `tokens`, `context`, `background`, `parent`, `profile`, `prompt-echo`, `prompt-id`, `pace-blocked`/`pace-hold`/`pace-resumed`, `auto-retry-*`, `version`, `server-reload`, `gone`, `error` (optional `code`: `unresponsive`/`busy`/`link-refused`/`logged-out`/`resume-refused`), `exited`, `stopped`, `stop-result` (answers a `stop`'s sender); rooms: `room-history`, `room-message`, `room-error` (with `code`), `room-closed`.
 
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
