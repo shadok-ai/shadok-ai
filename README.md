@@ -594,9 +594,14 @@ Enter to skip; you can add it later from the web UI).
   Telegram, sound, and what the ⋯ holds), the people buttons (Users, Reports,
   Security), the quota bars, and the cockpit's name and settings menu. Skip and
   Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
-  isn't on screen is **dropped rather than faked** — an empty cockpit has no
-  agent menu, a cockpit with no group has no groups column, a member has no
-  Reports button — so it gets a shorter tour instead of a spotlight on nothing.
+  isn't on screen is **dropped rather than faked** — a member has no Reports
+  button, a phone has no groups column — so it gets a shorter tour instead of a
+  spotlight on nothing. One case is staged instead: a cockpit with **no agent
+  at all**, which is every first visit (the tour runs before the sign-in). The
+  tour then shows an **example scene** — example agents in the list, the real
+  agent bar and composer over an example conversation, example groups — tagged
+  as an example on every surface, never saved, and removed when the tour ends
+  or the moment a real agent takes the screen.
   Which steps exist is **re-read from the page at every step**, and the first
   count waits (4s at most) for the agents and the account to load — a tour that
   filtered its list once, at start, played five stops on a cockpit that has eleven.
