@@ -173,6 +173,32 @@ export function inputBoxVisible(screen: string): boolean {
 }
 
 /**
+ * Is the input box TALLER than the pane?
+ *
+ * The one unambiguous "there IS text in there" signal a screen offers. Every
+ * other reading of the box has to tell text from the TUI's own furniture — the
+ * resting example (`❯ Try "refactor <filepath>"`), the greyed previous message
+ * — and both of those are ONE line. Nothing but text makes a box that tall: it
+ * is ours, or a prompt Claude Code put back when a turn was interrupted.
+ *
+ * Which is why it is worth a predicate of its own rather than being left to
+ * `survives`: that one compares the box's first VISIBLE line, and a box this
+ * tall has already scrolled that line off the top. Same rule as `boxRaw` —
+ * the scroll border counts only BELOW the last `❯`, or an older prompt line
+ * further up the conversation would make a normal box read as a scrolled one.
+ */
+export function boxScrolled(screen: string): boolean {
+  const lines = screen.split("\n");
+  let prompt = -1;
+  let scrolled = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimStart().startsWith("❯") || /^!\s/.test(lines[i])) prompt = i;
+    if (BOX_SCROLLED.test(lines[i])) scrolled = i;
+  }
+  return scrolled > prompt;
+}
+
+/**
  * The WHOLE input box, not just its first line.
  *
  * `inputText` reads the `❯` line alone, which is everything there is while a
@@ -700,6 +726,14 @@ async function hardClearIfLeftover(pilot: TypingPilot, text: string, clearMs: nu
  * and a box that refuses gets one Ctrl-C before the attempt is abandoned.
  */
 async function emptyBox(pilot: TypingPilot, clearMs: number, text: string): Promise<void> {
+  // A box TALLER than the pane is the one Ctrl-U cannot win: the keypress
+  // clears a VISUAL row and that box is dozens of them — measured on a live
+  // pane (2.1.326), 120 presses did not empty an eight-chunk ledger prelude,
+  // while ONE Ctrl-C does. So the rescue kept for a box that will not clear is
+  // also the only one that scales to a box this size, and it is tried FIRST
+  // rather than after `MAX_CLEARS` presses have spent sixteen seconds of the
+  // message's own path getting nowhere.
+  if (boxScrolled(pilot.screen())) await hardClearIfLeftover(pilot, text, clearMs);
   let stuck = 0;
   for (let press = 0; press < MAX_CLEARS && stuck < 2; press++) {
     const shown = boxRaw(pilot.screen());
@@ -742,6 +776,16 @@ export async function typeIntoBox(
   { attempts = 6, appearMs = 2_000, settleMs = 400, clearMs = 1_000, prelude }: TypeOptions = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    // A box the pane cannot hold is provably text, not furniture
+    // (`boxScrolled`), and `survives` cannot be the one to catch it: it
+    // compares the box's first VISIBLE line, which a box that tall has
+    // scrolled off the top — so the leftover of a failed attempt reads as an
+    // empty box. Measured on a live pane: pasting a prelude onto an
+    // eight-chunk leftover reported "landed" and sent the message with the junk
+    // glued above it (113 hidden rows where a clean box gives 50). Costs
+    // nothing on the normal path, where a box at rest is one line.
+    if (boxScrolled(pilot.screen())) await emptyBox(pilot, clearMs, text);
+
     // "Landed" means the box DIFFERS from what it showed just before, not that
     // it is non-empty: an empty box is not always blank. Before the first prompt
     // of a session, Claude Code (seen on 2.1.285) fills it with an example —
