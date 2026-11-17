@@ -447,6 +447,7 @@ import {
   sessionSecret,
   signSession,
   readSessionFull,
+  sessionRenewal,
   sessionAlive,
   bootstrapSessionsAfter,
   saveAccounts,
@@ -825,6 +826,12 @@ function presentsSecret(req: { headers: Record<string, unknown> }, name: string,
 // the cookie ride a top-level GET the user themselves initiated.
 /** A week, matching the cookie's Max-Age: one is the other's enforcement. */
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+/** A cookie older than this is re-issued on the next request, so the week above
+ *  counts from the last VISIT rather than from the sign-in (`sessionRenewal`). */
+const SESSION_RENEW_AFTER_MS = 24 * 3600 * 1000;
+/** ...up to this long after the sign-in. Then the password is asked again,
+ *  however active the session: the ceiling on what a stolen cookie is worth. */
+const SESSION_MAX_LIFE_MS = 30 * 24 * 3600 * 1000;
 // Sessions are signed with a per-instance secret, NOT with the password: the
 // password reaches every agent's environment, so signing with it would let an
 // agent mint a cookie for anyone. Drawn lazily, so an instance with no password
@@ -1484,9 +1491,9 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 /** The session a request's cookie carries, verified, or null. */
-function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number } | null {
+function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number; since: number } | null {
   const tok = cookieToken(req.headers.cookie as string | undefined);
-  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS) : null;
+  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS, SESSION_MAX_LIFE_MS) : null;
 }
 /**
  * Who this request is, or null. Re-reads the account file every time, so
@@ -1606,8 +1613,8 @@ function secureAttr(req: CookieReq): string {
   const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
   return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq, since?: number): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa, since)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
 function pendingCookie(name: string, req: CookieReq): string {
   return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
@@ -2477,6 +2484,23 @@ app.get("/share/card.png", async (req, res) => {
   }
   // No rasteriser on this platform: the plain icon still beats no picture.
   return res.sendFile(path.join(__dirname, "..", "public", "icons", "icon-512.png"));
+});
+
+// Renew a PERSON's session on use. `cookieAccount` is the test, not
+// `currentAccount`: it is null for an agent, a peer and the server's own
+// client, none of which holds a browser cookie worth extending — and it has
+// already applied every refusal (reset access, two-factor, the retired
+// bootstrap cookies), so a dead session is never brought back. `since` rides
+// along unchanged. A handler that sets its own cookie afterwards (sign-out, a
+// passkey change) simply replaces this header.
+app.use((req, res, next) => {
+  if (!GUI_PASSWORD) return next();
+  const sess = cookieSession(req);
+  if (sess && sessionRenewal(sess, Date.now(), { renewAfterMs: SESSION_RENEW_AFTER_MS, maxLifeMs: SESSION_MAX_LIFE_MS })) {
+    const acct = cookieAccount(req);
+    if (acct) res.setHeader("Set-Cookie", sessionCookie(acct.name, sess.mfa, req, sess.since));
+  }
+  next();
 });
 
 app.get("/me", (req, res) => {
