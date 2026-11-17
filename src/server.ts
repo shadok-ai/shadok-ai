@@ -37,6 +37,7 @@ import {
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
+import { claudeUpdateState } from "../public/update-ready.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { backgroundTasks, screenShowsWork, inputBoxVisible, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
 import {
@@ -50,6 +51,7 @@ import {
 } from "./submit-recovery.js";
 import { busyLatchVerdict, busyLatchLog, BUSY_LATCH_GRACE_MS } from "./busy-latch.js";
 import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
+import { autoInstallVerdict, autoInstallEnabled, failingOnInstalled, newerPublished, lockHeld } from "./claude-auto-update.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
@@ -8488,21 +8490,18 @@ app.get(["/media/:name", "/media/:key/:name"], (req, res) => {
 // footer reports "Auto-update failed"; running agents still need a reload
 // afterwards to pick up the new binary (the client does that). BROWSER-ONLY: a
 // deliberate operator action, not something an agent should trigger for the
-// whole machine (cf. the profile-guardrail boundary). Single-flight so two
-// clicks don't race two installs (ENOTEMPTY, see `rewriteInProgress`).
-let claudeUpdateInFlight: Promise<void> | null = null;
+// whole machine (cf. the profile-guardrail boundary). The server now also does
+// it by itself (`claudeAutoInstallSweep`); both go through `installClaudeOnce`,
+// so a click and the sweep can never run two installs.
 app.post("/claude-update", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "browser-only" });
   try {
-    if (!claudeUpdateInFlight) {
-      console.log("claude-update: installing @anthropic-ai/claude-code (npm i -g)…");
-      claudeUpdateInFlight = installClaudeCli().finally(() => { claudeUpdateInFlight = null; });
+    // The sweep may have installed it a minute ago: the badge on an agent not
+    // reloaded yet still says "install", and a click must not reinstall.
+    if (!claudeUpdateInFlight && Date.now() - claudeInstallSettledAt < CLAUDE_INSTALL_SETTLE_MS) {
+      return res.json({ ok: true, already: true });
     }
-    await claudeUpdateInFlight;
-    // The cached binary path rots on any reinstall (invariant 32): drop it so the
-    // next spawn re-resolves the freshly installed launcher.
-    claudeReady = null;
-    rememberClaudeBin(null);
+    await installClaudeOnce("button");
     console.log("claude-update: install ok");
     res.json({ ok: true });
   } catch (e) {
@@ -8511,6 +8510,127 @@ app.post("/claude-update", async (req, res) => {
     res.status(500).json({ ok: false, error });
   }
 });
+
+// ── Claude Code auto-install (see src/claude-auto-update.ts) ─────────────────
+const CLAUDE_AUTO_INSTALL = autoInstallEnabled(process.env.SHADOK_CLAUDE_AUTO_INSTALL);
+const CLAUDE_INSTALL_SETTLE_MS = 60 * 60_000;
+const CLAUDE_INSTALL_BACKOFF_MS = 30 * 60_000;
+const CLAUDE_INSTALL_LOCK_STALE_MS = 20 * 60_000;
+let claudeUpdateInFlight: Promise<void> | null = null;
+let claudeInstallSettledAt = 0;
+let claudeInstallFailedAt = 0;
+
+/** Cross-process half of the single-flight: two shadok servers on one host share
+ *  the global npm directory, and two concurrent `npm i -g` collide (ENOTEMPTY).
+ *  `wx` creates the file only if absent — the one atomic test-and-set the fs has. */
+function claudeInstallLockFile(): string {
+  return path.join(os.homedir(), ".shadok-ai", "claude-install.lock");
+}
+function readClaudeInstallLock(): number | null {
+  try {
+    const t = Number(fs.readFileSync(claudeInstallLockFile(), "utf8").trim());
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return null;
+  }
+}
+function takeClaudeInstallLock(): boolean {
+  const file = claudeInstallLockFile();
+  if (lockHeld(readClaudeInstallLock(), Date.now(), CLAUDE_INSTALL_LOCK_STALE_MS)) return false;
+  try { fs.rmSync(file, { force: true }); } catch { /* a stale lock we cannot remove: wx below fails */ }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, String(Date.now()), { flag: "wx" });
+    return true;
+  } catch {
+    return false; // someone took it between our read and our write
+  }
+}
+
+/** THE one way to install Claude Code once it is running: the button, the
+ *  auto-install sweep and the missing-binary path all share this promise, and the
+ *  lock keeps another process out. The cached binary path rots on any reinstall
+ *  (invariant 32), and the version cache would hide the change from the staleness
+ *  sweep for a minute: both are dropped on success, so the reload half starts at
+ *  once. */
+function installClaudeOnce(by: string): Promise<void> {
+  if (claudeUpdateInFlight) return claudeUpdateInFlight;
+  if (!takeClaudeInstallLock()) return Promise.reject(new Error("another Claude Code install is already running on this machine"));
+  console.log(`claude-update: installing @anthropic-ai/claude-code (npm i -g) — ${by}`);
+  claudeUpdateInFlight = installClaudeCli()
+    .then(() => {
+      claudeInstallSettledAt = Date.now();
+      claudeReady = null;
+      rememberClaudeBin(null);
+      claudeVerCache = null;
+    })
+    .catch((e) => {
+      claudeInstallFailedAt = Date.now();
+      throw e;
+    })
+    .finally(() => {
+      claudeUpdateInFlight = null;
+      try { fs.rmSync(claudeInstallLockFile(), { force: true }); } catch { /* stale after 20 min anyway */ }
+    });
+  return claudeUpdateInFlight;
+}
+
+/** The version npm would install, or null when the registry cannot say. */
+function publishedClaudeVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFile(npm, ["view", "@anthropic-ai/claude-code", "version"], { timeout: 30_000 }, (err, out) =>
+      resolve(err ? null : parseClaudeVersion(String(out)) ?? (String(out).trim() || null)),
+    );
+  });
+}
+
+/** Every 30 s, beside the auto-reload sweep: an agent's footer says its own
+ *  update failed → install it for everyone, once. The reload follows through the
+ *  `claude` staleness reason. */
+let claudeAutoInstallChecking = false;
+async function claudeAutoInstallSweep(): Promise<void> {
+  if (!CLAUDE_AUTO_INSTALL || claudeAutoInstallChecking) return;
+  const channels = loadChannels();
+  let failing = 0;
+  let current: string | null | undefined;
+  for (const s of sessions.values()) {
+    if (s.pilot.hasExited || claudeUpdateState(s.pilot.screen()) !== "failed") continue;
+    if (current === undefined) current = currentClaudeVersion();
+    const spawnVer = channels.find((c) => c.sessionId === s.id)?.spawnClaudeVer ?? null;
+    if (failingOnInstalled(spawnVer, current)) failing++;
+  }
+  const now = Date.now();
+  const verdict = autoInstallVerdict({
+    enabled: CLAUDE_AUTO_INSTALL,
+    failingOnCurrent: failing,
+    inFlight: !!claudeUpdateInFlight,
+    externalInstall: claudeInstallInProgress() || lockHeld(readClaudeInstallLock(), now, CLAUDE_INSTALL_LOCK_STALE_MS),
+    sinceLastSettledMs: now - claudeInstallSettledAt,
+    sinceLastFailureMs: now - claudeInstallFailedAt,
+    settleMs: CLAUDE_INSTALL_SETTLE_MS,
+    failureBackoffMs: CLAUDE_INSTALL_BACKOFF_MS,
+  });
+  if (!verdict.install) return;
+  claudeAutoInstallChecking = true;
+  try {
+    // A footer is a screen heuristic (invariant 2): ask the registry before
+    // pulling a few hundred MB. Nothing newer → settle, nothing installed.
+    const installed = current ?? currentClaudeVersion();
+    const published = await publishedClaudeVersion();
+    if (!newerPublished(installed, published)) {
+      claudeInstallSettledAt = Date.now();
+      console.log(`claude-update: ${failing} agent(s) report a failed auto-update, but ${installed} is already the latest — nothing to install`);
+      return;
+    }
+    await installClaudeOnce(`auto: ${failing} agent(s) report a failed auto-update (${installed ?? "?"} → ${published ?? "latest"})`);
+    console.log(`claude-update: auto-install ok (now ${currentClaudeVersion() ?? "?"}) — idle agents reload onto it one at a time`);
+  } catch (e) {
+    console.log(`claude-update: auto-install FAILED — ${e instanceof Error ? e.message : e} (next try in ${CLAUDE_INSTALL_BACKOFF_MS / 60_000} min)`);
+  } finally {
+    claudeAutoInstallChecking = false;
+  }
+}
 
 // The shared-ledger table — ONE per instance (keyed by the launch dir). Read by
 // the GUI viewer (the version-menu / header button) AND by the `shadok-ledger`
@@ -10215,6 +10335,12 @@ let autoReloadRunning = false;
 function pendingReloadReasons(s: Live, channels: Channel[]): string[] {
   const out = sessionStaleness(s, channels).map((r) => r.kind as string);
   if ((s.appliedProfile ?? null) !== (s.profile ?? null)) out.push("profile");
+  // Claude Code's own footer: "Update installed · Restart to apply". Its updater
+  // may have written a binary the server's `claude --version` never sees (a
+  // per-user install), so the `claude` reason above can miss it. The backoff in
+  // autoReloadVerdict keeps a footer that survives the reload from looping.
+  if (!out.includes("claude") && !s.pilot.hasExited && claudeUpdateState(s.pilot.screen()) === "restart")
+    out.push("claude-restart");
   return out;
 }
 
@@ -10448,7 +10574,7 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
     // transient, so failing hard on the first sample would report a healthy
     // install as broken. Nothing here runs at boot.
     find: () => findClaudeBinWithRetry(liveClaudeDeps()),
-    install: installClaudeCli,
+    install: () => installClaudeOnce("missing binary"),
     // Claude Code's auto-updater reinstalls the package in place; installing
     // over it is how a fresh instance's first agent died on ENOTEMPTY.
     installInProgress: claudeInstallInProgress,
@@ -13205,7 +13331,12 @@ server.listen(port, HOST, () => {
   staleTimer.unref();
   // Auto-reload: twice a minute, respawn (at most) one idle agent that is
   // behind — the "reload to apply" badge applying itself. See autoReloadSweep.
-  const autoReloadTimer = setInterval(() => void autoReloadSweep().catch(() => {}), 30_000);
+  // The install half first: a failed Claude Code self-update on any agent is
+  // installed once, server-side, and the reload sweep then picks it up.
+  const autoReloadTimer = setInterval(() => {
+    void claudeAutoInstallSweep().catch(() => {});
+    void autoReloadSweep().catch(() => {});
+  }, 30_000);
   autoReloadTimer.unref();
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts
