@@ -376,6 +376,7 @@ a Node test — which is why the client has a test suite at all:
 
 | Module | Pure function | Tested by |
 |---|---|---|
+| `public/bar-overflow.js` | Pure `shrinkToFit` / `nameReads` / `chanOverflowIds` / `chanOverflowItems` — the phone rule for BOTH header rows: when a row does not fit, its icons go to that row's ⋯ menu one at a time until the name it squeezes reads again (the instance name ≥ 64px, the agent name ≥ 120px, or uncut). Header: Users, Reports, Security move into `#overflowTools` (a badge on a moved one puts a dot on ⋯, CSS `:has`). Agent bar: Webhooks, Gallery, Schedule, About, Terminal get `.bar-ovf` and come back as items of the agent ⋯ menu (`openTabMenu`'s `extra`); Schedule and Webhooks already were. Recomputed on resize and on what changes the room without one (agent switch/rename, badge shown, `MutationObserver`); always from "all shown", so it reverses. |
 | `public/live-text.js` | `extractLiveText(screen)` | `test/live-text.test.ts` |
 | `public/shadok-soul.js` | `pumpLine`, `gabuzomeu`, `pickMaxim`, `mascotSay` | `test/shadok-soul.test.ts` |
 | `public/spawn-steps.js` (+ `src/spawn-steps.ts`) | `spawnStepStates`, `spawnLoaderTitle`, `SPAWN_HINT`; server `SPAWN_STEP_KEYS`, `isSpawnStep` | `test/spawn-loader.test.ts` |
