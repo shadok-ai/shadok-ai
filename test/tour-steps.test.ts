@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TOUR_STEPS, bubblePlacement, tourStanding, unionRect, visibleSteps } from "../public/tour-steps.js";
+import { TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "../public/tour-steps.js";
 
 const VIEW = { width: 1280, height: 900 };
 const BUBBLE = { width: 340, height: 160 };
@@ -340,4 +340,51 @@ test("the page waits for its agents and its account before counting the steps", 
   assert.match(fn, /meReady/);
   assert.match(fn, /setTimeout\(r, \d+\)/, "the wait must be bounded");
   assert.match(html, /\n\s*markBootSettled\(\);\n/, "the restore must say when its tabs are painted");
+});
+
+test("the demo scene is staged only when there is nothing real to point at", () => {
+  // The first visit runs before the sign-in, so before any agent exists — and
+  // dropping every step without a target left the newcomer the five stops
+  // that are NOT about agents. With one real agent the set must stay away:
+  // an example beside the real thing is a lie about which is which.
+  assert.equal(tourNeedsDemo(0), true);
+  assert.equal(tourNeedsDemo(1), false);
+  assert.equal(tourNeedsDemo(7), false);
+});
+
+test("the demo scene says it is an example, on every surface it paints", () => {
+  // The rule it bends ("never fake a target") was about not lying. A set that
+  // announces itself keeps that; one that does not is a cockpit showing agents
+  // nobody started.
+  assert.match(TOUR_DEMO.note, /example/i);
+  assert.match(TOUR_DEMO.note, /nothing here is running/i);
+  assert.ok(TOUR_DEMO.tag.length > 0, "each row carries the tag");
+  assert.equal(TOUR_DEMO.agents.filter((a) => a.active).length, 1, "exactly one example agent is the one on screen");
+  assert.ok(TOUR_DEMO.chat.some((m) => m.role === "user") && TOUR_DEMO.chat.some((m) => m.role === "claude"));
+});
+
+test("the demo scene can never become a channel", () => {
+  // The agents list is persisted by reading the column back off the DOM
+  // (persistChannels), so a set built through createTab would be saved, resumed
+  // and counted as an agent. These are scans of a hand-written page, like
+  // test/csp.test.ts: the property lives in how the page is written.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const on = html.slice(html.indexOf("function tourDemoOn()"), html.indexOf("function tourDemoOff("));
+  assert.ok(on.length > 200, "tourDemoOn not found");
+  assert.doesNotMatch(on, /createTab\(/, "the set must not enter the tab registry");
+  assert.doesNotMatch(on, /sessionId|_tab\b|innerHTML|addEventListener|openLink|WebSocket/, "no id, no handler, no socket, text only");
+  assert.match(on, /ungroupedEl\.before\(list\)/, "the rows live outside the scopes the column lays out");
+  // The filter that makes a row without a tab object unsaveable.
+  assert.match(html, /\.map\(\(el\) => el\._tab\)\s*\.filter\(\(t\) => t && t\.sessionId\)/);
+});
+
+test("the demo scene is struck when the tour ends or a real agent takes the screen", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const end = html.slice(html.indexOf("function endTour()"), html.indexOf('$("tourNext").addEventListener'));
+  assert.match(end, /tourDemoOff\(\)/);
+  const chrome = html.slice(html.indexOf("function refreshChrome()"), html.indexOf("function refreshChrome()") + 900);
+  assert.match(chrome, /if \(tourDemo && t\) tourDemoOff\(/, "a real agent on screen strikes the set");
+  assert.match(chrome, /if \(tourDemo\) \{ paintTourDemoChrome\(\); return; \}/, "a periodic repaint must not paint 'no agent' over it");
+  // Read from the first paint on, so it must be declared before its readers.
+  assert.ok(html.indexOf("let tourDemo = false;") < html.indexOf("function applyView()"), "tourDemo would be in its temporal dead zone at boot");
 });
