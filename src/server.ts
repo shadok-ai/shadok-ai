@@ -2545,6 +2545,9 @@ app.use((req, res, next) => {
   // else stays denied, so a peer never touches B's vault, profiles, crons, other
   // agents or the account routes. Its spawn/drive path is the WS (verifyClient).
   if (req.method === "GET" && req.path === "/diff" && peerName(req)) return next();
+  // And `GET /live`, so a peer can find the agents it left behind: the handler
+  // narrows a restricted peer to the ones it spawned (`restrictedBoxOf`).
+  if (req.method === "GET" && req.path === "/live" && peerName(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(req, res);
   return res.status(401).json({ error: "unauthorized" });
@@ -2789,18 +2792,34 @@ app.get("/live", (req, res) => {
     if (!g) return false; // unresolvable → fail closed
     return canSeeGroup(g, viewer);
   };
-  res.json(
-    [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited && visible(s.id))
-      .map((s) => ({
-        id: s.id,
-        cwd: s.cwd,
-        branch: s.worktree?.branch ?? null,
-        busy: s.busy,
-        clients: s.clients.size,
-        lastPrompt: s.lastPrompt,
-      })),
-  );
+  type LiveRow = { id: string; cwd: string; branch: string | null; busy: boolean; clients: number; idleSec: number; lastPrompt?: string; running?: false };
+  const running: LiveRow[] = [...sessions.values()]
+    .filter((s) => !s.pilot.hasExited && visible(s.id))
+    .map((s) => ({
+      id: s.id,
+      cwd: s.cwd,
+      branch: s.worktree?.branch ?? null,
+      busy: s.busy,
+      clients: s.clients.size,
+      // How long nothing has happened on it — what `pilotctl reap --idle` sorts by.
+      idleSec: Math.round((Date.now() - Math.max(s.lastActivityAt ?? 0, s.lastContentAt ?? 0)) / 1000),
+      lastPrompt: s.lastPrompt,
+    }));
+  // A RESTRICTED PEER also gets the agents it spawned that are no longer
+  // running: a process reclaimed after its idle window still leaves its channel
+  // row in this cockpit, and this list is the only one such a peer can read —
+  // without these rows its leftovers were invisible to the one caller entitled
+  // to close them. Nobody else's list changes. The scope rides in a header so
+  // the shape stays an array for every existing reader.
+  if (box && peerName(req)) {
+    res.setHeader("x-shadok-peer-scope", "restricted");
+    const live = new Set(running.map((r) => r.id));
+    for (const c of chans) {
+      if (live.has(c.sessionId) || !ownedByPeer(c, box)) continue;
+      running.push({ id: c.sessionId, cwd: c.cwd, branch: c.branch ?? null, busy: false, clients: 0, idleSec: -1, running: false });
+    }
+  }
+  res.json(running);
 });
 // Current 5-hour and 7-day subscription usage, each window enriched with how it
 // compares to the time already elapsed (for the quota gauges and the send guard).
@@ -12956,8 +12975,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const ch = loadChannels().find((c) => c.sessionId === id);
             if (!ownedByPeer(ch, callerPeer)) return fail("a restricted peer may only stop its own agents", "peer-scope");
           }
-          await endChannel(id);
+          const ended = await endChannel(id);
           if (session?.id === id) session = null;
+          // Answer the SENDER, attached or not. `stopped` is broadcast only to the
+          // viewers of a LIVE session, so a caller that stopped a dormant agent by
+          // id (pilotctl, whose holder is long gone) heard nothing and could not
+          // tell "gone" from "ignored". `ended: false` = the home base, kept.
+          send({ type: "stop-result", sessionId: id, ok: ended });
           break;
         }
       }
