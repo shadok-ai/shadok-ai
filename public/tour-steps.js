@@ -29,28 +29,36 @@
  * six steps were silently filtered out on a phone — including every step that
  * mentioned agents at all, i.e. the subject of the product.
  */
+// COPY RULES, held by test/tour-steps.test.ts. Each one was asked for by the
+// person reading the tour, not derived:
+//  - short: a body is a couple of sentences (TOUR_BODY_MAX), because a card
+//    nobody finishes teaches nothing, and eleven of them is already a lot;
+//  - plain: no em or en dash, no arrow, no semicolon. They read as machine
+//    prose, and a tour that sounds generated is skimmed;
+//  - no implementation words in what a newcomer reads first (worktree, branch,
+//    token, shell): the welcome and the agents step say what it DOES.
+export const TOUR_BODY_MAX = 230;
+
 export const TOUR_STEPS = [
   {
     id: "welcome",
     title: "Welcome to shadok-ai",
     body:
-      "Every agent here is a real Claude Code session, running in its own directory " +
-      "and its own git branch, so several can work at once without colliding. " +
-      "You drive them from this page — or from Telegram, where one topic is one agent.",
+      "Every agent here is a real Claude Code session, so several can work at once without " +
+      "colliding. You drive them from this page, or from Telegram, where one topic is one " +
+      "agent.",
     target: null,
   },
   {
     id: "groups",
     title: "Groups sort the work",
-    // Says "can also be a wall" rather than listing private/restricted as
-    // things to click: a single-tenant instance (the `npx` default) refuses to
-    // create either, and a tour promising a control that answers "not here" is
-    // the copy twin of a spotlight on empty space.
+    // Says "on a shared cockpit … can be" rather than listing private and
+    // restricted as things to click: a single-tenant instance (the `npx`
+    // default) refuses to create either, and a tour promising a control that
+    // answers "not here" is the copy twin of a spotlight on empty space.
     body:
-      "Agents are filed into groups — one per project, team or subject. Pick a group to " +
-      "narrow the list to it. On a cockpit set up for several people a group can also be a " +
-      "wall: restricted to a team or private to you, with its own secrets, and agents that " +
-      "run apart from everyone else's.",
+      "Groups sort your agents by project, team or subject. Pick one to see only its " +
+      "agents. On a shared cockpit, a group can be restricted to a team or private to you.",
     // The rail is hidden when there is nothing to show in it, and a phone lists
     // the groups inside the closed agents sheet — both drop this step honestly.
     target: "#groupRail",
@@ -59,10 +67,9 @@ export const TOUR_STEPS = [
     id: "agents",
     title: "Your agents live here",
     body:
-      "Every agent gets its own git worktree and branch, so several never collide. " +
-      "Pick one here to follow it, and “＋ New agent” starts another. One of them is this " +
-      "cockpit's home agent: the only one that cannot be closed. A room is the exception: " +
-      "a conversation between people, with no agent behind it and no quota spent.",
+      "Pick an agent to follow it, or start another with “＋ New agent”. The home agent is " +
+      "the only one that cannot be closed. A room is a conversation between people, with no " +
+      "agent behind it.",
     // The column on desktop, the agents-picker button on a phone — never both at
     // once. The phone's `#chanPicker` opens the SAME column as a bottom sheet, so
     // "＋ New agent" and Tweak are reachable there too now — but the spotlight
@@ -79,21 +86,17 @@ export const TOUR_STEPS = [
     // what "left to right" cost. Schedule and webhooks sit inside this frame
     // too and are deliberately NOT described here: they get their own stop.
     body:
-      "The bar above the conversation is about the agent on screen. The gallery gathers " +
-      "every photo and video exchanged with it, “About” lists the skills it uses and its " +
-      "schedules, and the terminal shows the raw Claude Code screen — for the rare moment " +
-      "the chat is not enough.",
+      "These buttons belong to the agent on screen: the gallery of its photos and videos, " +
+      "its skills and schedules, and its raw terminal.",
     target: ["#chanGallery", "#chanCron", "#chanWebhooks", "#chanInfo", "#chanTerm"],
   },
   {
     id: "tab",
     title: "Each agent has its own menu",
     body:
-      "This ⋯ holds an agent's controls: mute, reload, rename, change its profile, its model " +
-      "or how hard it thinks, read its token stats, mirror it to a Telegram topic, or have " +
-      "it report to another agent when it finishes. " +
-      "“Context sent” shows exactly what shadok told it at spawn — and, except for the home " +
-      "agent, this is where you close it.",
+      "This menu holds the rest: rename, reload, mute, change the profile or the model, see " +
+      "its stats, mirror it to Telegram. “Context sent” shows what shadok told the agent at " +
+      "start. This is also where you close it.",
     // `#chanMenu`, NOT `.tab.active`. Two reasons, and the second is why it
     // changed: it is literally the button this body tells you to press (the
     // tab's own ⋯ opens the same menu), and it exists on BOTH layouts, whereas
@@ -115,19 +118,17 @@ export const TOUR_STEPS = [
     // the two buttons now, and the menu remains the fallback target for a
     // layout that would not render them.
     body:
-      "A schedule pairs a recurring prompt with a shell check that runs without the model. " +
-      "Silent check → nothing happened, the agent stays asleep at zero tokens. Otherwise it " +
-      "wakes up holding the finding, and tells you here or on Telegram. A webhook is the " +
-      "same idea from outside: an HTTP call from another system wakes the agent.",
+      "A schedule sends the agent a prompt at set times. Add a check and the agent only " +
+      "wakes up when there is something to report, at no cost otherwise. A webhook lets " +
+      "another system wake it.",
     target: ["#chanCron", "#chanWebhooks"],
   },
   {
     id: "composer",
-    title: "Talk to it — with more than text",
+    title: "Talk to your agent",
     body:
-      "Write to the agent here. Attach a file, or paste or drop one in; add one of its " +
-      "skills to the prompt; or dictate instead of typing. It works the other way too: " +
-      "when an agent's result is a file, it arrives in the conversation as a download.",
+      "Write here. You can also attach a file, add a skill or dictate. Files the agent " +
+      "sends back arrive here as downloads.",
     target: "#composer",
   },
   {
@@ -143,12 +144,8 @@ export const TOUR_STEPS = [
     // told the ledger was "profiles". An order is a claim about the DOM that
     // no test here can hold; a list of functions is not.
     body:
-      "The secret vault injected into agents that need it, the shared ledger of what your " +
-      "agents have already resolved, the Skill Factory where skills are written, released " +
-      "and shared, and profiles (role, guardrails, model). Telegram and the notification " +
-      "sound live under the ⋯ — which also holds the diff of an agent's work, the whole " +
-      "instance's stats, light or dark mode, the palette, and this tour. On a narrow screen " +
-      "the rest fold in there too.",
+      "Secrets, the shared ledger, the Skill Factory and profiles. The ⋯ menu holds the " +
+      "rest: Telegram, sound, the diff, stats, light or dark mode and this tour.",
     // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
     // generates no box at all — its rect is all zeros, so the step would have
     // been dropped as "not visible" on the very layout where the toolbar is
@@ -176,7 +173,7 @@ export const TOUR_STEPS = [
   },
   {
     id: "people",
-    title: "People, not only agents",
+    title: "People",
     // Its own step BECAUSE it is conditional: all three buttons start `hidden`
     // and which ones show depends on the role (`loadMe`). Folded into the
     // toolbar body they would be named to people who do not have them. Here the
@@ -186,20 +183,17 @@ export const TOUR_STEPS = [
     // It does NOT say "this instance has accounts": the lone admin of a
     // no-password instance sees all three, and has none.
     body:
-      "A few buttons are about people rather than agents — which ones you see depends on " +
-      "your role. Users is where people are invited and where you add a passkey for " +
-      "two-factor sign-in, Reports is where a stuck agent asks an admin for help, and " +
-      "Security shows what happened to your own account.",
+      "These buttons are about people. Which ones you see depends on your role: Users for " +
+      "invitations and two-factor sign-in, Reports for agents asking an admin for help, " +
+      "Security for activity on your account.",
     target: ["#securityBtn", "#reportsBtn", "#usersBtn"],
   },
   {
     id: "quota",
     title: "Watch your quota",
     body:
-      "Your 5h and 7d subscription usage. Each bar fills with what you've spent, and the " +
-      "white marker is the pace that would spend the window exactly on time — a fill past " +
-      "the marker means you're burning faster. Past the pace, a new prompt is held back " +
-      "unless you choose to send it anyway.",
+      "Your 5h and 7d usage. The white marker is the ideal pace: past it, you are spending " +
+      "too fast and a new prompt asks for confirmation.",
     target: ["#quota5h", "#quota7d"],
   },
   {
@@ -210,10 +204,9 @@ export const TOUR_STEPS = [
     // menu behind the version has since become where an instance is configured,
     // which a clause could no longer carry.
     body:
-      "The name tells this cockpit apart when you run several; an admin can change it. The " +
-      "version opens this instance's settings, most of them an admin's: the Claude account " +
-      "and when its sign-in expires, updates and their channel, the permission mode and " +
-      "default model for new agents, and the instance context every agent here receives.",
+      "The name tells your cockpits apart. The version opens the settings: Claude account " +
+      "and when its sign-in expires, updates, permission mode, default model and instance " +
+      "context.",
     target: ["#brandName", "#verView", "#verChan"],
   },
 ];
@@ -238,7 +231,7 @@ export const TOUR_STEPS = [
  * an example that entered the tab registry could be persisted as a channel.
  */
 export const TOUR_DEMO = {
-  note: "Example — nothing here is running. Your own agents take this place once Claude is connected.",
+  note: "Example: nothing here is running. Your agents will appear here once Claude is connected.",
   tag: "example",
   agents: [
     { name: "general", active: true },
