@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AGENT_PROMPT_MARK,
-  MAX_FANOUT,
   MAX_LINK_DEPTH,
   chainDepth,
   childrenOf,
@@ -54,13 +53,12 @@ test("linkRefusal: refuses a chain deeper than the cap", () => {
   assert.equal(linkRefusal(list, "newcomer", "root"), null);
 });
 
-test("linkRefusal: refuses fan-out past the cap, but re-parenting an existing child is a no-op", () => {
+test("linkRefusal: a parent may hold any number of children", () => {
+  // The old cap was 12; a lead fanning out wider than that is legitimate.
   const list: Channel[] = [ch("boss")];
-  for (let i = 0; i < MAX_FANOUT; i++) list.push(ch(`kid${i}`, "boss"));
+  for (let i = 0; i < 50; i++) list.push(ch(`kid${i}`, "boss"));
   list.push(ch("extra"));
-  assert.equal(linkRefusal(list, "extra", "boss"), "too-many-children");
-  // kid0 already counts as one of boss's children — counting it twice would
-  // refuse a link that changes nothing.
+  assert.equal(linkRefusal(list, "extra", "boss"), null);
   assert.equal(linkRefusal(list, "kid0", "boss"), null);
 });
 
