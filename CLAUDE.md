@@ -424,6 +424,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **73.** The secret↔profile link is written from BOTH ends (a profile's `secrets`, a secret's `profiles`), so anything asking "who receives this secret" must read both — one side alone answers "nobody", and a caller that reads an empty answer as "no one to tell" then shows nothing at all. · [detail](docs/invariants.md#inv-77)
 
+- **74.** The input box is not always where its `❯` is: a prompt taller than the pane scrolls it, the `❯` line leaves the screen and the top border reads `─── ↑ N more ───`. Read by the `❯` alone the box looks EMPTY, so a long prompt is re-pasted on itself and never sent — and a respawn replays the same prompt into the same state (`boxRaw`, `src/detect.ts`). [detail](docs/invariants.md#inv-78)
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

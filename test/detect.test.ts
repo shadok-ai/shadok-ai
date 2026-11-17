@@ -675,3 +675,67 @@ test("describeStuckScreen: a full input box is named, instead of pointing at the
   assert.equal(describeStuckScreen(screenWith("❯ ")), null);
   assert.equal(describeStuckScreen(screenWith("❯ R4-B: answer with the single word BETA")), null);
 });
+
+// A prompt taller than the pane makes the input box SCROLL: its `❯` line leaves
+// the screen and the top border turns into `─── ↑ N more ───`. Shape captured
+// from a live 100x40 pane (2.1.326); the content is neutral.
+const scrolledBox = (more: number, tail = "  what decides whether the banner shows?") =>
+  [
+    "● Done.",
+    "",
+    "✻ Worked for 4m 45s · done 12:09 AM",
+    "",
+    `─── ↑ ${more} more ${"─".repeat(60)}`,
+    "  [a1b2] nightly import — resolved • [c3d4] report export — resolved",
+    "  ⟦web · 2026-01-01 00:33 · Ada⟧",
+    tail,
+    "─".repeat(80),
+    "  ⏵⏵ auto mode on (shift+tab to cycle)",
+  ].join("\n");
+
+test("boxText: a box scrolled past its ❯ line is not an empty box", () => {
+  const box = boxText(scrolledBox(244));
+  assert.notEqual(box, "");
+  assert.ok(box.includes("what decides whether the banner shows?"));
+  // The status line under the bottom border is not part of it.
+  assert.ok(!box.includes("auto mode"));
+  // Growing or shrinking by a line changes what is read, even when the visible
+  // rows happen to be the same — that is what makes a paste and a Ctrl-U visible.
+  assert.notEqual(boxText(scrolledBox(244)), boxText(scrolledBox(245)));
+});
+
+test("boxText: an earlier ❯ line above a scrolled box is not the box", () => {
+  const screen = "❯ an older prompt still on screen\n● Answer.\n" + scrolledBox(12);
+  assert.ok(!boxText(screen).includes("an older prompt"));
+  assert.ok(boxText(screen).includes("what decides"));
+});
+
+test("boxText: a '↑ N more' in ordinary output does not pass for a box", () => {
+  const screen = ["● Listing", "  ↑ 3 more above", "─── notes ───", "❯ hello", "─".repeat(40)].join("\n");
+  assert.equal(boxText(screen), "hello");
+});
+
+test("describeStuckScreen names a scrolled box as a full one", () => {
+  assert.match(describeStuckScreen(scrolledBox(244)) ?? "", /input box was not empty/);
+});
+
+test("typeIntoBox: a prompt that scrolls the box is seen to land", async () => {
+  // The fake grows a scrolled box by one row per paste — the state in which
+  // every paste used to read as "nothing arrived" and was pasted again.
+  let more = 0;
+  let pastes = 0;
+  const empty = ["● Done.", "", "❯ ", "─".repeat(80), "  ⏵⏵ auto mode on"].join("\n");
+  const pilot = {
+    screen: () => (more === 0 ? empty : scrolledBox(more)),
+    paste: () => { pastes++; more += 30; },
+    clearInput: () => { if (more > 0) more--; },
+    hardClear: () => { more = 0; },
+    waitFor: async (p: (s: string) => boolean) => {
+      if (!p(pilot.screen())) throw new Error("timeout");
+      return pilot.screen();
+    },
+  };
+  const ok = await typeIntoBox(pilot as any, "what decides whether the banner shows?", { prelude: ["chunk one", "chunk two"], appearMs: 10, settleMs: 0, clearMs: 10 });
+  assert.equal(ok, true);
+  assert.equal(pastes, 3, "two prelude chunks and the message, each pasted exactly once");
+});
