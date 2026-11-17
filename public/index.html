@@ -2393,8 +2393,8 @@
     position: fixed;
     border-radius: 10px;
     box-shadow: 0 0 0 9999px rgba(8, 9, 13, 0.72);
-    /* Clicks in the hole fall through to the overlay, which ends the tour —
-       the same "click outside" gesture as everywhere else. */
+    /* Clicks in the hole fall through to the overlay, which swallows them: the
+       tour ends on Skip, Done or Escape, never on a click that missed. */
     pointer-events: none;
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
@@ -3575,7 +3575,7 @@
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
       <button id="instanceStatsBtn">📊 Instance stats</button>
-      <button id="tourReplay">Guided tour</button>
+      <button id="tourReplay">Replay the guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
       <button id="starMenuItem">★ Star on GitHub</button>
@@ -17529,9 +17529,13 @@
 
   $("tourNext").addEventListener("click", () => paintTourStep(true));
   $("tourSkip").addEventListener("click", endTour);
-  // A click on the overlay itself — including through the hole, which has
-  // pointer-events: none — ends it. Nobody is trapped in a tutorial.
-  $("tourOverlay").addEventListener("click", (e) => { if (e.target === $("tourOverlay")) endTour(); });
+  // A click beside the bubble does NOT end the tour. It used to ("the same
+  // click-outside gesture as everywhere else"), and that is the wrong gesture
+  // here: a popin is closed by someone who opened it, the tour is met by
+  // someone who did not ask for it and is reaching for a button behind the
+  // dim. One stray click threw the whole thing away, marked as seen. Leaving
+  // is a decision — Skip, Done, or Escape — and nobody is trapped: all three
+  // are always available, and ⋯ → "Replay the guided tour" brings it back.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("tourOverlay").hidden) { endTour(); e.preventDefault(); }
   });

@@ -609,8 +609,10 @@ Enter to skip; you can add it later from the web UI).
   about, terminal), its ⋯ menu, schedules and webhooks, the composer (attach, add
   a skill, dictate), the toolbar (secrets, ledger, Skill Factory, profiles,
   Telegram, sound, and what the ⋯ holds), the people buttons (Users, Reports,
-  Security), the quota bars, and the cockpit's name and settings menu. Skip and
-  Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
+  Security), the quota bars, and the cockpit's name and settings menu. Each card
+  is a couple of plain sentences. Skip and Escape end it at any point — a click
+  beside the card does **not**, so a stray click cannot throw the tour away — and
+  ⋯ → *Replay the guided tour* brings it back. A step whose target
   isn't on screen is **dropped rather than faked** — a member has no Reports
   button, a phone has no groups column — so it gets a shorter tour instead of a
   spotlight on nothing. One case is staged instead: a cockpit with **no agent

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "../public/tour-steps.js";
+import { TOUR_BODY_MAX, TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "../public/tour-steps.js";
 
 const VIEW = { width: 1280, height: 900 };
 const BUBBLE = { width: 340, height: 160 };
@@ -105,8 +105,12 @@ test("the tour shows the scheduled-prompt guard, and shows it on its own", () =>
   assert.ok(step, "the tour must carry a step about scheduled prompts");
   // The claim, not just the word: a schedule is unremarkable, a schedule that
   // costs nothing when there is nothing to report is the whole point.
-  assert.match(step.body, /zero tokens/i);
-  assert.match(step.body, /without the model/i);
+  // Said in the reader's words since the copy was shortened: "zero tokens" and
+  // "a shell check that runs without the model" were the mechanism, and the
+  // person reading asked for the promise instead.
+  assert.match(step.body, /check/i);
+  assert.match(step.body, /only wakes up when there is something to report/i);
+  assert.match(step.body, /no cost/i);
 });
 
 test("it follows the steps that introduced the agent's own controls", () => {
@@ -387,4 +391,48 @@ test("the demo scene is struck when the tour ends or a real agent takes the scre
   assert.match(chrome, /if \(tourDemo\) \{ paintTourDemoChrome\(\); return; \}/, "a periodic repaint must not paint 'no agent' over it");
   // Read from the first paint on, so it must be declared before its readers.
   assert.ok(html.indexOf("let tourDemo = false;") < html.indexOf("function applyView()"), "tourDemo would be in its temporal dead zone at boot");
+});
+
+test("every card is short", () => {
+  // Asked for by the person reading the tour: the cards had grown to five and
+  // six lines each, and a card nobody finishes teaches nothing. The cap is a
+  // couple of sentences; a step that needs more is two steps, or one idea too
+  // many.
+  for (const s of TOUR_STEPS) {
+    assert.ok(s.body.length <= TOUR_BODY_MAX, `${s.id} is ${s.body.length} chars, over ${TOUR_BODY_MAX}`);
+    assert.ok(s.title.length <= 40, `${s.id} has a long title`);
+  }
+});
+
+test("the copy carries none of the marks that read as machine prose", () => {
+  // Also asked for, em dashes first. Held for everything the tour puts on
+  // screen, the example scene included.
+  const shown = [
+    ...TOUR_STEPS.flatMap((s) => [s.title, s.body]),
+    TOUR_DEMO.note,
+    ...TOUR_DEMO.chat.map((m) => m.text),
+  ];
+  for (const text of shown) {
+    assert.doesNotMatch(text, /[\u2014\u2013]/, `dash in: ${text.slice(0, 50)}`);
+    assert.doesNotMatch(text, /[\u2192;]/, `arrow or semicolon in: ${text.slice(0, 50)}`);
+  }
+});
+
+test("what a newcomer reads first names no implementation detail", () => {
+  // "gets its own git worktree and branch" was true and was the first thing
+  // the tour said about agents, to people who came to delegate work.
+  for (const id of ["welcome", "groups", "agents", "composer"]) {
+    const step = TOUR_STEPS.find((s) => s.id === id);
+    assert.doesNotMatch(step.body, /worktree|branch|\btokens?\b|shell|directory/i, `${id} talks plumbing`);
+  }
+});
+
+test("a click beside the card does not end the tour", () => {
+  // One stray click threw the whole tour away and marked it as seen. Leaving
+  // is Skip, Done or Escape; the menu entry brings it back.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /\$\("tourOverlay"\)\.addEventListener\("click"/);
+  assert.match(html, /\$\("tourSkip"\)\.addEventListener\("click", endTour\)/);
+  assert.match(html, /e\.key === "Escape" && !\$\("tourOverlay"\)\.hidden/);
+  assert.match(html, /<button id="tourReplay">Replay the guided tour<\/button>/);
 });
