@@ -51,7 +51,9 @@ test("chanOverflowIds: the terminal switch is the last to leave the agent bar", 
 test("chanOverflowItems: only hidden icons with no existing menu entry, terminal label follows its state", () => {
   const all = new Set(chanOverflowIds());
   assert.deepEqual(chanOverflowItems(all).map((i) => i.id), ["chanGallery", "chanInfo", "chanTerm"]);
-  assert.equal(chanOverflowItems(new Set(["chanTerm"]), new Set(["chanTerm"]))[0].label, "💬 Back to the chat");
+  assert.equal(chanOverflowItems(new Set(["chanTerm"]), new Set(["chanTerm"]))[0].label, "Back to the chat");
+  assert.equal(chanOverflowItems(new Set(["chanTerm"]), new Set(["chanTerm"]))[0].icon, "chat");
+  assert.equal(chanOverflowItems(new Set(["chanTerm"]))[0].icon, "terminal");
   assert.deepEqual(chanOverflowItems(new Set()), []);
 });
 

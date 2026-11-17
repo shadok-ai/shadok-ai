@@ -36,10 +36,10 @@ export function nameReads({ clientWidth, scrollWidth }, minPx) {
  */
 export const CHAN_OVERFLOW = [
   { id: "chanWebhooks", menu: null },
-  { id: "chanGallery", menu: "🖼 Media gallery" },
+  { id: "chanGallery", menu: "Media gallery", icon: "gallery" },
   { id: "chanCron", menu: null },
-  { id: "chanInfo", menu: "ℹ About this agent" },
-  { id: "chanTerm", menu: "⌨ Terminal", menuOn: "💬 Back to the chat" },
+  { id: "chanInfo", menu: "About this agent", icon: "info" },
+  { id: "chanTerm", menu: "Terminal", icon: "terminal", menuOn: "Back to the chat", iconOn: "chat" },
 ];
 
 /** The agent bar's overflowable icon ids, in the order they leave the row. */
@@ -50,13 +50,14 @@ export function chanOverflowIds() {
 /**
  * The entries the agent menu gains for the icons hidden from the bar, in the
  * order they left it. `hidden` is the set of hidden ids, `on` the set of toggles currently
- * pressed (the terminal view).
+ * pressed (the terminal view). `icon` names an entry of the menu's line-icon set.
  */
 export function chanOverflowItems(hidden, on = new Set()) {
   const out = [];
   for (const it of CHAN_OVERFLOW) {
     if (!it.menu || !hidden.has(it.id)) continue;
-    out.push({ id: it.id, label: on.has(it.id) && it.menuOn ? it.menuOn : it.menu });
+    const pressed = on.has(it.id) && it.menuOn;
+    out.push({ id: it.id, label: pressed ? it.menuOn : it.menu, icon: pressed ? it.iconOn : it.icon });
   }
   return out;
 }
