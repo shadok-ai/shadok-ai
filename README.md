@@ -40,6 +40,23 @@ elapses.
 in isolation, landed as reviewed pull requests. The section below is what
 that produced.
 
+<div align="center">
+
+<table>
+<tr>
+<td width="420"><a href="https://shadok.ai"><img alt="The cockpit: real claude sessions grouped by team, one open with its transcript" src="https://shadok.ai/shots/cockpit-teams.webp"></a><br><sub><b>One cockpit.</b> Real <code>claude</code> sessions, grouped by team.</sub></td>
+<td width="420"><a href="https://shadok.ai"><img alt="The schedule panel: a prompt on a timer with a guard that runs without the model" src="https://shadok.ai/shots/panel-schedule.webp"></a><br><sub><b>On a schedule.</b> A guard runs without the model — quiet days cost zero tokens.</sub></td>
+</tr>
+<tr>
+<td width="420"><a href="https://shadok.ai"><img alt="The profiles panel: roles with guardrails for each agent" src="https://shadok.ai/shots/panel-profiles.webp"></a><br><sub><b>On a leash.</b> A role sets the prompt, model, secrets, and commands it may not run.</sub></td>
+<td width="420"><a href="https://shadok.ai"><img alt="The shared ledger: what sibling agents have resolved or decided" src="https://shadok.ai/shots/panel-ledger.webp"></a><br><sub><b>Shared ledger.</b> Parallel agents stop re-solving each other's work.</sub></td>
+</tr>
+</table>
+
+<p><img width="280" alt="The cockpit on a phone: an agent's question with its option cards filling the screen, quota bars at the top" src="https://shadok.ai/shots/cockpit-phone.webp"><br><sub><b>From your phone.</b> The same live session your browser is watching.</sub></p>
+
+</div>
+
 ## Quick start
 
 ```bash
