@@ -1142,6 +1142,15 @@ password accepts the same cookie. It's one-way, so the cookie never leaks the
 password. The in-process Telegram bridge presents that same cookie on its
 loopback WS.
 
+A session is **renewed on use**: a cookie more than a day old is re-issued on the
+next request (`sessionRenewal`, `src/accounts.ts`), so the week counts from the
+last visit rather than from the sign-in — a fixed week threw a daily user out
+once a week per device, mid-task. The token carries the sign-in instant
+(`since`), signed, and is refused 30 days after it however recently it was
+renewed: that ceiling is what a stolen cookie is worth. Only a person's cookie
+is renewed (`cookieAccount`), after every refusal has been applied, so a reset
+or retired session is never brought back.
+
 The cookie is `HttpOnly`, persistent (a week's `Max-Age`) and **`SameSite=Lax`,
 not `Strict`**. Strict withholds the cookie on any top-level navigation the
 browser judges cross-site — a bookmark opened from another app, a link out of
