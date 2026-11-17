@@ -224,6 +224,37 @@ export function visibleSteps(steps, isVisible) {
 }
 
 /**
+ * Pure: where the tour stands, re-read against the page as it is NOW.
+ *
+ * `currentId` null means "not started": the answer is the first visible step.
+ * Otherwise it is the next visible step AFTER the current one in the tour's own
+ * order (`advance`), or the current one again (a repaint).
+ *
+ * The list used to be filtered ONCE, when the tour started — and on a first
+ * visit it starts with the page still loading: no agent restored yet, the
+ * account not yet known. Every step about an agent, the composer and the
+ * people buttons was dropped for good before its target had a chance to
+ * exist, and an eleven-step tour played five. Visibility is a fact about a
+ * moment, so it is asked again at every step; the counter is therefore over
+ * the steps visible NOW, and may grow while the welcome card is being read.
+ *
+ * The current step always counts as present, even if its target just went
+ * away: a counter reading "4/3" is worse than one step framing nothing, which
+ * the caller already skips.
+ */
+export function tourStanding(steps, currentId, isVisible, advance = false) {
+  const here = currentId == null ? -1 : steps.findIndex((s) => s.id === currentId);
+  const shown = (s, i) => i === here || s.target === null || isVisible(s.target);
+  let at = here;
+  if (here < 0 || advance) {
+    at = steps.findIndex((s, i) => i > here && shown(s, i));
+    if (at < 0) return { step: null, index: 0, total: 0 };
+  }
+  const visible = steps.filter((s, i) => i === at || shown(s, i));
+  return { step: steps[at], index: visible.indexOf(steps[at]) + 1, total: visible.length };
+}
+
+/**
  * Pure: the rectangle enclosing them all, or null when there are none.
  *
  * Null rather than a zero rect: a caller that framed {0,0,0,0} would put the

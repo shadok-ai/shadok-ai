@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "../public/tour-steps.js";
+import { TOUR_STEPS, bubblePlacement, tourStanding, unionRect, visibleSteps } from "../public/tour-steps.js";
 
 const VIEW = { width: 1280, height: 900 };
 const BUBBLE = { width: 340, height: 160 };
@@ -280,4 +280,64 @@ test("with no room on either side the bubble still lands on screen", () => {
   const p = bubblePlacement({ target: { top: 20, left: 0, width: 390, height: 800 }, bubble: BUBBLE, viewport: vp });
   assert.ok(p.left >= 12 && p.left + BUBBLE.width <= vp.width - 12);
   assert.ok(p.top >= 12 && p.top + BUBBLE.height <= vp.height - 12);
+});
+
+const FIVE = [
+  { id: "welcome", title: "W", body: "…", target: null },
+  { id: "agents", title: "A", body: "…", target: "#tabbar" },
+  { id: "bar", title: "B", body: "…", target: "#chanBar" },
+  { id: "composer", title: "C", body: "…", target: "#composer" },
+  { id: "quota", title: "Q", body: "…", target: "#quota" },
+];
+
+test("a step whose target appears AFTER the tour started is still played", () => {
+  // The bug as it was reported: "you said you added steps, I only see 5". The
+  // list was filtered once at start, and on a first visit the tour starts with
+  // the page still loading — no agent restored, the account unknown — so every
+  // step about an agent was dropped before its target could exist.
+  const early = (t: string) => t === "#tabbar" || t === "#quota";
+  const first = tourStanding(FIVE, null, early);
+  assert.equal(first.step.id, "welcome");
+  assert.deepEqual([first.index, first.total], [1, 3]);
+  // The agent lands while the welcome card is being read.
+  const later = () => true;
+  const next = tourStanding(FIVE, "welcome", later, true);
+  assert.equal(next.step.id, "agents");
+  assert.deepEqual([next.index, next.total], [2, 5]);
+  assert.equal(tourStanding(FIVE, "agents", later, true).step.id, "bar");
+});
+
+test("advancing skips what is absent and ends after the last visible step", () => {
+  const vis = (t: string) => t !== "#chanBar" && t !== "#composer";
+  assert.equal(tourStanding(FIVE, "agents", vis, true).step.id, "quota");
+  assert.equal(tourStanding(FIVE, "quota", vis, true).step, null);
+});
+
+test("a repaint stays on the current step, and never counts past the total", () => {
+  // Resize repaints without advancing. And a step whose target just vanished
+  // still counts as present: "4/3" is worse than one frame the caller skips.
+  const gone = (t: string) => t === "#tabbar";
+  const st = tourStanding(FIVE, "composer", gone);
+  assert.equal(st.step.id, "composer");
+  assert.ok(st.index <= st.total);
+  assert.deepEqual([st.index, st.total], [3, 3]);
+});
+
+test("the last visible step knows it is the last", () => {
+  // The button reads "Done" off index === total.
+  const st = tourStanding(FIVE, "composer", () => true, true);
+  assert.equal(st.step.id, "quota");
+  assert.equal(st.index, st.total);
+});
+
+test("the page waits for its agents and its account before counting the steps", () => {
+  // The other half: re-reading at each step fixes what is PLAYED, but the
+  // welcome card would still open on "1/5". The page holds the first count
+  // until the boot restore and /me have landed, bounded.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const fn = html.slice(html.indexOf("async function maybeStartTour"), html.indexOf("// --- Connect Claude card"));
+  assert.match(fn, /bootSettled/);
+  assert.match(fn, /meReady/);
+  assert.match(fn, /setTimeout\(r, \d+\)/, "the wait must be bounded");
+  assert.match(html, /\n\s*markBootSettled\(\);\n/, "the restore must say when its tabs are painted");
 });
