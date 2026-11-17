@@ -218,6 +218,55 @@ export const TOUR_STEPS = [
   },
 ];
 
+/**
+ * The demo scene: what the tour paints when the cockpit holds NO agent.
+ *
+ * The first visit is exactly that case — the tour runs before the sign-in, so
+ * before any agent can exist — and the tour's own rule ("a step whose target
+ * is absent is dropped") then left the newcomer five stops out of eleven, the
+ * five that are not about agents. The product is the agents.
+ *
+ * So the page stages one: example rows in the agents column, the REAL agent
+ * bar and composer shown over an example conversation, example groups in the
+ * rail. It is a set, and it says so — `note` is on screen for the whole tour
+ * and every row is tagged — because the rule this bends was about not lying:
+ * a spotlight on a button that is really there, over an agent announced as an
+ * example, points at something true. The set is struck when the tour ends,
+ * or the moment a real agent takes the screen.
+ *
+ * Data only. The page builds it with textContent, never through `createTab`:
+ * an example that entered the tab registry could be persisted as a channel.
+ */
+export const TOUR_DEMO = {
+  note: "Example — nothing here is running. Your own agents take this place once Claude is connected.",
+  tag: "example",
+  agents: [
+    { name: "general", active: true },
+    { name: "nightly report", working: true },
+    { name: "docs" },
+  ],
+  groups: [
+    { icon: "🚀", name: "Product" },
+    { icon: "🧪", name: "Backend" },
+  ],
+  chat: [
+    { role: "user", who: "you", text: "Why did last night's import fail? Fix it and open a pull request." },
+    {
+      role: "claude",
+      who: "claude",
+      text:
+        "The import stopped on a date written as 31/02 in one row of the export. I made the parser " +
+        "reject that row with a clear message instead of crashing, added a test for it, and opened " +
+        "the pull request. The run now completes on last night's file.",
+    },
+  ],
+};
+
+/** Pure: stage the demo only when there is nothing real to point at. */
+export function tourNeedsDemo(agentCount) {
+  return !(agentCount > 0);
+}
+
 /** Pure: the steps whose target is on screen, in order. */
 export function visibleSteps(steps, isVisible) {
   return steps.filter((s) => s.target === null || isVisible(s.target));
