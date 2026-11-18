@@ -5,8 +5,8 @@
 // against the file as it is at that moment (`buildEditRequests`). Nothing an
 // agent sends reaches Google as it came: only the fields named here do.
 // Design: docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md.
-import { randomBytes } from "node:crypto";
-import { GoogleInputError } from "./google.js";
+import { createHash, randomBytes } from "node:crypto";
+import { GoogleError, GoogleInputError } from "./google.js";
 
 export type EditApp = "slides" | "doc" | "sheet";
 /** A checked operation: `op` plus only the fields that operation takes.
@@ -52,6 +52,13 @@ function flag(o: Raw, key: string, where: string): boolean | undefined {
 function objectId(o: Raw, key: string, where: string): string {
   const v = o[key];
   if (typeof v !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_:.-]{0,99}$/.test(v)) return bad(`${where}: '${key}' is not a valid object id (see \`slides read\`).`);
+  return v;
+}
+/** An id for something this batch CREATES, as Slides accepts one: 5 to 50
+ *  characters, starting with a letter, a digit or `_`. */
+const NEW_ID = /^[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}$/;
+function newObjectIdField(v: unknown, where: string): string {
+  if (typeof v !== "string" || !NEW_ID.test(v)) return bad(`${where} must be a new object id: 5 to 50 letters, digits, '_', '-' or ':', not starting with '-' or ':'.`);
   return v;
 }
 function onlyKeys(o: Raw, where: string, keys: readonly string[]): void {
@@ -111,19 +118,48 @@ function slidesOp(o: Raw, w: string, newId: () => string): EditOp {
     case "replace_text":
       return replaceOp(o, w);
     case "add_slide": {
-      onlyKeys(o, w, ["layout", "title", "body", "at"]);
+      onlyKeys(o, w, ["layout", "layoutId", "title", "body", "at"]);
       const title = o.title === undefined ? undefined : text(o, "title", w);
       const body = o.body === undefined ? undefined : text(o, "body", w);
-      const layout = o.layout === undefined ? (body !== undefined ? "TITLE_AND_BODY" : title !== undefined ? "TITLE_ONLY" : "BLANK") : o.layout;
-      if (typeof layout !== "string" || !(SLIDE_LAYOUTS as readonly string[]).includes(layout)) return bad(`${w}: 'layout' must be one of ${SLIDE_LAYOUTS.join(", ")}.`);
-      if (layout === "BLANK" && (title !== undefined || body !== undefined)) return bad(`${w}: a BLANK slide has no title or body — pick another layout.`);
-      if ((layout === "TITLE_ONLY" || layout === "SECTION_HEADER") && body !== undefined) return bad(`${w}: a ${layout} slide has no body — use TITLE_AND_BODY.`);
+      if (o.layout !== undefined && o.layoutId !== undefined) return bad(`${w}: give 'layout' or 'layoutId', not both.`);
+      // Which layout: a standard one by its type, one of the DECK's own by its
+      // id or its name (\`slides read\` lists them). A deck built on custom
+      // layouts only — most company decks — has none of the standard ones.
+      let which: Record<string, string>;
+      if (o.layoutId !== undefined) which = { layoutId: objectId(o, "layoutId", w) };
+      else if (typeof o.layout === "string" && !(SLIDE_LAYOUTS as readonly string[]).includes(o.layout)) which = { layoutName: text(o, "layout", w, { max: 200, oneLine: true }) };
+      else {
+        const layout = o.layout === undefined ? (body !== undefined ? "TITLE_AND_BODY" : title !== undefined ? "TITLE_ONLY" : "BLANK") : o.layout;
+        if (typeof layout !== "string") return bad(`${w}: 'layout' must be one of ${SLIDE_LAYOUTS.join(", ")}, or the name of one of the deck's layouts (see \`slides read\`).`);
+        if (layout === "BLANK" && (title !== undefined || body !== undefined)) return bad(`${w}: a BLANK slide has no title or body — pick another layout.`);
+        if ((layout === "TITLE_ONLY" || layout === "SECTION_HEADER") && body !== undefined) return bad(`${w}: a ${layout} slide has no body — use TITLE_AND_BODY.`);
+        which = { layout };
+      }
       return {
-        op: "add_slide", layout, slideId: newId(),
+        op: "add_slide", ...which, slideId: newId(),
         ...(title !== undefined ? { title, titleId: newId() } : {}),
         ...(body !== undefined ? { body, bodyId: newId() } : {}),
         ...(o.at !== undefined ? { at: int(o, "at", w, 0, 1000) } : {}),
       };
+    }
+    case "duplicate_slide": {
+      onlyKeys(o, w, ["slideId", "at", "objectIds"]);
+      const slideId = objectId(o, "slideId", w);
+      // \`objectIds\` names the copy's objects in advance ({source id: new id}),
+      // so a later operation of THIS batch can target them. What it leaves out
+      // is named by the server (\`copyIds\`) and reported back.
+      const map: Record<string, string> = {};
+      if (o.objectIds !== undefined) {
+        const m = o.objectIds;
+        if (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).length > 200) return bad(`${w}: 'objectIds' must be an object of at most 200 {"<source id>": "<new id>"} pairs.`);
+        for (const [k, v] of Object.entries(m as Raw)) map[objectId({ k }, "k", `${w} objectIds`)] = newObjectIdField(v, `${w}: objectIds["${k.slice(0, 40)}"]`);
+        if (new Set(Object.values(map)).size !== Object.values(map).length) return bad(`${w}: 'objectIds' gives the same new id twice.`);
+      }
+      const newSlideId = map[slideId] ?? newId();
+      delete map[slideId];
+      // Derived element ids are \`<copy id>_<8 hex>\`: they must stay within 50.
+      if (newSlideId.length > 41) return bad(`${w}: the copy's new slide id must be at most 41 characters (its elements' ids are built from it).`);
+      return { op: "duplicate_slide", slideId, newSlideId, ...(Object.keys(map).length ? { objectIds: map } : {}), ...(o.at !== undefined ? { at: int(o, "at", w, 0, 1000) } : {}) };
     }
     case "delete_slide":
       onlyKeys(o, w, ["slideId"]);
@@ -153,7 +189,7 @@ function slidesOp(o: Raw, w: string, newId: () => string): EditOp {
       return { op: "reorder", slideIds: ids, at: int(o, "at", w, 0, 1000) };
     }
     default:
-      return bad(`${w}: unknown Slides operation '${String(o.op).slice(0, 40)}' (replace_text, add_slide, delete_slide, insert_text, delete_text, insert_image, reorder).`);
+      return bad(`${w}: unknown Slides operation '${String(o.op).slice(0, 40)}' (replace_text, add_slide, duplicate_slide, delete_slide, insert_text, delete_text, insert_image, reorder).`);
   }
 }
 
@@ -305,7 +341,11 @@ export function editOpLines(app: EditApp, ops: readonly EditOp[]): string[] {
   return ops.map((o) => {
     if (o.op === "replace_text") return `Replace every ${q(o.find)} with ${q(o.replace)}${caseNote(o)}`;
     if (app === "slides") {
-      if (o.op === "add_slide") return `Add a ${o.layout} slide ${o.at === undefined ? "at the end" : `at position ${(o.at as number) + 1}`}${o.title !== undefined ? ` — title: ${q(o.title)}` : ""}${o.body !== undefined ? ` — body: ${q(o.body)}` : ""}`;
+      if (o.op === "add_slide") {
+        const kind = o.layout !== undefined ? `a ${o.layout} slide` : o.layoutName !== undefined ? `a slide with the deck's layout ${q(o.layoutName)}` : `a slide with the deck's layout ${o.layoutId}`;
+        return `Add ${kind} ${o.at === undefined ? "at the end" : `at position ${(o.at as number) + 1}`}${o.title !== undefined ? ` — title: ${q(o.title)}` : ""}${o.body !== undefined ? ` — body: ${q(o.body)}` : ""}${noteOf(o)}`;
+      }
+      if (o.op === "duplicate_slide") return `Duplicate slide ${o.slideId} — the copy goes ${o.at === undefined ? "right after it" : `to position ${(o.at as number) + 1}`}${noteOf(o)}`;
       if (o.op === "delete_slide") return `Delete slide ${o.slideId}${noteOf(o)}`;
       if (o.op === "insert_text") return `Insert ${q(o.text)} into ${o.objectId} ${o.at === undefined ? "at the end of its text" : `at character ${o.at}`}${noteOf(o)}`;
       if (o.op === "delete_text") return `Delete all the text of ${o.objectId}${noteOf(o)}`;
@@ -355,6 +395,9 @@ export interface SlidesState {
   title: string;
   revisionId?: string;
   slides: { id: string; layout: string; elements: { id: string; type: string; text: string }[] }[];
+  /** The deck's own layouts (every master's): what \`add_slide\` can name by
+   *  id or name. \`placeholders\` are where a title and a body can go. */
+  layouts: { id: string; name: string; placeholders: { id: string; type: string; index: number }[] }[];
 }
 export interface DocState {
   app: "doc";
@@ -392,12 +435,20 @@ function slideElements(els: J[] | undefined): SlidesState["slides"][number]["ele
 }
 
 export function slidesState(p: J): SlidesState {
-  const layouts = new Map<string, string>(((p.layouts ?? []) as J[]).map((l) => [String(l.objectId), String(l.layoutProperties?.displayName || l.layoutProperties?.name || "")]));
+  const layouts: SlidesState["layouts"] = ((p.layouts ?? []) as J[]).map((l) => ({
+    id: String(l.objectId ?? ""),
+    name: String(l.layoutProperties?.displayName || l.layoutProperties?.name || ""),
+    placeholders: ((l.pageElements ?? []) as J[])
+      .filter((e) => e.shape?.placeholder?.type)
+      .map((e) => ({ id: String(e.objectId ?? ""), type: String(e.shape.placeholder.type), index: Number(e.shape.placeholder.index ?? 0) })),
+  }));
+  const names = new Map(layouts.map((l) => [l.id, l.name]));
   return {
     app: "slides",
     title: String(p.title ?? ""),
     ...(typeof p.revisionId === "string" ? { revisionId: p.revisionId } : {}),
-    slides: ((p.slides ?? []) as J[]).map((s) => ({ id: String(s.objectId ?? ""), layout: layouts.get(String(s.slideProperties?.layoutObjectId)) ?? "", elements: slideElements(s.pageElements) })),
+    slides: ((p.slides ?? []) as J[]).map((s) => ({ id: String(s.objectId ?? ""), layout: names.get(String(s.slideProperties?.layoutObjectId)) ?? "", elements: slideElements(s.pageElements) })),
+    layouts,
   };
 }
 
@@ -545,26 +596,105 @@ function docRequests(ops: readonly EditOp[], s: DocState): J[] {
   return [...located.flatMap((l) => l.reqs), ...sequential];
 }
 
-function slidesRequests(ops: readonly EditOp[], s: SlidesState): J[] {
-  const slideIds = new Set(s.slides.map((x) => x.id));
-  const order = s.slides.map((x) => x.id);
-  const elements = new Map(s.slides.flatMap((x) => x.elements).map((e) => [e.id, e] as const));
+/** What a Slides batch creates, by id — reported to the agent, so a later
+ *  edit can target a copy's elements. */
+export type SlidesCreated =
+  | { op: "add_slide"; slideId: string; titleId?: string; bodyId?: string }
+  | { op: "duplicate_slide"; from: string; slideId: string; elements: { id: string; from: string; type: string }[] };
+
+/** The id the server gives a copied element nobody named: stable for one
+ *  source element, so a card refreshed against a changed deck keeps it. */
+export const copyElementId = (newSlideId: string, sourceId: string): string => `${newSlideId}_${createHash("sha256").update(sourceId).digest("hex").slice(0, 8)}`;
+
+/** A deck layout named by id or by name; a name two layouts share is refused. */
+function findLayout(s: SlidesState, o: EditOp, w: string): SlidesState["layouts"][number] {
+  if (o.layoutId !== undefined) {
+    return s.layouts.find((l) => l.id === o.layoutId) ?? bad(`${w}: there is no layout '${String(o.layoutId).slice(0, 60)}' in this deck (\`slides read\` lists them).`);
+  }
+  const want = String(o.layoutName);
+  let hits = s.layouts.filter((l) => l.name === want);
+  if (!hits.length) hits = s.layouts.filter((l) => l.name.toLowerCase() === want.toLowerCase());
+  if (hits.length > 1) return bad(`${w}: several layouts of this deck have that name — give its 'layoutId' instead (see \`slides read\`).`);
+  return hits[0] ?? bad(`${w}: this deck has no layout with that name (\`slides read\` lists them; the standard ones are ${SLIDE_LAYOUTS.join(", ")}).`);
+}
+
+function slidesPlan(ops: readonly EditOp[], s: SlidesState): { requests: J[]; created: SlidesCreated[] } {
+  type El = SlidesState["slides"][number]["elements"][number];
+  const original = new Set(s.slides.map((x) => x.id));
+  /** The deck's order as the batch leaves it, step by step. */
+  const current = s.slides.map((x) => x.id);
+  /** Each slide's elements — the deck's, then what this batch creates. */
+  const onSlide = new Map<string, El[]>(s.slides.map((x) => [x.id, x.elements.map((e) => ({ ...e }))]));
+  const elements = new Map<string, El>([...onSlide.values()].flat().map((e) => [e.id, e] as const));
+  /** Every id a new object must not take. */
+  const taken = new Set<string>([...current, ...elements.keys(), ...s.layouts.flatMap((l) => [l.id, ...l.placeholders.map((p) => p.id)])]);
   const out: J[] = [];
+  const created: SlidesCreated[] = [];
   ops.forEach((o, i) => {
     const w = `operation ${i + 1}`;
-    const needSlide = (id: unknown) => (slideIds.has(String(id)) ? String(id) : bad(`${w}: there is no slide '${String(id).slice(0, 60)}' in the deck as it is now (see \`slides read\`).`));
+    const needSlide = (id: unknown) => (onSlide.has(String(id)) ? String(id) : bad(`${w}: there is no slide '${String(id).slice(0, 60)}' in the deck as it is now (see \`slides read\`).`));
+    const claim = (id: string) => {
+      if (taken.has(id)) bad(`${w}: the new id '${id.slice(0, 60)}' is already used in this deck or this edit — pick another.`);
+      taken.add(id);
+    };
     if (o.op === "replace_text") out.push({ replaceAllText: { containsText: { text: o.find, matchCase: o.matchCase !== false }, replaceText: o.replace } });
     else if (o.op === "add_slide") {
-      const title = o.layout === "TITLE" ? "CENTERED_TITLE" : "TITLE";
-      const body = o.layout === "TITLE" ? "SUBTITLE" : "BODY";
-      const maps = [...(o.titleId ? [{ layoutPlaceholder: { type: title, index: 0 }, objectId: o.titleId }] : []), ...(o.bodyId ? [{ layoutPlaceholder: { type: body, index: 0 }, objectId: o.bodyId }] : [])];
-      out.push({ createSlide: { objectId: o.slideId, ...(o.at !== undefined ? { insertionIndex: o.at } : {}), slideLayoutReference: { predefinedLayout: o.layout }, ...(maps.length ? { placeholderIdMappings: maps } : {}) } });
+      let ref: J;
+      let maps: J[];
+      if (o.layout !== undefined) {
+        const title = o.layout === "TITLE" ? "CENTERED_TITLE" : "TITLE";
+        const body = o.layout === "TITLE" ? "SUBTITLE" : "BODY";
+        ref = { predefinedLayout: o.layout };
+        maps = [...(o.titleId ? [{ layoutPlaceholder: { type: title, index: 0 }, objectId: o.titleId }] : []), ...(o.bodyId ? [{ layoutPlaceholder: { type: body, index: 0 }, objectId: o.bodyId }] : [])];
+      } else {
+        // A deck's own layout: its title and body are found among ITS
+        // placeholders, by id — a custom layout's need not be the standard types.
+        const l = findLayout(s, o, w);
+        const pick = (types: string[], what: string) => [...l.placeholders].filter((p) => types.includes(p.type)).sort((a, b) => types.indexOf(a.type) - types.indexOf(b.type) || a.index - b.index)[0] ?? bad(`${w}: the layout '${l.name.slice(0, 60) || l.id}' has no ${what} placeholder — add the slide without a ${what}, or pick another layout.`);
+        ref = { layoutId: l.id };
+        maps = [...(o.titleId ? [{ layoutPlaceholderObjectId: pick(["TITLE", "CENTERED_TITLE"], "title").id, objectId: o.titleId }] : []), ...(o.bodyId ? [{ layoutPlaceholderObjectId: pick(["BODY", "SUBTITLE"], "body").id, objectId: o.bodyId }] : [])];
+      }
+      for (const id of [o.slideId, o.titleId, o.bodyId]) if (id) claim(String(id));
+      out.push({ createSlide: { objectId: o.slideId, ...(o.at !== undefined ? { insertionIndex: o.at } : {}), slideLayoutReference: ref, ...(maps.length ? { placeholderIdMappings: maps } : {}) } });
       if (o.titleId) out.push({ insertText: { objectId: o.titleId, text: o.title, insertionIndex: 0 } });
       if (o.bodyId) out.push({ insertText: { objectId: o.bodyId, text: o.body, insertionIndex: 0 } });
-      slideIds.add(String(o.slideId));
+      const els: El[] = [...(o.titleId ? [{ id: String(o.titleId), type: "placeholder TITLE", text: String(o.title) }] : []), ...(o.bodyId ? [{ id: String(o.bodyId), type: "placeholder BODY", text: String(o.body) }] : [])];
+      onSlide.set(String(o.slideId), els);
+      for (const e of els) elements.set(e.id, e);
+      current.splice(o.at === undefined ? current.length : Math.min(o.at as number, current.length), 0, String(o.slideId));
+      created.push({ op: "add_slide", slideId: String(o.slideId), ...(o.titleId ? { titleId: String(o.titleId) } : {}), ...(o.bodyId ? { bodyId: String(o.bodyId) } : {}) });
+    } else if (o.op === "duplicate_slide") {
+      const src = needSlide(o.slideId);
+      const srcEls = onSlide.get(src) ?? [];
+      const named = (o.objectIds ?? {}) as Record<string, string>;
+      const stray = Object.keys(named).find((k) => !srcEls.some((e) => e.id === k));
+      if (stray) return bad(`${w}: 'objectIds' names '${stray.slice(0, 60)}', which is not an element of slide '${src.slice(0, 60)}'.`);
+      const newSlide = String(o.newSlideId);
+      claim(newSlide);
+      const copies = srcEls.map((e) => ({ ...e, from: e.id, id: named[e.id] ?? copyElementId(newSlide, e.id) }));
+      for (const c of copies) claim(c.id);
+      out.push({ duplicateObject: { objectId: src, objectIds: Object.fromEntries([[src, newSlide], ...copies.map((c) => [c.from, c.id])]) } });
+      // Google puts the copy right after its source; \`at\` is where it ENDS.
+      const c = current.indexOf(src) + 1;
+      current.splice(c, 0, newSlide);
+      if (o.at !== undefined) {
+        const p = o.at as number;
+        if (p > current.length - 1) return bad(`${w}: 'at' is past the end — the deck will have ${current.length} slides, so 'at' goes from 0 to ${current.length - 1}.`);
+        // Slides counts the place in the order BEFORE the move.
+        if (p !== c) out.push({ updateSlidesPosition: { slideObjectIds: [newSlide], insertionIndex: p < c ? p : p + 1 } });
+        current.splice(c, 1);
+        current.splice(p, 0, newSlide);
+      }
+      const els = copies.map(({ from: _f, ...e }) => e);
+      onSlide.set(newSlide, els);
+      for (const e of els) elements.set(e.id, e);
+      created.push({ op: "duplicate_slide", from: src, slideId: newSlide, elements: copies.map((x) => ({ id: x.id, from: x.from, type: x.type })) });
     } else if (o.op === "delete_slide") {
-      out.push({ deleteObject: { objectId: needSlide(o.slideId) } });
-      slideIds.delete(String(o.slideId));
+      const id = needSlide(o.slideId);
+      out.push({ deleteObject: { objectId: id } });
+      for (const e of onSlide.get(id) ?? []) elements.delete(e.id);
+      onSlide.delete(id);
+      current.splice(current.indexOf(id), 1);
     } else if (o.op === "insert_text" || o.op === "delete_text") {
       const e = elements.get(String(o.objectId));
       if (!e) return bad(`${w}: there is no element '${String(o.objectId).slice(0, 60)}' in the deck as it is now (see \`slides read\`).`);
@@ -593,12 +723,18 @@ function slidesRequests(ops: readonly EditOp[], s: SlidesState): J[] {
       });
     } else {
       const ids = (o.slideIds as string[]).map(needSlide);
-      if (ids.some((id) => !order.includes(id))) return bad(`${w}: a slide added by this same edit cannot be reordered — give add_slide its 'at' instead.`);
-      // Slides wants them in the deck's own order.
-      out.push({ updateSlidesPosition: { slideObjectIds: [...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b)), insertionIndex: o.at } });
+      if (ids.some((id) => !original.has(id))) return bad(`${w}: a slide added or duplicated by this same edit cannot be reordered — give add_slide or duplicate_slide its 'at' instead.`);
+      // Slides wants them in the deck's own order; the moved slides land, in
+      // that order, just before the first unmoved slide at or after \`at\`.
+      const sorted = [...ids].sort((a, b) => current.indexOf(a) - current.indexOf(b));
+      out.push({ updateSlidesPosition: { slideObjectIds: sorted, insertionIndex: o.at } });
+      const anchor = current.slice(o.at as number).find((id) => !ids.includes(id));
+      const rest = current.filter((id) => !ids.includes(id));
+      rest.splice(anchor === undefined ? rest.length : rest.indexOf(anchor), 0, ...sorted);
+      current.splice(0, current.length, ...rest);
     }
   });
-  return out;
+  return { requests: out, created };
 }
 
 function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
@@ -667,8 +803,28 @@ function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
 /** The API requests for this batch, against the file AS IT IS (`state`).
  *  Throws `GoogleInputError` when an operation's target is not there. */
 export function buildEditRequests(app: EditApp, ops: readonly EditOp[], state: EditState): Record<string, unknown>[] {
+  return editPlan(app, ops, state).requests;
+}
+
+/** The requests, and what they create (Slides only: the new slides, a copy's
+ *  element ids) — the same walk, so the ids reported are the ids sent. */
+export function editPlan(app: EditApp, ops: readonly EditOp[], state: EditState): { requests: Record<string, unknown>[]; created: SlidesCreated[] } {
   if (state.app !== app) return bad("That file is not of the kind this edit is for.");
-  return state.app === "slides" ? slidesRequests(ops, state) : state.app === "doc" ? docRequests(ops, state) : sheetRequests(ops, state);
+  if (state.app === "slides") return slidesPlan(ops, state);
+  return { requests: state.app === "doc" ? docRequests(ops, state) : sheetRequests(ops, state), created: [] };
+}
+
+/**
+ * Google's refusal of a standard layout, in words an agent can act on. A deck
+ * built on custom layouts only has none of BLANK / TITLE_AND_BODY / …, and the
+ * raw 400 ("The predefined layout (X) is not present in the current master")
+ * names neither way out. Anything else comes back unchanged.
+ */
+export function translateEditError(e: unknown): unknown {
+  if (!(e instanceof GoogleError) || e.status !== 400) return e;
+  const m = /predefined layout \(([A-Z_]+)\) is not present in the current master/i.exec(e.message);
+  if (!m) return e;
+  return new GoogleError(`This deck has no standard layout '${m[1]}'; use duplicate_slide, or add_slide with a layoutId from \`slides read\` (it lists the deck's own layouts).`, 400, false);
 }
 
 const excerpt = (s: string) => {
@@ -686,15 +842,24 @@ export function annotateOps(app: EditApp, ops: readonly EditOp[], state: EditSta
     const title = state.slides[i].elements.find((e) => e.text.trim())?.text ?? "";
     return `slide ${i + 1}${title.trim() ? `: ${JSON.stringify(excerpt(title))}` : ""}`;
   };
-  const elementNote = (id: unknown) => {
+  // An element a duplicate_slide of this batch names in advance: said as the
+  // copy of what it copies, since it does not exist yet.
+  const copied = new Map<string, string>(ops.flatMap((o) => (o.op === "duplicate_slide" && o.objectIds ? Object.entries(o.objectIds as Record<string, string>).map(([from, to]) => [to, from] as [string, string]) : [])));
+  const elementNote = (id: unknown): string => {
     for (const [i, sl] of state.slides.entries()) {
       const e = sl.elements.find((x) => x.id === id);
       if (e) return `${e.type} on slide ${i + 1}${e.text.trim() ? `, now ${JSON.stringify(excerpt(e.text))}` : ", now empty"}`;
     }
-    return "";
+    const from = copied.get(String(id));
+    const of = from ? elementNote(from) : "";
+    return of ? `the copy of the ${of}` : "";
   };
   return ops.map(({ note: _n, ...o }) => {
-    const note = o.op === "delete_slide" || o.op === "insert_image" ? slideNote(o.slideId) : o.op === "insert_text" || o.op === "delete_text" ? elementNote(o.objectId) : o.op === "reorder" ? (o.slideIds as string[]).map(slideNote).filter(Boolean).join("; ") : "";
+    const layoutNote = () => {
+      const l = state.layouts.find((x) => x.id === o.layoutId);
+      return l?.name ? `layout ${JSON.stringify(excerpt(l.name))}` : "";
+    };
+    const note = o.op === "delete_slide" || o.op === "insert_image" || o.op === "duplicate_slide" ? slideNote(o.slideId) : o.op === "add_slide" && o.layoutId !== undefined ? layoutNote() : o.op === "insert_text" || o.op === "delete_text" ? elementNote(o.objectId) : o.op === "reorder" ? (o.slideIds as string[]).map(slideNote).filter(Boolean).join("; ") : "";
     return (note ? { ...o, note } : o) as EditOp;
   });
 }

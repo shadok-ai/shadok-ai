@@ -757,7 +757,8 @@ Enter to skip; you can add it later from the web UI).
   and exactly what will happen, and approving does nothing if the file was
   renamed or moved in the meantime. It can also **edit the content** of a Slides deck, a Doc or a Sheet
   (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
-  operations — replace or insert text, add / delete / reorder slides, style
+  operations — replace or insert text, add / duplicate / delete / reorder
+  slides (on a deck's own custom layouts too: `slides read` lists them), style
   text and headings, tables, images from a public `https` address, cell
   values and formulas, tabs, rows, columns, formats — applied all together or
   not at all. On a file the cockpit created it is applied at once; on any other

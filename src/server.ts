@@ -6599,7 +6599,7 @@ app.post("/google/actions", async (req, res) => {
       broadcastDraft(d);
       console.log(`social: draft ${d.id} (${action}) for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
       notifyOperator(account.owner, pendingDraftText(channel, d));
-      return res.json({ status: "pending", draftId: d.id });
+      return res.json({ status: "pending", draftId: d.id, ...(out.result ? { result: out.result } : {}) });
     }
     if (out.log) logSocial({ at: Date.now(), ...entry, text: out.log.summary, outcome: "done", ...(out.log.link ? { postUrl: out.log.link } : {}) });
     if (logged) console.log(`social: account ${account.id} ${action} from ${agent.sessionId.slice(0, 8)}${approvedBy === "autonomous" ? " (without approval)" : ""}`);

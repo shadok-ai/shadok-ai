@@ -190,6 +190,11 @@ function printDrive(r) {
       out.push(`slide ${i + 1}  id=${s.id}${s.layout ? `  layout=${s.layout}` : ""}`);
       for (const e of s.elements ?? []) out.push(`  ${e.id}  [${e.type}]${e.text ? `  ${JSON.stringify(e.text)}` : ""}`);
     });
+    // What \`add_slide\` can name ("layoutId" or "layout": "<name>").
+    if (r.layouts?.length) {
+      out.push("layouts:");
+      for (const l of r.layouts) out.push(`  ${l.id}  ${JSON.stringify(l.name ?? "")}`);
+    }
     console.log(fenced(out, "FILE"));
     console.log(`${(r.slides ?? []).length} slide(s). Edit with: slides edit --account <id> --id <deck id> --stdin (JSON operations).${r.truncated ? " Some text was cut." : ""}`);
     return;
@@ -236,6 +241,20 @@ function printMail(action, r) {
   console.log("To reply in this thread: `gmail draft` / `gmail send` with `--reply <message id>` (the account's mail setting still applies).");
 }
 
+/** The ids a Slides edit creates: what a NEXT edit targets (a copy's elements). */
+function printCreated(created, lead) {
+  if (!Array.isArray(created) || !created.length) return;
+  console.log(`${lead}:`);
+  for (const c of created) {
+    if (c.op === "duplicate_slide") {
+      console.log(`  slide ${c.slideId} (copy of ${c.from})`);
+      for (const e of c.elements ?? []) console.log(`    ${e.id}  [${e.type}]  copy of ${e.from}`);
+    } else {
+      console.log(`  slide ${c.slideId}${c.titleId ? `  title=${c.titleId}` : ""}${c.bodyId ? `  body=${c.bodyId}` : ""}`);
+    }
+  }
+}
+
 function print(action, out) {
   if (action === "gmail.search" || action === "gmail.read") return printMail(action, out.result ?? {});
   // Any file content the server marks untrusted — `drive search`, `drive read`,
@@ -245,6 +264,7 @@ function print(action, out) {
     const what = action === "gmail.send" ? "The email is a Gmail draft and" : action.startsWith("calendar.") ? "The calendar change" : action.startsWith("drive.") ? "The change to that Drive file" : "The edit to that Drive file";
     if (action.endsWith(".edit")) {
       console.log(`The edit is waiting for approval in the cockpit (draft ${out.draftId}): the person sees each operation, one per line. The file has not been changed, and if someone edits it before they approve they will be asked again. Do not say it is done until you are told.`);
+      printCreated(out.result?.created, "Once applied, it creates");
       return;
     }
     const nothing = action.startsWith("gmail.") || action.startsWith("calendar.") ? "Nothing has left the account." : "The file has not been changed.";
@@ -265,6 +285,7 @@ function print(action, out) {
     console.log(`# ${r.name}\n${heads}${r.text}`);
   } else if (action.endsWith(".edit")) {
     console.log(`Applied ${r.operations ?? ""} operation(s).`);
+    printCreated(r.created, "It created");
   } else if (action === "sheet.read") {
     console.log(JSON.stringify(r.rows ?? []));
   } else if (action === "doc.create" || action === "sheet.create" || action === "slides.create") {

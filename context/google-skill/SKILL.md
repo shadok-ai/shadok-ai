@@ -114,6 +114,10 @@ node ~/.claude/skills/shadok-google/scripts/google.mjs slides edit --account <id
 [
   {"op": "replace_text", "find": "2026", "replace": "2027", "matchCase": true},
   {"op": "add_slide", "layout": "TITLE_AND_BODY", "title": "Next steps", "body": "Hire two engineers\nShip the API", "at": 2},
+  {"op": "add_slide", "layoutId": "<layout id>", "title": "Risks", "at": 3},
+  {"op": "duplicate_slide", "slideId": "<slide id>", "at": 4, "objectIds": {"<title element id>": "copy_title_1"}},
+  {"op": "delete_text", "objectId": "copy_title_1"},
+  {"op": "insert_text", "objectId": "copy_title_1", "text": "Example Co"},
   {"op": "insert_text", "objectId": "<element id>", "text": " (draft)"},
   {"op": "delete_text", "objectId": "<element id>"},
   {"op": "insert_image", "slideId": "<slide id>", "url": "https://example.org/logo.png", "x": 40, "y": 40, "w": 200, "h": 80},
@@ -123,11 +127,27 @@ node ~/.claude/skills/shadok-google/scripts/google.mjs slides edit --account <id
 OPS
 ```
 
-`slides read` lists each slide with its id and layout, and each element with
-its id, type and text. Layouts: `BLANK`, `TITLE`, `TITLE_ONLY`,
-`TITLE_AND_BODY`, `SECTION_HEADER`. `at` is a 0-based position; for `reorder` it is counted in the
-deck as it is BEFORE the move (the slides land just before the slide now at
-that position). `insert_text` without `at` adds at the end of the element's
+`slides read` lists each slide with its id and layout, each element with
+its id, type and text, and the deck's own **layouts** (id and name). `at` is a
+0-based position; for `reorder` it is counted in the deck as it is BEFORE the
+move (the slides land just before the slide now at that position).
+
+**Layouts.** `add_slide` takes `"layout"` — one of the standard `BLANK`,
+`TITLE`, `TITLE_ONLY`, `TITLE_AND_BODY`, `SECTION_HEADER`, or the NAME of one
+of the deck's layouts — or `"layoutId"`, an id from `slides read`. Most
+company decks are built on custom layouts only and have none of the standard
+ones: there, use a `layoutId` (its own title and body placeholders take
+`title` and `body`) or, to keep the house style exactly, `duplicate_slide`.
+
+**`duplicate_slide`** copies a slide (the copy lands right after it, or at
+`at`). To change the copy's text in the SAME edit, name its new ids in
+advance with `objectIds` — `{"<source element id>": "<new id>"}` (5 to 50
+letters, digits, `_`, `-`, `:`); the source slide's own id may be mapped too,
+to name the copy. Then `delete_text` / `insert_text` target those new ids
+further down the batch. Elements you do not name get an id from the server.
+The command prints every id the edit creates (the copy and each of its
+elements, or a new slide and its title/body) — also while it waits for
+approval — so a later edit can target them. `insert_text` without `at` adds at the end of the element's
 text. Sizes are in points.
 
 ```bash

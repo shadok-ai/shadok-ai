@@ -7,7 +7,7 @@
 import path from "node:path";
 import { googlePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
 import type { Draft, DraftAction, DraftPayload, EditPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
-import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, editOpsVerdict, sheetState, slidesState, type EditApp, type EditOp, type EditState } from "./google-edits.js";
+import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, editOpsVerdict, editPlan, sheetState, slidesState, translateEditError, type EditApp, type EditOp, type EditState, type SlidesCreated } from "./google-edits.js";
 import {
   GoogleError,
   GoogleInputError,
@@ -209,8 +209,9 @@ export interface GoogleDeps {
 export type ActionOutcome =
   /** Done at once. `log` is absent for a plain read (it leaves nothing). */
   | { kind: "result"; result: Record<string, unknown>; log?: { summary: string; link?: string } }
-  /** Waiting for a person: the route stores a draft and shows a card. */
-  | { kind: "pending"; action: DraftAction; payload: DraftPayload; summary: string };
+  /** Waiting for a person: the route stores a draft and shows a card.
+   *  \`result\` is what the agent may know already (the ids an edit will create). */
+  | { kind: "pending"; action: DraftAction; payload: DraftPayload; summary: string; result?: Record<string, unknown> };
 
 const list = (l: readonly string[]) => l.join(", ");
 
@@ -351,11 +352,19 @@ async function editState(token: string, app: EditApp, id: string, f: FetchFn): P
 
 /** Read the file, build the requests against what was just read, send them
  *  as ONE batch that Google applies whole or not at all. */
-async function applyEdit(token: string, app: EditApp, id: string, ops: readonly EditOp[], f: FetchFn, outbound: boolean): Promise<void> {
+async function applyEdit(token: string, app: EditApp, id: string, ops: readonly EditOp[], f: FetchFn, outbound: boolean): Promise<SlidesCreated[]> {
   const state = await editState(token, app, id, f);
-  const requests = buildEditRequests(app, ops, state);
-  await sendEditBatch(token, app, id, requests, state.app === "sheet" ? undefined : state.revisionId, f, outbound);
+  const { requests, created } = editPlan(app, ops, state);
+  try {
+    await sendEditBatch(token, app, id, requests, state.app === "sheet" ? undefined : state.revisionId, f, outbound);
+  } catch (e) {
+    throw translateEditError(e);
+  }
+  return created;
 }
+
+/** The ids a batch creates, for the agent's result — absent when none. */
+const createdField = (created: readonly SlidesCreated[]) => (created.length ? { created } : {});
 
 /** The log's line for a batch: the file and how many of each operation — never a text or a value. */
 export function editSummary(p: Pick<EditPayload, "fileId" | "name" | "ops">): string {
@@ -418,6 +427,8 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       // Bounded like any file read: element texts are cut once the budget is spent.
       let left = MAX_FILE_CHARS;
       let truncated = false;
+      // The deck's own layouts: what \`add_slide\` can name, by id or name.
+      const layouts = st.layouts.map((l) => ({ id: l.id, name: l.name.slice(0, 200) }));
       const slides = st.slides.map((s) => ({
         ...s,
         elements: s.elements.map((e) => {
@@ -430,7 +441,7 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       }));
       // Always untrusted: a deck's text is whatever anyone typed into it.
       const file = meta ?? { id, name: st.title, mimeType: MIME_SLIDES, owners: [] };
-      return { kind: "result", result: { file, kind: "slides", slides, truncated, untrusted: true }, ...(meta ? { log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } } : {}) };
+      return { kind: "result", result: { file, kind: "slides", slides, layouts, truncated, untrusted: true }, ...(meta ? { log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } } : {}) };
     }
     case "slides.create": {
       const deck = await createPresentation(await deps.token(account.id), args.title, f);
@@ -446,8 +457,8 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       const token = await deps.token(account.id);
       if (!foreign) {
         // One of the cockpit's own files: applied at once.
-        await applyEdit(token, app, id, ops, f, false);
-        return { kind: "result", result: { id, status: "applied", operations: ops.length }, log: { summary: editSummary({ fileId: id, name: "", ops }) } };
+        const created = await applyEdit(token, app, id, ops, f, false);
+        return { kind: "result", result: { id, status: "applied", operations: ops.length, ...createdField(created) }, log: { summary: editSummary({ fileId: id, name: "", ops }) } };
       }
       const meta = await getFileMeta(token, id, f);
       if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
@@ -455,14 +466,16 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       // Built once now, against the file as it is: an operation whose target
       // is not there is refused before a person is asked anything.
       const state = await editState(token, app, id, f);
-      buildEditRequests(app, ops, state);
+      const planned = editPlan(app, ops, state).created;
       const payload: EditPayload = { kind: "edit", app, fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners, ops: annotateOps(app, ops, state), stamp: meta.modifiedTime ?? "" };
       const summary = editSummary(payload);
       if (setting === "autonomous") {
-        await applyEdit(token, app, id, ops, f, true);
-        return { kind: "result", result: { id, status: "applied", operations: ops.length }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+        const created = await applyEdit(token, app, id, ops, f, true);
+        return { kind: "result", result: { id, status: "applied", operations: ops.length, ...createdField(created) }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
       }
-      return { kind: "pending", action, payload, summary };
+      // The ids are drawn now and travel in the stored ops, so the agent can
+      // be told what the edit WILL create before anyone approves it.
+      return { kind: "pending", action, payload, summary, ...(planned.length ? { result: { created: planned } } : {}) };
     }
     case "sheet.read":
       if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
