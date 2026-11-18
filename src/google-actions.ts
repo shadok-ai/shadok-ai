@@ -39,6 +39,8 @@ import {
   type DriveFileMeta,
   attachmentName,
   buildMime,
+  gmailSignature,
+  mailPlainBody,
   createDoc,
   createGmailDraft,
   createSheet,
@@ -609,8 +611,18 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
         fields.references = t.references;
         threadId = t.threadId;
       }
+      // The person's signature, which Gmail never adds to mail an API creates.
+      // Reading it is reading their settings: `gmail_read` (gmail.readonly).
+      if (args.signature === true) {
+        if (!areaHeld(account, "gmail_read")) {
+          throw new GoogleInputError(`Adding the Gmail signature needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, write the signature into the body yourself.`);
+        }
+        const sig = await gmailSignature(token, f);
+        if (!sig) throw new GoogleInputError(`Google account '${account.label}' has no Gmail signature set — nothing to add. Send without --signature, or ask ${account.owner} to set one in Gmail's settings.`);
+        fields.signature = sig;
+      }
       const raw = rawMessage(buildMime(fields, attachments));
-      const summary = mailSummary(fields) + (replyTo ? " (reply)" : "");
+      const summary = mailSummary(fields) + (replyTo ? " (reply)" : "") + (fields.signature ? " (signed)" : "");
       if (action === "gmail.draft") {
         const d = replace ? await updateGmailDraft(token, replace, raw, f, threadId) : await createGmailDraft(token, raw, f, threadId);
         if (!replace) deps.ownGmailDrafts.add(account.id, d.id);
@@ -623,7 +635,10 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       // With approval, the Gmail draft IS the draft: the person may open Gmail
       // and edit it; the card's fingerprint is what Send compares against.
       const d = await createGmailDraft(token, raw, f, threadId);
-      const content: MailContent = { ...fields, attachments: names };
+      // The card shows, and fingerprints, the text part as built — signature
+      // included — which is what re-reading the Gmail draft gives back.
+      const { signature: _sig, ...shown } = fields;
+      const content: MailContent = { ...shown, body: mailPlainBody(fields), attachments: names };
       const payload: MailPayload = { kind: "mail", from: account.label, ...content, gmailDraftId: d.id, fingerprint: mailFingerprint(content) };
       return { kind: "pending", action: "gmail.send", payload, summary };
     }

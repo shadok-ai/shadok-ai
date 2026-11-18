@@ -138,6 +138,11 @@ test("done results are said plainly: sent, draft, created", async () => {
   await withStub(200, { status: "done", result: { draftId: "r10", status: "draft" } }, async (s) => {
     await run(["gmail", "draft", "--account", "g1", "--to", "a@b.co", "--subject", "Re: x", "--reply", "m7", "--stdin"], s.port, "hi");
     assert.equal(s.seen.body.args.replyTo, "m7");
+    assert.equal(s.seen.body.args.signature, undefined, "no signature unless asked");
+  });
+  await withStub(200, { status: "done", result: { draftId: "r11", status: "draft" } }, async (s) => {
+    await run(["gmail", "draft", "--account", "g1", "--to", "a@b.co", "--subject", "x", "--signature", "--stdin"], s.port, "hi");
+    assert.equal(s.seen.body.args.signature, true);
   });
   await withStub(200, { status: "done", result: { id: "doc1", name: "Notes", link: "https://docs.google.com/document/d/doc1/edit" } }, async (s) => {
     const r = await run(["doc", "create", "--account", "g1", "--title", "Notes", "--stdin"], s.port, "first\n");
