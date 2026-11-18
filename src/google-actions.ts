@@ -86,8 +86,10 @@ import {
  * - `file-copy`: makes a copy of a file (`drive.copy`). Nothing existing
  *   changes, so a copy left BESIDE the original (same folder, same audience)
  *   never asks; one put in ANOTHER folder lands in front of whoever that folder
- *   is shared with — the account's DRIVE setting. The copy is then the
- *   cockpit's own file (recorded in `ownFiles`): edited without asking.
+ *   is shared with — the account's DRIVE setting. The copy becomes the
+ *   cockpit's own file (`ownFiles`, edited without asking) only when nobody
+ *   else can see it (`copyIsPrivate`); a copy in a shared folder stays foreign,
+ *   so its edits follow the DRIVE setting like anything in a shared folder.
  * - `mail`: sends email — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
@@ -339,7 +341,7 @@ function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: 
 
 type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName">;
 
-async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string; copy?: DriveFileMeta }> {
+async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string; copy?: DriveFileMeta & { private: boolean } }> {
   if (e.op === "drive.copy") return { copy: await copyFile(token, fileId, e.newName, e.toId, f) };
   if (e.op === "drive.delete") return trashFile(token, fileId, f).then(() => ({}));
   if (e.op === "drive.rename") return renameFile(token, fileId, e.newName ?? "", f).then(() => ({}));
@@ -622,9 +624,12 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       const elsewhere = dest !== null && dest.id !== meta.parentId;
       if (!elsewhere || setting === "autonomous") {
         const copy = await copyFile(token, meta.id, newName, dest?.id, f);
-        deps.ownFiles.add(account.id, copy.id);
+        // Edited without asking ONLY when nobody else can see it: a copy in a
+        // shared folder stays someone else's file to the Drive setting, or an
+        // agent could put content it controls before a whole team, unasked.
+        if (copy.private) deps.ownFiles.add(account.id, copy.id);
         const summary = `copy "${meta.name.slice(0, 200)}" (${meta.id}) → "${copy.name.slice(0, 200)}" (${copy.id})`;
-        return { kind: "result", result: { id: copy.id, name: copy.name, ...(copy.link ? { link: copy.link } : {}), status: "copied" }, log: { summary, ...(copy.link ? { link: copy.link } : {}) } };
+        return { kind: "result", result: { id: copy.id, name: copy.name, ...(copy.link ? { link: copy.link } : {}), status: "copied", private: copy.private }, log: { summary, ...(copy.link ? { link: copy.link } : {}) } };
       }
       const parent = meta.parentId ? await getFileMeta(token, meta.parentId, f).catch(() => null) : null;
       const payload: FilePayload = {
@@ -812,8 +817,9 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     if (manage && (file.name !== p.name || (file.parentId ?? "") !== (p.parentId ?? ""))) throw new GoogleInputError(FILE_CHANGED_SENTENCE);
     const r = await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
     if (r.copy) {
-      // The copy is the cockpit's own file from now on.
-      deps.ownFiles.add(account.id, r.copy.id);
+      // Approving the copy is not approving every later edit of it: own only
+      // when nobody else can see it (`copyIsPrivate`).
+      if (r.copy.private) deps.ownFiles.add(account.id, r.copy.id);
       return { kind: "done", ...(r.copy.link ? { link: r.copy.link } : {}) };
     }
     const link = file.link ?? p.link;

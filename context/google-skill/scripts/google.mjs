@@ -302,7 +302,7 @@ function print(action, out) {
   } else if (action === "drive.rename") {
     console.log("Renamed.");
   } else if (action === "drive.copy") {
-    console.log(`Copied: ${r.id}${r.link ? ` ${r.link}` : ""} — this copy is the cockpit's own file now, edited without asking.`);
+    console.log(`Copied: ${r.id}${r.link ? ` ${r.link}` : ""} — ${r.private ? "only the person can see this copy: it is the cockpit's own file now, edited without asking." : "other people can see this copy (its folder is shared), so editing it follows the drive-edits setting."}`);
   } else if (action === "sheet.update") {
     console.log(`Updated${r.updatedRange ? ` ${r.updatedRange}` : ""}.`);
   } else if (action === "gmail.draft") {

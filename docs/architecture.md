@@ -2285,8 +2285,12 @@ original (no `--to`, or its own folder — and a file merely shared with the
 account lands in the person's own Drive) reaches no one new and never asks;
 one put in ANOTHER folder lands in front of that folder's audience and follows
 the DRIVE setting (a card naming both folders and the copy's name). The copy
-is recorded in `ownFiles` — on Approve too — so it is edited without asking:
-copy, then adapt the copy.
+joins `ownFiles` — edited without asking — ONLY when nobody else can see it
+(`copyIsPrivate`: its `permissionIds`, inherited ones included, are the owner
+alone; a missing list counts as shared). Otherwise an agent could copy a file
+beside itself in a shared folder, unasked, then rewrite the copy unasked: the
+one route to putting content before a team with no approval at all. Every
+other `ownFiles` entry is a file the cockpit created AND placed (the root).
 
 **Editing content** (`slides.edit`, `doc.edit`, `sheet.edit`, class
 `file-write`; `src/google-edits.ts`, pure). An agent sends `{id, ops[]}`;

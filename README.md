@@ -758,8 +758,9 @@ Enter to skip; you can add it later from the web UI).
   renamed or moved in the meantime. `drive copy` duplicates a file — a Doc,
   Sheet or deck keeps its whole look — beside the original at once, or into
   another folder after a *Drive edits* card; the copy never carries the
-  original's sharing, and it is the cockpit's own file from then on (edited
-  without asking: copy a document, then translate the copy). It can also **edit the content** of a Slides deck, a Doc or a Sheet
+  original's sharing, and when nobody else can see it, it is the cockpit's own
+  file from then on (edited without asking: copy a document, then translate the
+  copy); a copy in a shared folder stays under *Drive edits*. It can also **edit the content** of a Slides deck, a Doc or a Sheet
   (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
   operations — replace or insert text, add / duplicate / delete / reorder
   slides (on a deck's own custom layouts too: `slides read` lists them), style

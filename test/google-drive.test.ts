@@ -17,7 +17,7 @@ import {
   type GoogleAction,
   type GoogleDeps,
 } from "../src/google-actions.js";
-import { GoogleInputError, GoogleOutcomeUnknownError, MAX_DOWNLOAD_BYTES, MAX_FILE_CHARS, MIME_DOC, MIME_FOLDER, MIME_SHEET, MIME_SLIDES, downloadDriveFile, downloadFileName, downloadPlan, driveQuery, truncateRows, type FetchFn } from "../src/google.js";
+import { GoogleInputError, GoogleOutcomeUnknownError, MAX_DOWNLOAD_BYTES, MAX_FILE_CHARS, MIME_DOC, MIME_FOLDER, MIME_SHEET, MIME_SLIDES, copyIsPrivate, downloadDriveFile, downloadFileName, downloadPlan, driveQuery, truncateRows, type FetchFn } from "../src/google.js";
 import { writeNewAsUserArgv } from "../src/group-exec.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -115,7 +115,9 @@ function fakeDrive() {
       const c: FakeFile = { ...f, name: body.name ?? `Copy of ${f.name}`, owners: ["ana@example.org"], ...(body.parents ? { parents: body.parents } : f.parents ? { parents: f.parents } : {}) };
       files.set(id, c);
       writes.push({ id: m[1], kind: "copy", body });
-      return json(200, meta(id, c));
+      // The owner, plus what a shared folder (here: Projects) hands down.
+      const inherited = (c.parents ?? []).includes("DIR") ? ["anyoneWithLink", "team-group"] : [];
+      return json(200, { ...meta(id, c), permissionIds: ["owner", ...inherited] });
     }
     if ((m = /^\/drive\/v3\/files\/([^/]+)$/.exec(p)) && method === "PATCH") {
       const f = files.get(m[1]);
@@ -613,7 +615,7 @@ test("Approve applies a bin / move / rename only to the file as the card showed 
 
 // ---- copy -------------------------------------------------------------------
 
-test("drive copy beside the original: made at once even with Drive edits on approve, and the copy is the cockpit's own", async () => {
+test("drive copy beside the original: made at once even with Drive edits on approve; a PRIVATE copy is the cockpit's own", async () => {
   const { g, deps, ownFiles } = setup();
   const a = acct();
   const r = result(await runGoogleAction(deps, a, "drive.copy", { id: "BOBDOC", name: "Team roadmap (FR)" }));
@@ -622,7 +624,8 @@ test("drive copy beside the original: made at once even with Drive edits on appr
   const copyId = String(r.result.id);
   assert.match(String(r.result.link), new RegExp(copyId));
   assert.deepEqual(g.writes.at(-1), { id: "BOBDOC", kind: "copy", body: { name: "Team roadmap (FR)" } }, "no parents: Drive puts it beside the original");
-  assert.ok(ownFiles.has(a.id, copyId));
+  assert.ok(ownFiles.has(a.id, copyId), "a file merely shared with the account is copied into the person's own Drive: private");
+  assert.equal(r.result.private, true);
   assert.match(r.log!.summary, /copy "Team roadmap" \(BOBDOC\) → "Team roadmap \(FR\)"/);
   // The copy is edited without a card; the original still asks.
   const edit = await runGoogleAction(deps, a, "doc.append", { id: copyId, text: " traduit" });
@@ -632,6 +635,19 @@ test("drive copy beside the original: made at once even with Drive edits on appr
   const same = result(await runGoogleAction(deps, a, "drive.copy", { id: "PLAN", to: "DIR" }));
   assert.equal(same.result.name, "Copy of Plan 2027");
   assert.deepEqual(g.writes.at(-1)!.body, { parents: ["DIR"] });
+});
+
+test("a copy left in a SHARED folder is made without a card but stays foreign: rewriting it asks under Drive edits", async () => {
+  const { deps, ownFiles } = setup();
+  const a = acct();
+  const r = result(await runGoogleAction(deps, a, "drive.copy", { id: "PLAN" }));
+  const copyId = String(r.result.id);
+  assert.equal(r.result.private, false);
+  assert.equal(ownFiles.has(a.id, copyId), false, "others can see it: not the cockpit's own");
+  assert.equal((await runGoogleAction(deps, a, "doc.append", { id: copyId, text: "unasked?" })).kind, "pending", "its edits ask, like any file in a shared folder");
+  assert.equal(copyIsPrivate(["owner"]), true);
+  assert.equal(copyIsPrivate(["owner", "team"]), false);
+  assert.equal(copyIsPrivate(undefined), false, "no list: read as shared");
 });
 
 test("drive copy into another folder follows the Drive setting: a card naming both folders, the copy made only on Approve", async () => {

@@ -109,9 +109,12 @@ the original. A copy beside the original is made at once (nothing existing
 changes, and it reaches no one new); one put in ANOTHER folder follows
 `drive-edits` — with `approve` the person gets a card and the command answers
 "waiting for approval". The copy has the access of the folder it lands in,
-never the original's own sharing. It is then the cockpit's own file: edit it
-with `doc edit` / `sheet edit` / `slides edit` without asking — e.g. copy a
-document, then translate the copy.
+never the original's own sharing. If nobody else can see the copy, it is then
+the cockpit's own file: edit it with `doc edit` / `sheet edit` / `slides edit`
+without asking — e.g. copy a document, then translate the copy. If its folder
+is shared, editing it follows `drive-edits` like any file others can see; the
+command tells you which. To work freely, copy into the top of their Drive
+(`--to root`) — that copy is private (and, being elsewhere, may need a card).
 
 **Never possible, whatever the setting:** changing who a file is shared with,
 deleting a file for good or emptying the bin. Say so, and let the person do it
