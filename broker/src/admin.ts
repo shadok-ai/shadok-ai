@@ -30,7 +30,9 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 const HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
+  // Not `no-referrer`: under it the browser sends `Origin: null` with the
+  // page's own form posts, and the CSRF check below refused every save.
+  "referrer-policy": "same-origin",
   "x-frame-options": "DENY",
   "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };
@@ -109,6 +111,16 @@ async function formOf(req: Request): Promise<Record<string, string>> {
 const back = (url: URL, q: Record<string, string>) =>
   new Response(null, { status: 303, headers: { location: `${url.origin}/admin?${new URLSearchParams(q)}`, "cache-control": "no-store" } });
 
+/** The CSRF guard: the page's own form post. `Origin` when the browser sends a
+ *  real one; when it sends `null` (a privacy setting, an extension), the
+ *  browser-set `Sec-Fetch-Site` — which a page cannot forge — must say
+ *  same-origin. Anything cross-site is refused. */
+export function sameOriginWrite(req: Request, url: URL): boolean {
+  const origin = req.headers.get("origin");
+  if (origin === url.origin) return true;
+  return (origin === null || origin === "null") && req.headers.get("sec-fetch-site") === "same-origin";
+}
+
 /**
  * `/admin` (GET) and `/admin/save`, `/admin/delete` (POST). Returns null when
  * the path is not an admin path. Anyone Access did not let in gets a bare 404:
@@ -127,7 +139,7 @@ export async function handleAdmin(req: Request, url: URL, env: AdminEnv, provide
     return html(200, renderAdmin(providers, cfg, user, ready, { ok, err }));
   }
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (req.headers.get("origin") !== url.origin) return new Response("Forbidden", { status: 403 });
+  if (!sameOriginWrite(req, url)) return new Response("Forbidden", { status: 403 });
   if (!ready) return back(url, { err: "Storage is not set up." });
   const form = await formOf(req);
   const cfg = await loadConfig(env.CONFIG);

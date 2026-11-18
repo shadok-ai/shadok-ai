@@ -231,6 +231,7 @@ test("an admin saves an app for a domain: stored sealed, never shown back, serve
   const page = await worker.fetch(adminReq("/admin", t), e);
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-security-policy")!, /default-src 'none'/);
+  assert.equal(page.headers.get("referrer-policy"), "same-origin", "no-referrer makes the browser post Origin: null");
   assert.match(await page.text(), /op@example\.org/);
 
   const form = new URLSearchParams({ provider: "google", host: "Demo.Example.com", clientId: "demo-cid", secret: "demo-secret-value" });
@@ -239,6 +240,12 @@ test("an admin saves an app for a domain: stored sealed, never shown back, serve
   const crossSite = await worker.fetch(adminReq("/admin/save", t, { method: "POST", body: form, headers: { origin: "https://evil.example" } }), e);
   assert.equal(crossSite.status, 403);
 
+  const nullOrigin = await worker.fetch(adminReq("/admin/save", t, { method: "POST", body: form, headers: { origin: "null", "sec-fetch-site": "cross-site" } }), e);
+  assert.equal(nullOrigin.status, 403, "Origin null is accepted only when the browser says same-origin");
+  // What a browser sends for the page's own form post when it withholds the
+  // origin: `Origin: null` + `Sec-Fetch-Site: same-origin`.
+  const viaFetchSite = await worker.fetch(adminReq("/admin/save", t, { method: "POST", body: new URLSearchParams({ provider: "linkedin", clientId: "li", secret: "ls" }), headers: { origin: "null", "sec-fetch-site": "same-origin" } }), e);
+  assert.equal(viaFetchSite.status, 303);
   const r = await worker.fetch(adminReq("/admin/save", t, { method: "POST", body: form, headers: { origin: BASE } }), e);
   assert.equal(r.status, 303);
   assert.match(r.headers.get("location")!, /ok=/);
