@@ -526,3 +526,34 @@ test("github banner names GitHub", () => {
   const [b] = accountBanners([ghAccount({ expired: true })]);
   assert.match(b.text, /^Your GitHub connection 'octo' has expired/);
 });
+
+test("Drive cards for an upload, a folder, a restore and a comment reply: where, what, and the exact words posted", () => {
+  const up = draftCardModel(fileDraft({ op: "drive.upload", name: "report.pdf", owners: [], parentId: "ROOT", toId: "T1", toName: "Team folder", bytes: 2048, convert: "doc" }));
+  assert.equal(up.title, "Put an uploaded file into a shared Drive folder — ana@example.org");
+  assert.deepEqual(up.fields.slice(-5), [
+    { label: "Now", value: "at the top of the Drive, seen by nobody else" },
+    { label: "Goes to", value: "Team folder (T1)" },
+    { label: "Size", value: "2 kB" },
+    { label: "Converted to", value: "a Google doc" },
+    { label: "Change", value: FILE_CHANGE_UPLOAD },
+  ]);
+  assert.equal(up.actions[0].label, "Put it in the folder");
+  const mk = draftCardModel(fileDraft({ op: "drive.mkdir", name: "Team folder", newName: "Q4" }));
+  assert.equal(mk.fields[0].label, "In folder", "the file named on a folder card is the folder it goes in");
+  assert.deepEqual(mk.fields.slice(-2), [{ label: "New folder", value: "Q4" }, { label: "Change", value: "A new, empty folder, seen by whoever the folder around it is shared with" }]);
+  assert.equal(mk.actions[0].label, "Create the folder");
+  const ut = draftCardModel(fileDraft({ op: "drive.untrash", parentId: "D1", parentName: "Projects" }));
+  assert.equal(ut.title, "Restore a Drive file from the bin — ana@example.org");
+  assert.deepEqual(ut.fields.at(-2), { label: "Returns to", value: "Projects" });
+  const rp = draftCardModel(fileDraft({ op: "drive.reply", commentId: "C1", commentAuthor: "Bob <bob@example.org>", commentText: "<b>Is this right?</b>", text: "Yes — checked." }));
+  assert.equal(rp.title, "Reply to a comment on a Drive file — ana@example.org");
+  assert.deepEqual(rp.fields.slice(-3), [{ label: "Comment by", value: "Bob <bob@example.org>" }, { label: "Comment", value: "<b>Is this right?</b>" }, { label: "Change", value: "A reply, read by everyone who can see this file's comments" }]);
+  assert.equal(rp.text, "Yes — checked.", "the reply exactly as it will be posted");
+  assert.equal(rp.actions[0].label, "Post the reply");
+  const rs = draftCardModel(fileDraft({ op: "drive.reply", commentId: "C1", commentAuthor: "Bob", commentText: "Done?", resolve: true }));
+  assert.equal(rs.title, "Resolve a comment on a Drive file — ana@example.org");
+  assert.equal(rs.actions[0].label, "Resolve the comment");
+  assert.ok(rs.fields.some((f: { label: string }) => f.label === "Resolves it"));
+  assert.equal(rs.text, "");
+});
+const FILE_CHANGE_UPLOAD = "The file goes into that folder, seen by whoever that folder is shared with. Until then it waits at the top of the Drive, seen by nobody else — open the link to check it; Discard moves it to the bin";

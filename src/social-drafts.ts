@@ -70,7 +70,7 @@ export interface EventPayload {
  *  for a file the cockpit did not create — its own files are edited at once. */
 export interface FilePayload {
   kind: "file";
-  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename" | "drive.copy";
+  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename" | "drive.copy" | "drive.upload" | "drive.mkdir" | "drive.reply" | "drive.untrash";
   fileId: string;
   /** The file's name and folder WHEN THE CARD WAS MADE; a bin / move / rename
    *  is applied only if both are still the same. */
@@ -84,8 +84,18 @@ export interface FilePayload {
   toName?: string;
   /** drive.rename: what it becomes; drive.copy: the copy's name (absent = "Copy of …"). */
   newName?: string;
-  /** doc.append: the text added at the end. */
+  /** doc.append: the text added at the end; drive.reply: the reply. */
   text?: string;
+  /** drive.upload: the size of the file waiting, private, at the top of the
+   *  Drive (`fileId` — the upload IS the draft), and what Drive made of it. */
+  bytes?: number;
+  convert?: string;
+  /** drive.reply: the comment answered, as it read when the card was made. */
+  commentId?: string;
+  commentAuthor?: string;
+  commentText?: string;
+  /** drive.reply: the reply also resolves the comment. */
+  resolve?: boolean;
   /** sheet.*: the range asked for (absent = the sheet's end) and the rows. */
   range?: string;
   rows?: (string | number | boolean)[][];
@@ -111,7 +121,7 @@ export interface EditPayload {
 
 export type DraftPayload = MailPayload | EventPayload | FilePayload | EditPayload;
 export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
-const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "slides.edit", "doc.edit", "sheet.edit"];
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.reply", "drive.untrash", "slides.edit", "doc.edit", "sheet.edit"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {
@@ -575,6 +585,12 @@ function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "eve
         ...(p.text !== undefined ? { text: p.text } : {}),
         ...(p.range ? { range: p.range } : {}),
         ...(p.rows ? { rows: p.rows.map((r) => [...r]) } : {}),
+        ...(p.bytes !== undefined ? { bytes: p.bytes } : {}),
+        ...(p.convert ? { convert: p.convert } : {}),
+        ...(p.commentId ? { commentId: p.commentId } : {}),
+        ...(p.commentAuthor ? { commentAuthor: p.commentAuthor } : {}),
+        ...(p.commentText !== undefined ? { commentText: p.commentText } : {}),
+        ...(p.resolve ? { resolve: true } : {}),
       },
     };
   }

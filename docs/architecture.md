@@ -2213,7 +2213,10 @@ whether an approval setting applies, and which:
 | own-write | `gmail.draft`, `doc.create`, `sheet.create`, `slides.create` | never — only the person's own drafts and files |
 | read, audited | `drive.download` (area `drive`) | never — but logged: file id and name, format, size |
 | file-write | `doc.append`, `sheet.append`, `sheet.update`, `slides.edit`, `doc.edit`, `sheet.edit` | a file the cockpit created: never. Any other file: `policies.drive` |
-| file-manage | `drive.delete` (to the bin), `drive.move`, `drive.rename` | always `policies.drive`, the cockpit's own files included |
+| read, audited | `drive.comments`, `drive.access` (area `drive`) | never — but logged: the file id and name and a count; never a comment or a name |
+| read, audited | `api.get` (area from the URL, `passthroughPlan`) | never — but logged: the URL; never the answer |
+| file-manage | `drive.delete` (to the bin), `drive.untrash`, `drive.move`, `drive.rename`, `drive.reply` | always `policies.drive`, the cockpit's own files included |
+| file-copy | `drive.copy`, `drive.upload`, `drive.mkdir` | `policies.drive` only when the new item lands where others can see it (copy: another folder than the original's; upload / folder: a folder whose `permissionIds` are not the owner alone) |
 | mail | `gmail.send` | `policies.mail` |
 | calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
 
@@ -2291,6 +2294,57 @@ alone; a missing list counts as shared). Otherwise an agent could copy a file
 beside itself in a shared folder, unasked, then rewrite the copy unasked: the
 one route to putting content before a team with no approval at all. Every
 other `ownFiles` entry is a file the cockpit created AND placed (the root).
+
+**Upload and folders** (`drive.upload`, `drive.mkdir`, class `file-copy`)
+follow the copy's reasoning with no original to stand beside: at the top of
+the Drive (no `--to`, or `root`) or in a folder whose `permissionIds` are the
+owner alone (`getFileState`), the new item reaches no one and is made at
+once; anywhere else, `policies.drive`. Own (`ownFiles`) only when the created
+item is private, by the same `copyIsPrivate`. The upload reads the agent's file
+through `deps.readFile` — the agent's rights, like a mail attachment — before
+any token, capped at `MAX_UPLOAD_BYTES` (50 MB), and sends it as a Drive
+resumable upload in one piece: the metadata `POST` returns a session URI in
+`Location`, which must be `https://www.googleapis.com/upload/drive/v3/files…`
+before the bytes are `PUT` there (without the token: the session URI is the
+upload's own credential). `--convert` sets a Google MIME type in the metadata,
+which is how Drive imports (`convertVerdict` checks the source extension
+against `about.importFormats`). A pending upload has bytes to hold, and the
+LinkedIn image snapshot is not reused for them: the bytes are uploaded at
+once, PRIVATELY, to the top of the Drive — the staged file IS the draft, as the
+Gmail draft is an email's. The card links to it; Approve is a move into the
+folder (refused if the person renamed or moved it meanwhile — it is theirs
+then); Discard bins it (`discardGoogleDraft`), unless the person took it over.
+An expired card leaves it there, like an expired email leaves its Gmail draft.
+A pending folder needs nothing staged: the card holds the parent folder
+(`fileId`) and the name, and Approve creates it.
+
+**The bin's undo, comments, access.** `drive.untrash` (`PATCH trashed:false`)
+puts a file back in its folder, before that folder's audience — `file-manage`,
+like the delete. `getFileMeta` hides binned files, so its lookups (and
+Approve's) go through `getFileState`; a file restored in the meantime is
+`RESTORED_SENTENCE`. `drive.comments` (`comments.list`, `fields` is required
+by that API) and `drive.access` (`permissions.list`) are audited reads, fenced
+as untrusted: comments and display names are other people's words.
+`drive.reply` (`replies.create` with `content`, and/or `action: "resolve"`) is
+visible to everyone who sees the comments, so `file-manage`: the card shows
+the comment answered (author, text) and the exact reply. Permissions are only
+ever LISTED — `share` / `permissions` stay refused by name.
+
+**The read-only passthrough** (`api.get`, `src/google-passthrough.ts`) is the
+answer to "one action per field": a GET on an allowlist of exact hosts and
+path prefixes (`PASSTHROUGH_ROUTES`), each mapped to the area it needs —
+Gmail `users/me` → `gmail_read`, Calendar → `calendar`, Drive / Docs / Sheets /
+Slides → `drive` (Google itself keeps `drive.file` to the cockpit's files).
+`passthroughPlan` judges the RAW path before `new URL` normalises it (an
+encoded slash or a dot segment is refused: the path must mean the same to
+Google as to the check), refuses media / uploads / exports (`drive download`
+owns bytes), JSONP and any key or token in the query — all before a token is
+fetched, and an area the account lacks is refused there too. `passthroughGet`
+sends the token only to that host, with `redirect: "manual"` (a redirect is
+refused, never followed), accepts JSON or text only, refuses past 2 MB and
+cuts what the agent gets. The URL is logged; the answer never. There is no
+write counterpart on purpose: a write needs a class and, when it reaches
+other people, a card — which a generic URL cannot carry.
 
 **Editing content** (`slides.edit`, `doc.edit`, `sheet.edit`, class
 `file-write`; `src/google-edits.ts`, pure). An agent sends `{id, ops[]}`;
@@ -2965,7 +3019,8 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
-| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
+| `src/google-passthrough.ts` | The read-only passthrough behind `api.get`: `PASSTHROUGH_ROUTES` (host + path prefix → area), `passthroughPlan` (refuses anything off the list or ambiguous, before a token), `passthroughGet` (GET, no redirect, JSON/text only, 2 MB cap). Pure over an injected fetch, tested. |
+| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / file-copy / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
 | `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only), `editPlan` (the requests plus what a Slides batch creates — `duplicate_slide` copies, custom-layout `add_slide`), `translateEditError`. Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/github.ts` | GitHub client for connected GitHub accounts: `GithubTokens` (refresh through the broker with the ROTATING refresh token — one in flight per account, the new refresh token persisted before the access token is used, `invalid_grant` → expired; `needsKeepalive` for the hourly renewal), `fetchUser` / `fetchInstallations`, `noreplyEmail`, `githubGitEnv` (the credential helper's name in the spawn env, never a token), `pickGithubAccount`. Pure over an injected fetch, tested. |

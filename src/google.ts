@@ -1434,6 +1434,308 @@ export async function moveFile(token: string, id: string, from: string | undefin
   await sendJson("file move", "PATCH", fileUrl(id, extra), token, {}, fetchFn, true);
 }
 
+// ---- upload, folders, comments, access, restore -----------------------------
+
+/** A Drive id given by an agent, checked before any token is fetched. */
+export const fileIdVerdict = (v: unknown, what = "file"): string => pathId(what, v);
+
+/** `--to`: absent or `root` = the top of the person's Drive (no lookup, no
+ *  `parents`: Drive puts it there); anything else is a folder id. */
+export function folderTargetVerdict(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === "" || v === "root") return undefined;
+  return pathId("folder", v);
+}
+
+const ACCESS_FIELDS = `${FILE_FIELDS},permissionIds`;
+
+export interface DriveFileState extends DriveFileMeta {
+  trashed: boolean;
+  /** Reachable by its owner alone (`copyIsPrivate`). */
+  private: boolean;
+}
+
+/** A file's metadata — the bin INCLUDED, unlike `getFileMeta` — and whether
+ *  anyone but its owner can reach it. Null when not reachable at all. */
+export async function getFileState(token: string, id: unknown, fetchFn: FetchFn): Promise<DriveFileState | null> {
+  const url = `${DRIVE}/${pathId("file", id)}?${new URLSearchParams({ fields: ACCESS_FIELDS, supportsAllDrives: "true" })}`;
+  const res = await fetchFn(url, { headers: bearer(token), signal: deadline() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await failure("file lookup", res);
+  const f = (await res.json()) as GFile & { permissionIds?: unknown };
+  return { ...driveFileMeta(f), trashed: f.trashed === true, private: copyIsPrivate(f.permissionIds) };
+}
+
+const createdState = (f: GFile & { permissionIds?: unknown }): DriveFileMeta & { private: boolean } => ({ ...driveFileMeta(f), private: copyIsPrivate(f.permissionIds) });
+
+/** A new, empty folder (`files.create` with the folder MIME type). */
+export async function createFolder(token: string, name: string, parentId: string | undefined, fetchFn: FetchFn): Promise<DriveFileMeta & { private: boolean }> {
+  const body = { name: fileNameVerdict(name), mimeType: MIME_FOLDER, ...(parentId ? { parents: [pathId("folder", parentId)] } : {}) };
+  const url = `${DRIVE}?${new URLSearchParams({ supportsAllDrives: "true", fields: ACCESS_FIELDS })}`;
+  const f = await sendJson<GFile & { permissionIds?: unknown }>("folder creation", "POST", url, token, body, fetchFn, true);
+  if (!f.id) throw new GoogleError("Google created the folder but returned no id.", 502, false);
+  return createdState(f);
+}
+
+/** Out of the BIN — the undo of `trashFile`. It goes back where it was. */
+export async function restoreFile(token: string, id: string, fetchFn: FetchFn): Promise<void> {
+  await sendJson("file restore", "PATCH", fileUrl(id), token, { trashed: false }, fetchFn, true);
+}
+
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+const UPLOAD_MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".json": "application/json",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".rtf": "application/rtf",
+  ".zip": "application/zip",
+  ".doc": "application/msword",
+  ".xls": "application/vnd.ms-excel",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".odt": "application/vnd.oasis.opendocument.text",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+const extOf = (name: string) => (/\.[^./\\]+$/.exec(name)?.[0] ?? "").toLowerCase();
+
+/** A local file's MIME type, from its extension — what Drive is told it is. */
+export function uploadMime(name: string): string {
+  return UPLOAD_MIME[extOf(name)] ?? "application/octet-stream";
+}
+
+/** What `--convert` turns a file into, and from which source types Drive
+ *  imports it (Drive's `about.importFormats`, checked 2026-11-18). */
+const CONVERT = {
+  doc: { mime: MIME_DOC, from: [".docx", ".doc", ".odt", ".rtf", ".txt", ".html", ".htm", ".md"] },
+  sheet: { mime: MIME_SHEET, from: [".xlsx", ".xls", ".ods", ".csv", ".tsv"] },
+  slides: { mime: MIME_SLIDES, from: [".pptx", ".ppt", ".odp"] },
+} as const;
+export type ConvertTarget = keyof typeof CONVERT;
+
+/** `--convert doc|sheet|slides`, checked against the file's own type. */
+export function convertVerdict(v: unknown, fileName: string): ConvertTarget | undefined {
+  if (v === undefined || v === null || v === "" || v === false) return undefined;
+  if (typeof v !== "string" || !Object.hasOwn(CONVERT, v)) throw new GoogleInputError("--convert must be doc, sheet or slides.");
+  const target = v as ConvertTarget;
+  const ext = extOf(fileName);
+  if (!(CONVERT[target].from as readonly string[]).includes(ext)) {
+    throw new GoogleInputError(`A '${ext || "(no extension)"}' file cannot become a Google ${target === "doc" ? "Doc" : target === "sheet" ? "Sheet" : "Slides deck"} — it takes ${CONVERT[target].from.join(", ")}.`);
+  }
+  return target;
+}
+
+const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
+const UPLOAD_TIMEOUT_MS = 120_000;
+
+/**
+ * A local file into Drive, as a RESUMABLE upload sent in one piece (Drive API
+ * "Upload file data" → resumable): the metadata opens a session, whose URI
+ * comes back in `Location`; the bytes then go to that URI in a single PUT.
+ * The session URI is the upload's own credential, so the token is not sent
+ * there — and the URI must be Drive's upload endpoint before anything is.
+ * `convertTo` makes Drive import it as a Google file. Opening the session
+ * creates nothing; a PUT that gets no answer may have created the file.
+ */
+export async function uploadFile(
+  token: string,
+  o: { name: string; bytes: Buffer; mime: string; convertTo?: ConvertTarget; parentId?: string },
+  fetchFn: FetchFn,
+): Promise<DriveFileMeta & { private: boolean }> {
+  if (o.bytes.length > MAX_UPLOAD_BYTES) throw new GoogleInputError(`That file is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB — too large to upload here.`);
+  const meta = {
+    name: fileNameVerdict(o.name),
+    ...(o.convertTo ? { mimeType: CONVERT[o.convertTo].mime } : {}),
+    ...(o.parentId ? { parents: [pathId("folder", o.parentId)] } : {}),
+  };
+  const url = `${UPLOAD}?${new URLSearchParams({ uploadType: "resumable", supportsAllDrives: "true", fields: ACCESS_FIELDS })}`;
+  const open = await fetchFn(url, {
+    method: "POST",
+    headers: { ...bearer(token), "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": o.mime, "X-Upload-Content-Length": String(o.bytes.length) },
+    body: JSON.stringify(meta),
+    signal: deadline(),
+  });
+  if (!open.ok) throw await failure("upload", open);
+  let session: URL;
+  try {
+    session = new URL(open.headers.get("location") ?? "");
+  } catch {
+    throw new GoogleError("Google opened the upload but gave no place to send the file.", 502, false);
+  }
+  if (session.protocol !== "https:" || session.hostname !== "www.googleapis.com" || !session.pathname.startsWith("/upload/drive/v3/files")) {
+    throw new GoogleError("Google answered the upload with an unexpected address — nothing was sent.", 502, false);
+  }
+  let res: Response;
+  try {
+    res = await fetchFn(session.toString(), { method: "PUT", headers: { "Content-Type": o.mime }, body: new Uint8Array(o.bytes), signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+  } catch {
+    throw new GoogleOutcomeUnknownError();
+  }
+  if (!res.ok) throw await failure("upload", res);
+  const f = (await res.json().catch(() => ({}))) as GFile & { permissionIds?: unknown };
+  if (!f.id) throw new GoogleError("Google took the file but returned no id.", 502, false);
+  return createdState(f);
+}
+
+// Comments: the Drive API's `comments` and `replies` resources. Both REQUIRE
+// a `fields` parameter (Drive API v3, comments.list / replies.create).
+
+export interface DriveCommentReply {
+  id: string;
+  author: string;
+  created: string;
+  text: string;
+  /** `resolve` / `reopen` when the reply changed the comment's state. */
+  action?: string;
+}
+export interface DriveComment {
+  id: string;
+  author: string;
+  created: string;
+  modified?: string;
+  resolved: boolean;
+  /** The passage of the file the comment is anchored to. */
+  quoted?: string;
+  text: string;
+  replies: DriveCommentReply[];
+}
+
+interface GUser {
+  displayName?: string;
+  emailAddress?: string;
+}
+interface GReply {
+  id?: string;
+  content?: string;
+  createdTime?: string;
+  action?: string;
+  deleted?: boolean;
+  author?: GUser;
+}
+interface GComment extends GReply {
+  modifiedTime?: string;
+  resolved?: boolean;
+  quotedFileContent?: { value?: string };
+  replies?: GReply[];
+}
+
+const who = (u: GUser | undefined) => (u?.displayName && u.emailAddress ? `${u.displayName} <${u.emailAddress}>` : u?.emailAddress || u?.displayName || "unknown");
+const COMMENT_FIELDS = "id,content,createdTime,modifiedTime,resolved,deleted,author(displayName,emailAddress),quotedFileContent(value)";
+const REPLY_FIELDS = "id,content,createdTime,action,deleted,author(displayName,emailAddress)";
+
+export function driveComment(c: GComment): DriveComment {
+  return {
+    id: c.id ?? "",
+    author: who(c.author),
+    created: c.createdTime ?? "",
+    ...(c.modifiedTime && c.modifiedTime !== c.createdTime ? { modified: c.modifiedTime } : {}),
+    resolved: c.resolved === true,
+    ...(c.quotedFileContent?.value ? { quoted: c.quotedFileContent.value } : {}),
+    text: c.content ?? "",
+    replies: (c.replies ?? []).filter((r) => !r.deleted).map((r) => ({ id: r.id ?? "", author: who(r.author), created: r.createdTime ?? "", text: r.content ?? "", ...(r.action ? { action: r.action } : {}) })),
+  };
+}
+
+/** A file's comments and their replies, oldest first, cut once the text
+ *  passes `MAX_FILE_CHARS`. Deleted ones are left out. */
+export async function listComments(token: string, id: string, o: { pageToken?: unknown }, fetchFn: FetchFn): Promise<{ comments: DriveComment[]; truncated: boolean; nextPageToken?: string }> {
+  const p = new URLSearchParams({ pageSize: "100", includeDeleted: "false", fields: `nextPageToken,comments(${COMMENT_FIELDS},replies(${REPLY_FIELDS}))` });
+  if (o.pageToken !== undefined && o.pageToken !== null && o.pageToken !== "") {
+    if (typeof o.pageToken !== "string" || !/^[A-Za-z0-9_~.=+/-]{1,2048}$/.test(o.pageToken)) throw new GoogleInputError("That is not a valid page token.");
+    p.set("pageToken", o.pageToken);
+  }
+  const j = await getJson<{ comments?: GComment[]; nextPageToken?: string }>("comment listing", `${DRIVE}/${pathId("file", id)}/comments?${p}`, token, fetchFn);
+  const all = (j.comments ?? []).filter((c) => !c.deleted).map(driveComment);
+  let used = 0;
+  const kept: DriveComment[] = [];
+  for (const c of all) {
+    used += c.text.length + (c.quoted?.length ?? 0) + c.replies.reduce((n, r) => n + r.text.length, 0);
+    if (used > MAX_FILE_CHARS && kept.length) break;
+    kept.push(c);
+  }
+  return { comments: kept, truncated: kept.length < all.length, ...(j.nextPageToken ? { nextPageToken: j.nextPageToken } : {}) };
+}
+
+/** One comment, replies left out; null when it is not there or was deleted. */
+export async function getComment(token: string, fileId: string, commentId: string, fetchFn: FetchFn): Promise<DriveComment | null> {
+  const url = `${DRIVE}/${pathId("file", fileId)}/comments/${pathId("comment", commentId)}?${new URLSearchParams({ fields: COMMENT_FIELDS })}`;
+  const res = await fetchFn(url, { headers: bearer(token), signal: deadline() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await failure("comment lookup", res);
+  const c = (await res.json()) as GComment;
+  return c.deleted ? null : driveComment({ ...c, replies: [] });
+}
+
+export const MAX_REPLY_CHARS = 4000;
+
+/** A reply's text: required unless the reply only resolves the comment. */
+export function replyTextVerdict(v: unknown, resolve: boolean): string | undefined {
+  if (v === undefined || v === null || (typeof v === "string" && !v.trim())) {
+    if (resolve) return undefined;
+    throw new GoogleInputError("The reply is empty — write it on stdin, or pass --resolve to only resolve the comment.");
+  }
+  if (typeof v !== "string") throw new GoogleInputError("The reply must be text.");
+  if ([...v].length > MAX_REPLY_CHARS) throw new GoogleInputError(`The reply is over ${MAX_REPLY_CHARS} characters.`);
+  return v.replace(/\s+$/, "");
+}
+
+/** `replies.create`: `content`, and `action: "resolve"` to resolve the comment
+ *  (Drive takes a reply with an action and no content). */
+export async function replyToComment(token: string, fileId: string, commentId: string, o: { text?: string; resolve?: boolean }, fetchFn: FetchFn): Promise<{ id: string }> {
+  const url = `${DRIVE}/${pathId("file", fileId)}/comments/${pathId("comment", commentId)}/replies?${new URLSearchParams({ fields: "id" })}`;
+  const body = { ...(o.text ? { content: o.text } : {}), ...(o.resolve ? { action: "resolve" } : {}) };
+  const j = await sendJson<{ id?: string }>("comment reply", "POST", url, token, body, fetchFn, true);
+  return { id: j.id ?? "" };
+}
+
+export interface DriveAccess {
+  /** user / group / domain / anyone */
+  type: string;
+  /** owner / organizer / fileOrganizer / writer / commenter / reader */
+  role: string;
+  who: string;
+  pendingOwner?: boolean;
+  expires?: string;
+}
+
+/** Who can reach a file (`permissions.list`) — READ only: nothing here, or
+ *  anywhere in the cockpit, changes a permission. */
+export async function listAccess(token: string, id: string, fetchFn: FetchFn): Promise<{ access: DriveAccess[]; truncated: boolean }> {
+  const access: DriveAccess[] = [];
+  let page: string | undefined;
+  for (let i = 0; i < 5; i++) {
+    const p = new URLSearchParams({ supportsAllDrives: "true", pageSize: "100", fields: "nextPageToken,permissions(id,type,role,emailAddress,domain,displayName,deleted,pendingOwner,expirationTime)" });
+    if (page) p.set("pageToken", page);
+    const j = await getJson<{ permissions?: { type?: string; role?: string; emailAddress?: string; domain?: string; displayName?: string; deleted?: boolean; pendingOwner?: boolean; expirationTime?: string }[]; nextPageToken?: string }>(
+      "access listing",
+      `${DRIVE}/${pathId("file", id)}/permissions?${p}`,
+      token,
+      fetchFn,
+    );
+    for (const x of j.permissions ?? []) {
+      const name = x.type === "anyone" ? "anyone with the link" : x.type === "domain" ? `everyone at ${x.domain ?? "?"}` : who(x);
+      access.push({ type: x.type ?? "", role: x.role ?? "", who: x.deleted ? `${name} (deleted account)` : name, ...(x.pendingOwner ? { pendingOwner: true } : {}), ...(x.expirationTime ? { expires: x.expirationTime } : {}) });
+    }
+    page = j.nextPageToken;
+    if (!page) return { access, truncated: false };
+  }
+  return { access, truncated: true };
+}
+
 // ---- download ---------------------------------------------------------------
 
 export const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
@@ -1493,8 +1795,7 @@ export function downloadFileName(name: string, ext?: string): string {
 }
 
 /** The body, refused the moment it passes the cap — never buffered beyond it. */
-async function cappedBytes(res: Response, cap: number): Promise<Buffer> {
-  const over = () => new GoogleInputError(`That file is over ${cap / 1024 / 1024} MB — too large to download here.`);
+export async function cappedBytes(res: Response, cap: number, over = () => new GoogleInputError(`That file is over ${cap / 1024 / 1024} MB — too large to download here.`)): Promise<Buffer> {
   if (Number(res.headers.get("content-length")) > cap) throw over();
   const chunks: Buffer[] = [];
   let total = 0;

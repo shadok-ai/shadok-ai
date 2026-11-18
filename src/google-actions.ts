@@ -7,6 +7,7 @@
 import path from "node:path";
 import { googlePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
 import type { Draft, DraftAction, DraftPayload, EditPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
+import { passthroughGet, passthroughPlan } from "./google-passthrough.js";
 import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, editOpsVerdict, editPlan, sheetState, slidesState, translateEditError, type EditApp, type EditOp, type EditState, type SlidesCreated } from "./google-edits.js";
 import {
   GoogleError,
@@ -27,6 +28,21 @@ import {
   fileNameVerdict,
   getFileMeta,
   MIME_FOLDER,
+  MAX_UPLOAD_BYTES,
+  convertVerdict,
+  createFolder,
+  fileIdVerdict,
+  folderTargetVerdict,
+  getComment,
+  getFileState,
+  listAccess,
+  listComments,
+  replyTextVerdict,
+  replyToComment,
+  restoreFile,
+  uploadFile,
+  uploadMime,
+  type DriveFileState,
   copyFile,
   moveFile,
   renameFile,
@@ -80,9 +96,11 @@ import {
  * - `file-write`: writes into an existing Drive file. One the cockpit created
  *   is an own-write. ANY OTHER file — reachable only with the whole-Drive area
  *   — may be shared with other people: the account's DRIVE setting.
- * - `file-manage`: moves a file to the bin, into another folder, or renames
- *   it. ALWAYS the account's DRIVE setting, the cockpit's own files included:
- *   a file that vanishes or changes place is felt by whoever uses it.
+ * - `file-manage`: moves a file to the bin, out of it, into another folder,
+ *   renames it, or replies to / resolves one of its comments. ALWAYS the
+ *   account's DRIVE setting, the cockpit's own files included: a file that
+ *   vanishes, comes back or changes place is felt by whoever uses it, and a
+ *   reply is read by everyone who sees the file's comments.
  * - `file-copy`: makes a copy of a file (`drive.copy`). Nothing existing
  *   changes, so a copy left BESIDE the original (same folder, same audience)
  *   never asks; one put in ANOTHER folder lands in front of whoever that folder
@@ -90,6 +108,10 @@ import {
  *   cockpit's own file (`ownFiles`, edited without asking) only when nobody
  *   else can see it (`copyIsPrivate`); a copy in a shared folder stays foreign,
  *   so its edits follow the DRIVE setting like anything in a shared folder.
+ *   An UPLOAD of a local file and a new FOLDER are the same shape: nothing
+ *   existing changes, so at the top of the Drive or in a folder only the
+ *   person can see they never ask; in a folder others can see, the DRIVE
+ *   setting. Own (`ownFiles`) only when private, by the same rule.
  * - `mail`: sends email — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
@@ -110,6 +132,15 @@ export const GOOGLE_ACTIONS = {
   "drive.move": { class: "file-manage", area: "drive" },
   "drive.rename": { class: "file-manage", area: "drive" },
   "drive.copy": { class: "file-copy", area: "drive" },
+  "drive.upload": { class: "file-copy", area: "drive" },
+  "drive.mkdir": { class: "file-copy", area: "drive" },
+  "drive.untrash": { class: "file-manage", area: "drive" },
+  "drive.comments": { class: "read", area: "drive", audit: true },
+  "drive.reply": { class: "file-manage", area: "drive" },
+  "drive.access": { class: "read", area: "drive", audit: true },
+  // The read-only passthrough: its area depends on the URL, checked per call
+  // (`passthroughPlan`) before any token is fetched.
+  "api.get": { class: "read", area: "url", audit: true },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "slides.read": { class: "read", area: "drive" },
   "slides.create": { class: "own-write", area: "drive" },
@@ -125,7 +156,7 @@ export const GOOGLE_ACTIONS = {
   "calendar.create": { class: "calendar", area: "calendar" },
   "calendar.update": { class: "calendar", area: "calendar" },
   "calendar.delete": { class: "calendar", area: "calendar" },
-} as const satisfies Record<string, { class: GoogleActionClass; area: GoogleArea; audit?: boolean }>;
+} as const satisfies Record<string, { class: GoogleActionClass; area: GoogleArea | "url"; audit?: boolean }>;
 
 /** Does this action go in the account's log? Everything but a plain read. */
 export function actionLogged(action: GoogleAction): boolean {
@@ -187,8 +218,8 @@ export function actionVerdict(
 ): { ok: true; action: GoogleAction } | { ok: false; status: number; reason: string } {
   if (typeof action === "string" && REFUSED.test(action)) return { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE };
   if (!isGoogleAction(action)) return { ok: false, status: 400, reason: `Unknown Google action '${String(action).slice(0, 40)}'.` };
-  const area = GOOGLE_ACTIONS[action].area;
-  if (!areaHeld(account, area)) {
+  const area: GoogleArea | "url" = GOOGLE_ACTIONS[action].area;
+  if (area !== "url" && !areaHeld(account, area)) {
     return {
       ok: false,
       status: 403,
@@ -237,8 +268,15 @@ export function eventSummary(op: EventPayload["op"], e: Pick<EventFields, "title
   return `${op} "${e.title}" ${e.start} → ${e.end}${zone}`;
 }
 
-export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows" | "toId" | "toName" | "newName">): string {
+export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows" | "toId" | "toName" | "newName" | "bytes" | "convert" | "commentId" | "resolve">): string {
   const where = `"${p.name}" (${p.fileId})`;
+  if (p.op === "drive.upload") return `upload "${p.name}" (${p.bytes ?? 0} bytes${p.convert ? `, as a Google ${p.convert}` : ""}) into folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
+  if (p.op === "drive.mkdir") return `create folder "${p.newName ?? ""}" in ${where}`;
+  if (p.op === "drive.untrash") return `restore ${where} from the bin`;
+  if (p.op === "drive.reply") {
+    const verb = p.resolve ? (p.text ? "reply to and resolve" : "resolve") : "reply to";
+    return `${verb} comment ${p.commentId ?? ""} on ${where}${p.text ? ` (${[...p.text].length} characters)` : ""}`;
+  }
   if (p.op === "drive.delete") return `move ${where} to the bin`;
   if (p.op === "drive.move") return `move ${where} to folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
   if (p.op === "drive.rename") return `rename ${where} to "${p.newName ?? ""}"`;
@@ -251,23 +289,6 @@ export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | 
 
 export const FILE_CHANGED_SENTENCE = "That file was renamed or moved since this card was made — nothing was changed. Ask again if it is still wanted.";
 export const FILE_GONE_SENTENCE = "That file is no longer in the Drive (deleted, binned, or no longer shared with this account) — nothing was changed.";
-
-const ATTACH_MIME: Record<string, string> = {
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".csv": "text/csv",
-  ".json": "application/json",
-  ".html": "text/html",
-  ".zip": "application/zip",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
 
 /** The attachments, read ONCE, now, with the agent's rights: these bytes are
  *  what is sent or what goes into the Gmail draft a person approves — the
@@ -288,7 +309,7 @@ async function readAttachments(deps: GoogleDeps, raw: unknown): Promise<MailAtta
     }
     total += bytes.length;
     if (total > MAX_ATTACHMENTS_BYTES) throw new GoogleInputError(`The attachments are over ${Math.round(MAX_ATTACHMENTS_BYTES / 1024 / 1024)} MB in total.`);
-    out.push({ name, mime: ATTACH_MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream", bytes });
+    out.push({ name, mime: uploadMime(name), bytes });
   }
   return out;
 }
@@ -339,10 +360,16 @@ function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: 
   return { op: action, ...(given ? {} : { range: rangeOk(args.range) }), rows };
 }
 
-type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName">;
+type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName" | "commentId" | "resolve">;
 
 async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string; copy?: DriveFileMeta & { private: boolean } }> {
   if (e.op === "drive.copy") return { copy: await copyFile(token, fileId, e.newName, e.toId, f) };
+  // A folder created where the card said: `fileId` is the folder it goes in.
+  if (e.op === "drive.mkdir") return { copy: await createFolder(token, e.newName ?? "", fileId, f) };
+  // The upload waited, private, at the top of the Drive: approving moves it in.
+  if (e.op === "drive.upload") return moveFile(token, fileId, e.parentId, e.toId ?? "", f).then(() => ({}));
+  if (e.op === "drive.untrash") return restoreFile(token, fileId, f).then(() => ({}));
+  if (e.op === "drive.reply") return replyToComment(token, fileId, e.commentId ?? "", { ...(e.text ? { text: e.text } : {}), ...(e.resolve ? { resolve: true } : {}) }, f).then(() => ({}));
   if (e.op === "drive.delete") return trashFile(token, fileId, f).then(() => ({}));
   if (e.op === "drive.rename") return renameFile(token, fileId, e.newName ?? "", f).then(() => ({}));
   if (e.op === "drive.move") return moveFile(token, fileId, e.parentId, e.toId ?? "", f).then(() => ({}));
@@ -385,6 +412,15 @@ export function editSummary(p: Pick<EditPayload, "fileId" | "name" | "ops">): st
 }
 
 export const FILE_MOVED_SENTENCE = "This file changed since the card was made — nothing was applied. The operations listed would now apply to it as it is: apply them?";
+
+/** The folder a new item goes into: null for the top of the Drive. Refused
+ *  when it is not a folder of this Drive (or sits in the bin). */
+async function folderTarget(token: string, to: string | undefined, f: FetchFn): Promise<DriveFileState | null> {
+  if (to === undefined) return null;
+  const dest = await getFileState(token, to, f);
+  if (!dest || dest.trashed || dest.mimeType !== MIME_FOLDER) throw new GoogleInputError(`'${to.slice(0, 60)}' is not a folder of this Drive.`);
+  return dest;
+}
 
 export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccount, action: GoogleAction, args: Record<string, unknown>): Promise<ActionOutcome> {
   const f = deps.fetchFn;
@@ -641,6 +677,135 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       };
       return { kind: "pending", action: "drive.copy", payload, summary: fileEditSummary(payload) };
     }
+    case "drive.upload":
+    case "drive.mkdir": {
+      // Checked — and the agent's file read, with ITS rights — before a token.
+      const to = folderTargetVerdict(args.to);
+      let name: string;
+      let upload: { bytes: Buffer; mime: string; convert?: ReturnType<typeof convertVerdict> } | undefined;
+      if (action === "drive.upload") {
+        const p = args.path;
+        if (typeof p !== "string" || !path.isAbsolute(p)) throw new GoogleInputError("Give the file to upload as an absolute path (--path /abs/path/file.pdf).");
+        const local = attachmentName(p);
+        name = args.name === undefined || args.name === null || args.name === "" ? local : fileNameVerdict(args.name);
+        const convert = convertVerdict(args.convert, local);
+        let bytes: Buffer;
+        try {
+          bytes = await deps.readFile(p);
+        } catch {
+          throw new GoogleInputError(`'${p.slice(0, 120)}' is not a file this agent can read.`);
+        }
+        if (bytes.length > MAX_UPLOAD_BYTES) throw new GoogleInputError(`That file is over ${MAX_UPLOAD_BYTES / 1024 / 1024} MB — too large to upload here.`);
+        upload = { bytes, mime: uploadMime(local), ...(convert ? { convert } : {}) };
+      } else {
+        if (args.name === undefined || args.name === null || args.name === "") throw new GoogleInputError("Give the new folder's name (--name).");
+        name = fileNameVerdict(args.name);
+      }
+      const token = await deps.token(account.id);
+      const dest = await folderTarget(token, to, f);
+      // At the top of the Drive or in a folder only the person can see, the
+      // new item reaches no one: no card. In a folder others see: the DRIVE setting.
+      const shared = dest !== null && !dest.private;
+      const into = dest ? ` in "${dest.name.slice(0, 200)}" (${dest.id})` : "";
+      const make = () =>
+        upload ? uploadFile(token, { name, bytes: upload.bytes, mime: upload.mime, ...(upload.convert ? { convertTo: upload.convert } : {}), ...(dest ? { parentId: dest.id } : {}) }, f) : createFolder(token, name, dest?.id, f);
+      if (!shared || setting === "autonomous") {
+        const made = await make();
+        // Own — edited without asking — only when nobody else can see it (`copyIsPrivate`).
+        if (made.private) deps.ownFiles.add(account.id, made.id);
+        const what = upload ? `upload "${made.name.slice(0, 200)}" (${made.id}), ${upload.bytes.length} bytes${upload.convert ? `, as a Google ${upload.convert}` : ""}` : `folder "${made.name.slice(0, 200)}" (${made.id})`;
+        return {
+          kind: "result",
+          result: { id: made.id, name: made.name, mimeType: made.mimeType, ...(made.link ? { link: made.link } : {}), status: upload ? "uploaded" : "created", private: made.private },
+          log: { summary: what + into, ...(made.link ? { link: made.link } : {}) },
+        };
+      }
+      if (!upload) {
+        // `fileId` is the folder it goes IN: what Approve checks is still there.
+        const payload: FilePayload = { kind: "file", op: "drive.mkdir", fileId: dest!.id, name: dest!.name, ...(dest!.link ? { link: dest!.link } : {}), owners: dest!.owners, newName: name };
+        return { kind: "pending", action: "drive.mkdir", payload, summary: fileEditSummary(payload) };
+      }
+      // The bytes are uploaded NOW, privately, to the top of the Drive — the
+      // upload IS the draft, as a Gmail draft is an email's: the person can
+      // open it from the card, Approve moves it into the folder, Discard bins
+      // it. Not recorded as the cockpit's own: it is meant for a shared folder.
+      const staged = await uploadFile(token, { name, bytes: upload.bytes, mime: upload.mime, ...(upload.convert ? { convertTo: upload.convert } : {}) }, f);
+      const payload: FilePayload = {
+        kind: "file", op: "drive.upload", fileId: staged.id, name: staged.name, ...(staged.link ? { link: staged.link } : {}), owners: staged.owners,
+        ...(staged.parentId ? { parentId: staged.parentId } : {}),
+        toId: dest!.id, toName: dest!.name, bytes: upload.bytes.length,
+        ...(upload.convert ? { convert: upload.convert } : {}),
+      };
+      return { kind: "pending", action: "drive.upload", payload, summary: fileEditSummary(payload), result: { id: staged.id, staged: true } };
+    }
+    case "drive.untrash": {
+      const id = fileIdVerdict(args.id);
+      const token = await deps.token(account.id);
+      const st = await getFileState(token, id, f);
+      if (!st) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Find what is in the bin with \`drive search --query "trashed = true"\`.`);
+      if (!st.trashed) throw new GoogleInputError("That file is not in the bin.");
+      // Where it goes back to — what the card shows.
+      const parent = st.parentId ? await getFileMeta(token, st.parentId, f).catch(() => null) : null;
+      const payload: FilePayload = {
+        kind: "file", op: "drive.untrash", fileId: st.id, name: st.name, ...(st.link ? { link: st.link } : {}), owners: st.owners,
+        ...(st.parentId ? { parentId: st.parentId } : {}),
+        ...(parent ? { parentName: parent.name } : {}),
+      };
+      const summary = fileEditSummary(payload);
+      if (setting === "autonomous") {
+        await restoreFile(token, st.id, f);
+        return { kind: "result", result: { id: st.id, status: "restored" }, log: { summary, ...(st.link ? { link: st.link } : {}) } };
+      }
+      return { kind: "pending", action: "drive.untrash", payload, summary };
+    }
+    case "drive.comments":
+    case "drive.access": {
+      const id = fileIdVerdict(args.id);
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      const file = `file ${meta.id} — "${meta.name.slice(0, 200)}"`;
+      // Audited by file and count — never a comment's text or a person's name.
+      if (action === "drive.comments") {
+        const r = await listComments(token, meta.id, { pageToken: args.pageToken }, f);
+        return { kind: "result", result: { kind: "comments", file: meta, ...r, untrusted: true }, log: { summary: `comments of ${file} — ${r.comments.length}` } };
+      }
+      const r = await listAccess(token, meta.id, f);
+      return { kind: "result", result: { kind: "access", file: meta, ...r, untrusted: true }, log: { summary: `access of ${file} — ${r.access.length}` } };
+    }
+    case "drive.reply": {
+      const id = fileIdVerdict(args.id);
+      const commentId = fileIdVerdict(args.comment, "comment");
+      const resolve = args.resolve === true;
+      const text = replyTextVerdict(args.text, resolve);
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      const c = await getComment(token, meta.id, commentId, f);
+      if (!c) throw new GoogleInputError(`No comment '${commentId.slice(0, 60)}' on that file. Run \`drive comments\` to find its id.`);
+      if (resolve && c.resolved && !text) throw new GoogleInputError("That comment is already resolved.");
+      const payload: FilePayload = {
+        kind: "file", op: "drive.reply", fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners,
+        commentId: c.id || commentId, commentAuthor: c.author, commentText: truncateBody(c.text, 1000).body,
+        ...(text ? { text } : {}),
+        ...(resolve ? { resolve: true } : {}),
+      };
+      const summary = fileEditSummary(payload);
+      if (setting === "autonomous") {
+        await applyFileEdit(token, meta.id, payload, f, true);
+        return { kind: "result", result: { id: meta.id, comment: payload.commentId, status: resolve ? "resolved" : "replied" }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+      }
+      return { kind: "pending", action: "drive.reply", payload, summary };
+    }
+    case "api.get": {
+      const plan = passthroughPlan(args.url);
+      if (!areaHeld(account, plan.area)) {
+        throw new GoogleInputError(`That URL needs ${AREA_LABEL[plan.area]} access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick ${AREA_LABEL[plan.area]} in Secrets → Connected accounts.`);
+      }
+      const r = await passthroughGet(await deps.token(account.id), plan.url, f);
+      // Audited by URL — never by what came back.
+      return { kind: "result", result: { kind: "api", ...r, untrusted: true }, log: { summary: `GET ${plan.url.slice(0, 500)}` } };
+    }
     case "gmail.draft":
     case "gmail.send": {
       const fields = mailFieldsVerdict(args);
@@ -752,6 +917,7 @@ export type ApprovalOutcome =
    *  Gmail by the person: the two are not told apart. Nothing left to send. */
   | { kind: "gone" };
 
+export const RESTORED_SENTENCE = "That file is no longer in the bin — someone restored it already. Nothing was changed.";
 export const RETRY_SENTENCE = "Google could not be reached, so nothing was sent or changed — try again in a moment.";
 
 /** A failure BEFORE the outbound call that a second click may well get past
@@ -783,7 +949,12 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     token = await deps.token(account.id);
     if (p.kind === "mail") now = await getGmailDraft(token, p.gmailDraftId, deps.fetchFn);
     // A Drive edit: is the file still there? Days may have passed since the card.
-    if (p.kind === "file" || p.kind === "edit") file = await getFileMeta(token, p.fileId, deps.fetchFn);
+    // A restore is for a file IN the bin, which `getFileMeta` does not see.
+    if (p.kind === "file" && p.op === "drive.untrash") {
+      const st = await getFileState(token, p.fileId, deps.fetchFn);
+      if (st && !st.trashed) throw new GoogleInputError(RESTORED_SENTENCE);
+      file = st;
+    } else if (p.kind === "file" || p.kind === "edit") file = await getFileMeta(token, p.fileId, deps.fetchFn);
   } catch (e) {
     if (retryable(e)) return { kind: "retry", reason: RETRY_SENTENCE };
     throw e;
@@ -813,7 +984,9 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     if (!file) throw new GoogleInputError(FILE_GONE_SENTENCE);
     // A bin / move / rename is for the file AS THE CARD SHOWED IT: renamed or
     // moved since, the person approved something else.
-    const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename";
+    // So is an upload waiting at the top of the Drive (renamed or moved there
+    // by the person since, it is theirs now), and a file to bring back.
+    const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename" || p.op === "drive.upload" || p.op === "drive.untrash";
     if (manage && (file.name !== p.name || (file.parentId ?? "") !== (p.parentId ?? ""))) throw new GoogleInputError(FILE_CHANGED_SENTENCE);
     const r = await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
     if (r.copy) {
@@ -846,11 +1019,26 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
   return { kind: "done" };
 }
 
-/** Discard on an email card deletes the Gmail draft too. Best effort: a draft
+/** Discard on an email card deletes the Gmail draft too; on an upload card it
+ *  bins the file that waited, private, at the top of the Drive. Best effort: a draft
  *  that outlives its card is a stray draft in the person's own Gmail. True
  *  when there is nothing left behind. */
 export async function discardGoogleDraft(deps: GoogleDeps, account: ConnectedAccount, draft: Pick<Draft, "payload">): Promise<boolean> {
   const p = draft.payload;
+  if (p?.kind === "file" && p.op === "drive.upload") {
+    // The upload waiting at the top of the Drive goes to the BIN (restorable)
+    // — unless the person already took it over (renamed or moved it).
+    try {
+      const token = await deps.token(account.id);
+      const now = await getFileMeta(token, p.fileId, deps.fetchFn);
+      if (!now) return true;
+      if (now.name !== p.name || (now.parentId ?? "") !== (p.parentId ?? "")) return true;
+      await trashFile(token, p.fileId, deps.fetchFn);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (!p || p.kind !== "mail") return true;
   try {
     return await deleteGmailDraft(await deps.token(account.id), p.gmailDraftId, deps.fetchFn);
