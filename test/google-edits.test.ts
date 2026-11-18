@@ -4,6 +4,9 @@ import {
   MAX_EDIT_OPS,
   annotateOps,
   buildEditRequests,
+  copyElementId,
+  editPlan,
+  translateEditError,
   docHeadings,
   docState,
   editOpCounts,
@@ -16,7 +19,7 @@ import {
   type EditOp,
 } from "../src/google-edits.js";
 import { FILE_GONE_SENTENCE, FILE_MOVED_SENTENCE, GOOGLE_ACTIONS, RETRY_SENTENCE, actionLogged, actionSetting, approveGoogleDraft, editSummary, runGoogleAction, type GoogleAction, type GoogleDeps } from "../src/google-actions.js";
-import { GoogleInputError, MIME_DOC, MIME_SHEET, MIME_SLIDES, type FetchFn } from "../src/google.js";
+import { GoogleError, GoogleInputError, MIME_DOC, MIME_SHEET, MIME_SLIDES, type FetchFn } from "../src/google.js";
 import { GOOGLE_AREA_SCOPES, type ConnectedAccount, type GooglePolicies } from "../src/connected-accounts.js";
 import { draftLogEntry, draftNoun, draftView, makeDraft, serialiseLogEntry, type Draft, type EditPayload } from "../src/social-drafts.js";
 import { draftCardModel } from "../public/social-card.js";
@@ -53,7 +56,12 @@ test("Slides operations: each takes only its own fields; what the batch creates 
   assert.deepEqual(v("slides", [{ op: "add_slide", title: "Plan", body: "- a\n- b", at: 1 }]), [{ op: "add_slide", layout: "TITLE_AND_BODY", slideId: "gen1", title: "Plan", titleId: "gen2", body: "- a\n- b", bodyId: "gen3", at: 1 }]);
   assert.equal(v("slides", [{ op: "add_slide", title: "Only" }])[0].layout, "TITLE_ONLY");
   assert.equal(v("slides", [{ op: "add_slide" }])[0].layout, "BLANK");
-  refuses("slides", { op: "add_slide", layout: "FANCY" }, /'layout' must be one of BLANK, TITLE, TITLE_ONLY, TITLE_AND_BODY, SECTION_HEADER/);
+  // Not a standard type: the name of one of the deck's own layouts, resolved against the deck.
+  assert.deepEqual(v("slides", [{ op: "add_slide", layout: "Two columns", title: "x" }])[0], { op: "add_slide", layoutName: "Two columns", slideId: "gen7", title: "x", titleId: "gen8" });
+  refuses("slides", { op: "add_slide", layout: 3 }, /'layout' must be one of BLANK, TITLE, TITLE_ONLY, TITLE_AND_BODY, SECTION_HEADER, or the name of one of the deck's layouts/);
+  refuses("slides", { op: "add_slide", layout: "A\nB" }, /control character/);
+  refuses("slides", { op: "add_slide", layout: "BLANK", layoutId: "L1" }, /'layout' or 'layoutId', not both/);
+  refuses("slides", { op: "add_slide", layoutId: "../L" }, /not a valid object id/);
   refuses("slides", { op: "add_slide", layout: "BLANK", title: "x" }, /BLANK slide has no title/);
   refuses("slides", { op: "add_slide", layout: "TITLE_ONLY", body: "x" }, /has no body/);
   refuses("slides", { op: "delete_slide", slideId: "../x" }, /not a valid object id/);
@@ -206,7 +214,125 @@ test("Slides requests: exactly the validated fields, against the deck as it is",
   assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "delete_slide", slideId: "p2" }, { op: "insert_image", slideId: "p2", url: "https://images.example.org/a.png" }]), st()), /operation 2: there is no slide 'p2'/, "a slide the batch deleted is gone for the next operation");
   assert.throws(() => buildEditRequests("slides", ops, docState(DOC)), /not of the kind/);
   seq = 100;
-  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", title: "x" }, { op: "reorder", slideIds: ["gen101"], at: 0 }]), st()), /added by this same edit cannot be reordered/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", title: "x" }, { op: "reorder", slideIds: ["gen101"], at: 0 }]), st()), /added or duplicated by this same edit cannot be reordered/);
+});
+
+// A deck built on custom layouts only: none of the standard types exists.
+const CUSTOM_DECK = {
+  title: "Quarterly", revisionId: "rev-c1",
+  layouts: [
+    { objectId: "LC1", layoutProperties: { name: "CUSTOM_1", displayName: "Cover" }, pageElements: [{ objectId: "LC1t", shape: { placeholder: { type: "CENTERED_TITLE", index: 0 } } }, { objectId: "LC1s", shape: { placeholder: { type: "SUBTITLE", index: 0 } } }] },
+    { objectId: "LC2", layoutProperties: { name: "CUSTOM_2", displayName: "Content" }, pageElements: [{ objectId: "LC2b2", shape: { placeholder: { type: "BODY", index: 1 } } }, { objectId: "LC2t", shape: { placeholder: { type: "TITLE", index: 0 } } }, { objectId: "LC2b", shape: { placeholder: { type: "BODY", index: 0 } } }] },
+    { objectId: "LC3", layoutProperties: { name: "CUSTOM_3", displayName: "Picture" }, pageElements: [] },
+    { objectId: "LC4", layoutProperties: { name: "CUSTOM_4", displayName: "Twin" } },
+    { objectId: "LC5", layoutProperties: { name: "CUSTOM_5", displayName: "Twin" } },
+  ],
+  slides: [
+    { objectId: "s1", slideProperties: { layoutObjectId: "LC1" }, pageElements: [{ objectId: "s1t", shape: { placeholder: { type: "CENTERED_TITLE" }, text: { textElements: [{ textRun: { content: "Quarterly review\n" } }] } } }] },
+    { objectId: "s2", slideProperties: { layoutObjectId: "LC2" }, pageElements: [{ objectId: "s2t", shape: { placeholder: { type: "TITLE" }, text: { textElements: [{ textRun: { content: "{{client}}\n" } }] } } }, { objectId: "s2b", shape: { placeholder: { type: "BODY" }, text: { textElements: [{ textRun: { content: "Point one\n" } }] } } }, { objectId: "s2i", image: {} }] },
+    { objectId: "s3", slideProperties: { layoutObjectId: "LC2" }, pageElements: [] },
+  ],
+};
+
+test("a deck's own layouts are read with their ids, names and the placeholders a title and a body go into", () => {
+  const s = slidesState(CUSTOM_DECK);
+  assert.deepEqual(s.layouts.map((l) => [l.id, l.name]), [["LC1", "Cover"], ["LC2", "Content"], ["LC3", "Picture"], ["LC4", "Twin"], ["LC5", "Twin"]]);
+  assert.deepEqual(s.layouts[0].placeholders, [{ id: "LC1t", type: "CENTERED_TITLE", index: 0 }, { id: "LC1s", type: "SUBTITLE", index: 0 }]);
+  assert.equal(s.slides[1].layout, "Content");
+  assert.deepEqual(slidesState(DECK).layouts, [{ id: "L1", name: "Title and body", placeholders: [] }]);
+});
+
+test("add_slide on a custom layout: by id or by name, its OWN placeholders take the title and the body", () => {
+  seq = 0;
+  const st = () => slidesState(CUSTOM_DECK);
+  const ops = v("slides", [{ op: "add_slide", layoutId: "LC2", title: "Risks", body: "None", at: 1 }, { op: "add_slide", layout: "cover", title: "Thanks" }, { op: "add_slide", layout: "Picture" }]);
+  assert.deepEqual(buildEditRequests("slides", ops, st()), [
+    { createSlide: { objectId: "gen1", insertionIndex: 1, slideLayoutReference: { layoutId: "LC2" }, placeholderIdMappings: [{ layoutPlaceholderObjectId: "LC2t", objectId: "gen2" }, { layoutPlaceholderObjectId: "LC2b", objectId: "gen3" }] } },
+    { insertText: { objectId: "gen2", text: "Risks", insertionIndex: 0 } },
+    { insertText: { objectId: "gen3", text: "None", insertionIndex: 0 } },
+    { createSlide: { objectId: "gen4", slideLayoutReference: { layoutId: "LC1" }, placeholderIdMappings: [{ layoutPlaceholderObjectId: "LC1t", objectId: "gen5" }] } },
+    { insertText: { objectId: "gen5", text: "Thanks", insertionIndex: 0 } },
+    { createSlide: { objectId: "gen6", slideLayoutReference: { layoutId: "LC3" } } },
+  ], "a name matches case-insensitively when only one layout has it; a placeholder is mapped by ITS id, the lowest index first");
+  assert.deepEqual(editPlan("slides", ops, st()).created, [{ op: "add_slide", slideId: "gen1", titleId: "gen2", bodyId: "gen3" }, { op: "add_slide", slideId: "gen4", titleId: "gen5" }, { op: "add_slide", slideId: "gen6" }]);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", layoutId: "LX" }]), st()), /no layout 'LX' in this deck \(`slides read` lists them\)/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", layout: "Agenda" }]), st()), /this deck has no layout with that name/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", layout: "Twin" }]), st()), /several layouts of this deck have that name — give its 'layoutId'/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "add_slide", layout: "Picture", title: "x" }]), st()), /the layout 'Picture' has no title placeholder/, "refused against the deck, before anyone approves");
+  seq = 50;
+  assert.deepEqual(buildEditRequests("slides", v("slides", [{ op: "add_slide", layoutId: "LC1", body: "x" }]), st())[0], { createSlide: { objectId: "gen51", slideLayoutReference: { layoutId: "LC1" }, placeholderIdMappings: [{ layoutPlaceholderObjectId: "LC1s", objectId: "gen52" }] } }, "a cover's subtitle takes the body");
+});
+
+test("duplicate_slide: the copy's ids are named in advance, so the same batch can rewrite the copy's text", () => {
+  seq = 0;
+  const st = () => slidesState(CUSTOM_DECK);
+  const ops = v("slides", [
+    { op: "duplicate_slide", slideId: "s2", objectIds: { s2t: "copy_title", s2b: "copy_body" } },
+    { op: "delete_text", objectId: "copy_title" },
+    { op: "insert_text", objectId: "copy_title", text: "Example Co" },
+    { op: "insert_text", objectId: "copy_body", text: "Point two", at: 0 },
+  ]);
+  assert.deepEqual(ops[0], { op: "duplicate_slide", slideId: "s2", newSlideId: "gen1", objectIds: { s2t: "copy_title", s2b: "copy_body" } });
+  const img = copyElementId("gen1", "s2i");
+  assert.match(img, /^gen1_[0-9a-f]{8}$/);
+  const plan = editPlan("slides", ops, st());
+  assert.deepEqual(plan.requests, [
+    { duplicateObject: { objectId: "s2", objectIds: { s2: "gen1", s2t: "copy_title", s2b: "copy_body", s2i: img } } },
+    { deleteText: { objectId: "copy_title", textRange: { type: "ALL" } } },
+    { insertText: { objectId: "copy_title", text: "Example Co", insertionIndex: 0 } },
+    { insertText: { objectId: "copy_body", text: "Point two", insertionIndex: 0 } },
+  ]);
+  assert.deepEqual(plan.created, [{ op: "duplicate_slide", from: "s2", slideId: "gen1", elements: [{ id: "copy_title", from: "s2t", type: "placeholder TITLE" }, { id: "copy_body", from: "s2b", type: "placeholder BODY" }, { id: img, from: "s2i", type: "image" }] }]);
+  // The slide's own new id can be named too, and is then the base of the derived ones.
+  const named = v("slides", [{ op: "duplicate_slide", slideId: "s2", objectIds: { s2: "my_copy" } }, { op: "delete_text", objectId: copyElementId("my_copy", "s2b") }]);
+  assert.equal(named[0].newSlideId, "my_copy");
+  assert.equal("objectIds" in named[0], false);
+  assert.deepEqual(buildEditRequests("slides", named, st())[1], { deleteText: { objectId: copyElementId("my_copy", "s2b"), textRange: { type: "ALL" } } });
+  // A copy of a copy, and a copy deleted again: followed through the batch.
+  const chain = v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s1: "c_one" } }, { op: "duplicate_slide", slideId: "c_one", objectIds: { c_one: "c_two" } }, { op: "delete_slide", slideId: "c_one" }]);
+  assert.deepEqual(buildEditRequests("slides", chain, st()).map((r) => Object.keys(r)[0]), ["duplicateObject", "duplicateObject", "deleteObject"]);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s1: "c_one" } }, { op: "delete_slide", slideId: "c_one" }, { op: "insert_text", objectId: copyElementId("c_one", "s1t"), text: "x" }]), st()), /operation 3: there is no element/, "a deleted copy's elements are gone too");
+});
+
+test("duplicate_slide: 'at' is where the copy ENDS, said in the order Slides counts before the move", () => {
+  const st = () => slidesState(CUSTOM_DECK);
+  const pos = (at: number | undefined, src = "s1") => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: src, objectIds: { [src]: "cpy01" }, ...(at === undefined ? {} : { at }) }]), st()).slice(1);
+  // s1 s2 s3 → s1 cpy s2 s3 (the copy lands at 1).
+  assert.deepEqual(pos(undefined), []);
+  assert.deepEqual(pos(1), [], "already there: no move");
+  assert.deepEqual(pos(0), [{ updateSlidesPosition: { slideObjectIds: ["cpy01"], insertionIndex: 0 } }]);
+  assert.deepEqual(pos(3), [{ updateSlidesPosition: { slideObjectIds: ["cpy01"], insertionIndex: 4 } }], "to the end: just before nothing");
+  assert.deepEqual(pos(2), [{ updateSlidesPosition: { slideObjectIds: ["cpy01"], insertionIndex: 3 } }]);
+  assert.throws(() => pos(4), /'at' is past the end — the deck will have 4 slides, so 'at' goes from 0 to 3/);
+  // An earlier add_slide shifts the count: s1 new s2 s3, then s3's copy lands at 4; at 0 → front.
+  const ops = v("slides", [{ op: "add_slide", layoutId: "LC3", at: 1 }, { op: "duplicate_slide", slideId: "s3", objectIds: { s3: "cpy02" }, at: 0 }]);
+  assert.deepEqual(buildEditRequests("slides", ops, st()).at(-1), { updateSlidesPosition: { slideObjectIds: ["cpy02"], insertionIndex: 0 } });
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s1: "cpy03" } }, { op: "reorder", slideIds: ["cpy03"], at: 0 }]), st()), /added or duplicated by this same edit cannot be reordered — give add_slide or duplicate_slide its 'at'/);
+});
+
+test("duplicate_slide refuses what it cannot keep: unknown source, stray or clashing ids, bad id syntax", () => {
+  const st = () => slidesState(CUSTOM_DECK);
+  refuses("slides", { op: "duplicate_slide" }, /'slideId' is not a valid object id/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", objectIds: ["a"] }, /'objectIds' must be an object/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", objectIds: { s1t: "abc" } }, /must be a new object id: 5 to 50/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", objectIds: { s1t: "-copy-title" } }, /must be a new object id/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", objectIds: { s1t: "same_id", s1: "same_id" } }, /same new id twice/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", objectIds: { s1: "x".repeat(42) } }, /at most 41 characters/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", at: -1 }, /whole number/);
+  refuses("slides", { op: "duplicate_slide", slideId: "s1", position: 1 }, /unknown field 'position'/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s9" }]), st()), /no slide 's9'/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s2t: "copy_x1" } }]), st()), /'objectIds' names 's2t', which is not an element of slide 's1'/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s1t: "s2b00", s1: "s2b00x" } }, { op: "duplicate_slide", slideId: "s1", objectIds: { s1: "s2b00" } }]), st()), /operation 2: the new id 's2b00' is already used/);
+  assert.throws(() => buildEditRequests("slides", v("slides", [{ op: "duplicate_slide", slideId: "s1", objectIds: { s1: "LC2b2" } }]), st()), /the new id 'LC2b2' is already used in this deck/);
+});
+
+test("Google's 'predefined layout not in the master' becomes a sentence that names the way out; anything else is unchanged", () => {
+  const raw = new GoogleError("Google edit failed (400): Invalid requests[0].createSlide: The predefined layout (TITLE_AND_BODY) is not present in the current master (g123abc).", 400);
+  const t = translateEditError(raw);
+  assert.ok(t instanceof GoogleError);
+  assert.equal((t as GoogleError).status, 400);
+  assert.equal((t as GoogleError).message, "This deck has no standard layout 'TITLE_AND_BODY'; use duplicate_slide, or add_slide with a layoutId from `slides read` (it lists the deck's own layouts).");
+  for (const other of [new GoogleError("Google edit failed (400): Invalid requests[0].insertText: bad", 400), new GoogleError("The predefined layout (TITLE) is not present in the current master", 500), new GoogleInputError("x"), "x"]) assert.equal(translateEditError(other), other);
 });
 
 test("Docs requests: located operations run from the end of the document backwards, rewrites last", () => {
@@ -290,6 +416,43 @@ test("Sheets requests: tabs are followed through the batch; a formula is a formu
 });
 
 // ---- what the person reads ----------------------------------------------------
+
+test("duplicate_tab: a copy of a tab (formats, formulas kept) that later operations of the batch can name", () => {
+  const ops = v("sheet", [
+    { op: "duplicate_tab", tab: "Q3 data", title: "Q4 data" },
+    { op: "clear", range: "'Q4 data'!B2:D9" },
+    { op: "update", range: "'Q4 data'!A1", values: [["Q4"]] },
+    { op: "duplicate_tab", tab: "Sheet1", at: 0 },
+    { op: "rename_tab", from: "Copy of Sheet1", to: "Template" },
+  ]);
+  assert.deepEqual(ops[0], { op: "duplicate_tab", tab: "Q3 data", title: "Q4 data", sheetId: ops[0].sheetId });
+  assert.equal(typeof ops[0].sheetId, "number");
+  assert.equal(ops[3].title, "Copy of Sheet1", "the default name is decided here, so the card shows it and the batch can use it");
+  const [a, b] = [ops[0].sheetId, ops[3].sheetId];
+  assert.deepEqual(buildEditRequests("sheet", ops, sheetState(SHEET)), [
+    { duplicateSheet: { sourceSheetId: 77, insertSheetIndex: 2, newSheetId: a, newSheetName: "Q4 data" } },
+    { updateCells: { range: { sheetId: a, startRowIndex: 1, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 4 }, fields: "userEnteredValue" } },
+    { updateCells: { start: { sheetId: a, rowIndex: 0, columnIndex: 0 }, rows: [{ values: [{ userEnteredValue: { stringValue: "Q4" } }] }], fields: "userEnteredValue" } },
+    { duplicateSheet: { sourceSheetId: 0, insertSheetIndex: 0, newSheetId: b, newSheetName: "Copy of Sheet1" } },
+    { updateSheetProperties: { properties: { sheetId: b, title: "Template" }, fields: "title" } },
+  ]);
+  // Without 'at' the copy goes right after its source, counted in the batch's own order.
+  assert.equal((buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1" }]), sheetState(SHEET))[0] as any).duplicateSheet.insertSheetIndex, 1);
+  assert.deepEqual(editOpLines("sheet", ops.slice(3, 4).concat(ops.slice(0, 1))), [
+    'Duplicate the tab "Sheet1" as "Copy of Sheet1" (formats and formulas kept) at position 1',
+    'Duplicate the tab "Q3 data" as "Q4 data" (formats and formulas kept) right after it',
+  ]);
+  const st = () => sheetState(SHEET);
+  refuses("sheet", { op: "duplicate_tab" }, /'tab' must be text/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", title: "a\nb" }, /control character/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", at: -1 }, /whole number/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", formats: false }, /unknown field 'formats'/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Nope" }]), st()), /no tab with that name/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1", title: "Q3 data" }]), st()), /already a tab with that name — give the copy a 'title'/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1" }, { op: "duplicate_tab", tab: "Sheet1" }]), st()), /operation 2: there is already a tab with that name/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1", at: 3 }]), st()), /'at' is past the end — the spreadsheet has 2 tabs, so 'at' goes from 0 to 2/);
+  assert.equal(editOpCounts(ops), "duplicate_tab ×2, clear ×1, update ×1, rename_tab ×1");
+});
 
 test("one line per operation, in order, with every text and value in full", () => {
   seq = 0;
@@ -527,6 +690,68 @@ test("reading a deck: ids, layouts and texts, always marked untrusted; someone e
   assert.equal(mine.kind === "result" && mine.log, undefined, "…but a plain read");
   await assert.rejects(runGoogleAction(deps, acct(), "slides.read", { id: "NOPE" }), /No file 'NOPE'|not found/);
   assert.deepEqual(g.batches, []);
+});
+
+test("reading a deck lists its own layouts, by id and name — what add_slide can name", async () => {
+  const { g, deps } = setup();
+  g.files.CUSTOM = { name: "Quarterly", mimeType: MIME_SLIDES, modifiedTime: "2026-11-12T11:00:00.000Z", src: CUSTOM_DECK };
+  const out = await runGoogleAction(deps, acct(), "slides.read", { id: "CUSTOM" });
+  if (out.kind !== "result") throw new Error("expected a result");
+  assert.deepEqual(out.result.layouts, [{ id: "LC1", name: "Cover" }, { id: "LC2", name: "Content" }, { id: "LC3", name: "Picture" }, { id: "LC4", name: "Twin" }, { id: "LC5", name: "Twin" }]);
+  assert.equal(out.result.untrusted, true, "layout names are the deck's words: inside the fence");
+});
+
+test("one card for a duplicate-then-rewrite batch: the lines say it, the agent is told the ids, Approve sends it whole", async () => {
+  const { g, deps } = setup();
+  g.files.CUSTOM = { name: "Quarterly", mimeType: MIME_SLIDES, modifiedTime: "2026-11-12T11:00:00.000Z", src: CUSTOM_DECK };
+  const ops = [
+    { op: "duplicate_slide", slideId: "s2", at: 3, objectIds: { s2t: "copy_title" } },
+    { op: "delete_text", objectId: "copy_title" },
+    { op: "insert_text", objectId: "copy_title", text: "Example Co" },
+    { op: "add_slide", layoutId: "LC2", title: "Next" },
+    { op: "add_slide", layout: "Cover" },
+  ];
+  const out = await runGoogleAction(deps, acct(), "slides.edit", { id: "CUSTOM", ops });
+  if (out.kind !== "pending" || out.payload.kind !== "edit") throw new Error("expected ONE card for the whole batch");
+  const copy = (out.payload.ops[0] as EditOp).newSlideId as string;
+  const created = (out.result as { created: any[] }).created;
+  assert.deepEqual(created[0], { op: "duplicate_slide", from: "s2", slideId: copy, elements: [{ id: "copy_title", from: "s2t", type: "placeholder TITLE" }, { id: copyElementId(copy, "s2b"), from: "s2b", type: "placeholder BODY" }, { id: copyElementId(copy, "s2i"), from: "s2i", type: "image" }] });
+  assert.equal(created[1].op, "add_slide");
+  assert.deepEqual(editOpLines("slides", out.payload.ops), [
+    'Duplicate slide s2 — the copy goes to position 4 — slide 2: "{{client}}"',
+    'Delete all the text of copy_title — the copy of the placeholder TITLE on slide 2, now "{{client}}"',
+    'Insert "Example Co" into copy_title at the end of its text — the copy of the placeholder TITLE on slide 2, now "{{client}}"',
+    `Add a slide with the deck's layout LC2 at the end — title: "Next" — layout "Content"`,
+    `Add a slide with the deck's layout "Cover" at the end`,
+  ]);
+  assert.equal(out.summary, 'edit "Quarterly" (CUSTOM): duplicate_slide ×1, delete_text ×1, insert_text ×1, add_slide ×2');
+  assert.deepEqual(g.batches, []);
+  const d = makeDraft({ id: "d0000002", sessionId: "s1", accountId: "g0000001", text: out.summary, origin: "agent", now: NOW, provider: "google", action: out.action, payload: out.payload });
+  assert.deepEqual(await approveGoogleDraft(deps, acct(), d), { kind: "done", link: "https://docs.example/CUSTOM" });
+  assert.equal(g.batches.length, 1, "one batch");
+  assert.deepEqual(g.batches[0].body.requests.slice(0, 4), [
+    { duplicateObject: { objectId: "s2", objectIds: { s2: copy, s2t: "copy_title", s2b: copyElementId(copy, "s2b"), s2i: copyElementId(copy, "s2i") } } },
+    { updateSlidesPosition: { slideObjectIds: [copy], insertionIndex: 4 } },
+    { deleteText: { objectId: "copy_title", textRange: { type: "ALL" } } },
+    { insertText: { objectId: "copy_title", text: "Example Co", insertionIndex: 0 } },
+  ]);
+});
+
+test("applied at once, the result carries what the edit created; a standard layout the master lacks fails in words", async () => {
+  const { g, deps } = setup();
+  g.files.CUSTOM = { name: "Quarterly", mimeType: MIME_SLIDES, modifiedTime: "2026-11-12T11:00:00.000Z", src: CUSTOM_DECK };
+  const auto = acct([S.drive, S.drive_all], { drive: "autonomous" });
+  const ok = await runGoogleAction(deps, auto, "slides.edit", { id: "CUSTOM", ops: [{ op: "duplicate_slide", slideId: "s3", objectIds: { s3: "copy_three" } }] });
+  assert.deepEqual(ok.kind === "result" && ok.result, { id: "CUSTOM", status: "applied", operations: 1, created: [{ op: "duplicate_slide", from: "s3", slideId: "copy_three", elements: [] }] });
+  const plain = await runGoogleAction(deps, auto, "slides.edit", { id: "CUSTOM", ops: [{ op: "replace_text", find: "a", replace: "b" }] });
+  assert.equal(plain.kind === "result" && "created" in plain.result, false, "nothing created: no field");
+  // Google refuses a predefined layout this deck's master does not have.
+  const real = deps.fetchFn;
+  deps.fetchFn = (async (input: unknown, init?: RequestInit) =>
+    String(input).endsWith(":batchUpdate")
+      ? new Response(JSON.stringify({ error: { message: "Invalid requests[0].createSlide: The predefined layout (TITLE_AND_BODY) is not present in the current master (g1a2b3c)." } }), { status: 400 })
+      : real(input as string, init)) as FetchFn;
+  await assert.rejects(runGoogleAction(deps, auto, "slides.edit", { id: "CUSTOM", ops: [{ op: "add_slide", layout: "TITLE_AND_BODY", title: "x", body: "y" }] }), (e: unknown) => e instanceof GoogleError && e.status === 400 && /^This deck has no standard layout 'TITLE_AND_BODY'; use duplicate_slide, or add_slide with a layoutId from `slides read`/.test(e.message));
 });
 
 test("doc read gives the headings an edit can target; someone else's document stays audited and untrusted", async () => {

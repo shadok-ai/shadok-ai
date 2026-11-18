@@ -2311,8 +2311,30 @@ are logged). A table's cell indices are computed
 **`imageUrlVerdict`**: Google fetches an image, not this server, but an agent
 must not aim any fetcher at an internal address through us — https only, no
 credentials or port, loopback / private / link-local / metadata addresses and
-bare or internal names refused, with the reason. `annotateOps` adds to a
-Slides operation what its target is now ("slide 2: …"), for the card only.
+bare or internal names refused, with the reason. (4) **Custom-layout decks.**
+Most company decks carry none of the standard layouts, and a `createSlide`
+with `predefinedLayout` is then refused by Google ("not present in the
+current master") — after the person approved. So `slidesState` also reads the
+deck's `layouts` (id, name, placeholders) and `slides.read` lists them;
+`add_slide` takes a `layoutId` or a layout NAME (resolved against the deck,
+ambiguous names refused), and maps `title`/`body` onto THAT layout's own
+placeholders by `layoutPlaceholderObjectId` — a missing one is refused before
+any card. `duplicate_slide` (`duplicateObject`, then `updateSlidesPosition`
+when `at` is given — `at` is the copy's FINAL place, translated into the
+pre-move index Slides counts) lets an agent reuse a house-style slide; its
+`objectIds` map names the copy's elements in advance, and the ones it does not
+name get `copyElementId` (`<copy id>_<sha256(source id)[:8]>`, stable across a
+card refresh), so a later `insert_text` / `delete_text` of the same batch can
+target the copy. `slidesPlan` walks the batch tracking the deck's order, each
+slide's elements and every taken id, and returns `{requests, created}`;
+`created` is the agent's result — already at `pending`, since the ids travel
+in the stored ops. Sheets has the twin, `duplicate_tab` (`duplicateSheet`): it keeps formats,
+formulas, widths and conditional formatting that `add_tab` cannot rebuild; its
+name (default `Copy of <tab>`, never Google's localised default) and sheet id
+are drawn at validation, so later operations name the copy by title.
+`translateEditError` rewrites Google's predefined-layout 400
+into a sentence naming the two ways out. `annotateOps` adds to a
+Slides operation what its target is now ("slide 2: …", "the copy of …"), for the card only.
 `slides.read` is always marked untrusted; a deck or doc that is not the
 cockpit's is audited by id and name. The log line is `editSummary`: the file
 and `editOpCounts` — never a text.
@@ -2928,7 +2950,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
 | `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
-| `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only). Card lines and requests come from the same `ops`. |
+| `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only), `editPlan` (the requests plus what a Slides batch creates — `duplicate_slide` copies, custom-layout `add_slide`), `translateEditError`. Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/github.ts` | GitHub client for connected GitHub accounts: `GithubTokens` (refresh through the broker with the ROTATING refresh token — one in flight per account, the new refresh token persisted before the access token is used, `invalid_grant` → expired; `needsKeepalive` for the hourly renewal), `fetchUser` / `fetchInstallations`, `noreplyEmail`, `githubGitEnv` (the credential helper's name in the spawn env, never a token), `pickGithubAccount`. Pure over an injected fetch, tested. |
 | `context/github-skill/` | The `shadok-github` skill (`github.mjs`): git's credential helper (`credential get` → `POST /github/token`), `gh` with `GH_TOKEN` for one call, `clone` / `identity` (commit as the login + noreply email), `accounts`, `token`. |
