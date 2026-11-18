@@ -780,9 +780,17 @@ Enter to skip; you can add it later from the web UI).
   (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
   operations — replace or insert text, add / duplicate / delete / reorder
   slides (on a deck's own custom layouts too: `slides read` lists them), style
-  text and headings, tables, images from a public `https` address, cell
-  values and formulas, tabs (a duplicated tab keeps its formats and formulas), rows, columns, formats — applied all together or
-  not at all. On a file the cockpit created it is applied at once; on any other
+  text and headings (fonts, sizes, colours, links, numbered and bulleted lists,
+  alignment), tables (a Doc's existing cells and rows too), page breaks,
+  speaker notes, shapes and text boxes moved or resized, images from a public
+  `https` address (replaced in place, or swapped in for a template's
+  placeholder shape), cell values and formulas, tabs (a duplicated tab keeps
+  its formats and formulas), rows, columns, formats, sorting, filters, frozen
+  rows, column widths, borders, merged cells, find-and-replace, copy/paste,
+  simple conditional formatting and dropdown lists — applied all together or
+  not at all. An agent can also read a Sheet's formulas (`sheet read
+  --formulas`) and look at a slide it changed: `slides thumbnail` saves a PNG
+  of it in the agent's working directory. On a file the cockpit created it is applied at once; on any other
   file it asks under *Drive edits*, with a card listing every operation on its
   own line, text and values included. If the file changes before you approve,
   nothing is applied and the card asks again. No new Google permission is

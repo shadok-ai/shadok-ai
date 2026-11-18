@@ -2207,7 +2207,7 @@ whether an approval setting applies, and which:
 
 | Class | Actions | Approval |
 |---|---|---|
-| read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read`, `slides.read` | never — it leaves nothing; not logged |
+| read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read`, `slides.read`, `slides.thumbnail` | never — it leaves nothing; not logged |
 | read, audited | `gmail.search`, `gmail.read` (area `gmail_read`) | never — but logged: the query and result count, the message id and subject; never a body or a snippet (`actionLogged`) |
 | read, audited | `drive.search`, `drive.read` (area `drive_all`) | never — but logged: the query and result count, the file id and name; never content |
 | own-write | `gmail.draft`, `doc.create`, `sheet.create`, `slides.create` | never — only the person's own drafts and files |
@@ -2408,6 +2408,55 @@ Slides operation what its target is now ("slide 2: …", "the copy of …"), for
 `slides.read` is always marked untrusted; a deck or doc that is not the
 cockpit's is audited by id and name. The log line is `editSummary`: the file
 and `editOpCounts` — never a text.
+
+**Formatting ops** (all through the same three functions). Docs: `style`
+carries a character style shared with Slides (`bold`, `italic`, `underline`,
+`strikethrough`, `font` — a plain name, `size`, `color` — `#rrggbb`, `link` — an
+http(s)/mailto address or `false`), `list` presets and `align`; `page_break`;
+`table_cell` / `insert_table_row` / `delete_table_row` against
+`DocState.tables` (counted from 1, listed by `doc.read` as sizes only). Two
+traps closed there. (5) **A style cannot see text the same batch inserts** —
+it is located in the document as read — so `insert_text` takes the character
+style itself and emits `updateTextStyle` over exactly the range it inserts; a
+styled insert at the end is located at `end - 1` (what `endOfSegmentLocation`
+means) so its range is known, which makes it positional. (6) **Docs refuses an
+insert at a table's start index**, i.e. "after" a paragraph followed by a
+table, and nothing goes past the last newline: `docIndex` then inserts just
+before the anchor's newline (`"\n" + text`). `at.after` matches a heading first,
+then the ONE paragraph with that whole text; `at.afterText` the one paragraph
+containing it; table-cell paragraphs are never anchors. Table rows of one table
+are emitted highest row first (`sub`), before any insert at the table's index.
+`annotateOps` adds a cell's / row's CURRENT text to a Docs table line.
+Sheets: `format` grows text colour/font/size/underline/alignment/wrap;
+`sort`, `filter`/`clear_filter`, `freeze`, `column_width`/`row_height`
+(pixels or `auto`), `borders`, `merge`/`unmerge`, `find_replace`, `copy`
+(`copyPaste`), `conditional_format` (a closed rule list, no custom formula;
+values starting with `=` refused, as in `validation`'s list) and
+`validation`/`clear_validation` (`ONE_OF_LIST`). Slides: `style_text` (one
+element, or every occurrence of a text found in the deck AS THE BATCH LEAVES
+IT — `slidesPlan` now simulates `replace_text` and inserts on its element and
+notes texts), `set_notes` (the slide's `speakerNotesObjectId`, read from the
+notes page; Google creates the shape on first insert — a slide made in the
+same batch has no id to reach and is refused), `add_shape`, `move`
+(`updatePageElementTransform` ABSOLUTE, computed from the element's read
+geometry so its scale and rotation are kept; group children and resizing a
+rotated element refused), `delete_element`, `add_table`, `table_cell`,
+`replace_image`, `replace_shapes_with_image`, and `slideIds` →
+`pageObjectIds` on `replace_text`. Every request shape follows the Docs /
+Sheets / Slides v1/v4 references; none of it could be run against the real
+APIs here.
+
+**`slides.thumbnail`** (read, `src/google.ts` `getSlideThumbnail`) asks
+`pages.getThumbnail` for a PNG and **downloads it on the server** into the
+agent's working directory (`deps.writeFile`, as `drive.download`), rather
+than handing the agent the `contentUrl`: that URL works with no token for
+whoever holds it, so it would be a bearer link to the slide sitting in a
+transcript. The server never sends its token to that URL, fetches only an
+https `googleusercontent.com` host, caps it at 10 MB and checks the PNG
+signature; the file name is built from the slide id, never from the deck.
+A foreign deck's thumbnail is audited like `slides.read`. An agent can then
+open the PNG to check its own edit — the point of the feature.
+`sheet.read` / `drive.read` take `formulas` (`valueRenderOption=FORMULA`).
 
 `gmail.draft --update` rewrites only a draft `gmail.draft` created for that
 account: the ids are recorded in `<key>.gmail-drafts.json`
@@ -3021,7 +3070,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
 | `src/google-passthrough.ts` | The read-only passthrough behind `api.get`: `PASSTHROUGH_ROUTES` (host + path prefix → area), `passthroughPlan` (refuses anything off the list or ambiguous, before a token), `passthroughGet` (GET, no redirect, JSON/text only, 2 MB cap). Pure over an injected fetch, tested. |
 | `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / file-copy / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
-| `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only), `editPlan` (the requests plus what a Slides batch creates — `duplicate_slide` copies, custom-layout `add_slide`), `translateEditError`. Card lines and requests come from the same `ops`. |
+| `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only), `editPlan` (the requests plus what a Slides batch creates — `duplicate_slide` copies, custom-layout `add_slide`, `add_shape` / `add_table`), `translateEditError`; the formatting ops (text styles, lists, links, Docs table cells/rows, Sheets sort/filter/freeze/borders/merge/conditional formats/dropdowns, Slides notes/shapes/moves/images) and the state they need (`DocState.tables`, a slide element's geometry, a slide's speaker notes). Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/github.ts` | GitHub client for connected GitHub accounts: `GithubTokens` (refresh through the broker with the ROTATING refresh token — one in flight per account, the new refresh token persisted before the access token is used, `invalid_grant` → expired; `needsKeepalive` for the hourly renewal), `fetchUser` / `fetchInstallations`, `noreplyEmail`, `githubGitEnv` (the credential helper's name in the spawn env, never a token), `pickGithubAccount`. Pure over an injected fetch, tested. |
 | `context/github-skill/` | The `shadok-github` skill (`github.mjs`): git's credential helper (`credential get` → `POST /github/token`), `gh` with `GH_TOKEN` for one call, `clone` / `identity` (commit as the login + noreply email), `accounts`, `token`. |
