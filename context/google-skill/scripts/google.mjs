@@ -23,6 +23,7 @@ const USAGE = `usage: google.mjs <command>
   drive delete    --account <id> --id <file id>                                    (moves it to the bin — never a permanent delete)
   drive move      --account <id> --id <file id> --to <folder id | root>
   drive rename    --account <id> --id <file id> --name <new name>
+  drive copy      --account <id> --id <file id> [--name <copy's name>] [--to <folder id | root>]
   slides create   --account <id> --title <t>
   slides read     --account <id> --id <deck id>
   slides edit     --account <id> --id <deck id> --stdin                            (stdin: JSON array of operations)
@@ -125,11 +126,11 @@ const ACTIONS = {
   "gmail search": "gmail.search", "gmail read": "gmail.read",
   "drive search": "drive.search", "drive read": "drive.read", "sheet update": "sheet.update",
   "slides create": "slides.create", "slides read": "slides.read", "slides edit": "slides.edit", "doc edit": "doc.edit", "sheet edit": "sheet.edit",
-  "drive download": "drive.download", "drive delete": "drive.delete", "drive trash": "drive.delete", "drive move": "drive.move", "drive rename": "drive.rename",
+  "drive download": "drive.download", "drive delete": "drive.delete", "drive trash": "drive.delete", "drive move": "drive.move", "drive rename": "drive.rename", "drive copy": "drive.copy",
 };
 
 // Asked for by name, these get a plain answer instead of the usage text.
-const NEVER = /^(drive|doc|sheet|file) (share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy)$/;
+const NEVER = /^(drive|doc|sheet|file) (share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash)$/;
 const NEVER_SENTENCE =
   "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
@@ -300,6 +301,8 @@ function print(action, out) {
     console.log("Moved.");
   } else if (action === "drive.rename") {
     console.log("Renamed.");
+  } else if (action === "drive.copy") {
+    console.log(`Copied: ${r.id}${r.link ? ` ${r.link}` : ""} — this copy is the cockpit's own file now, edited without asking.`);
   } else if (action === "sheet.update") {
     console.log(`Updated${r.updatedRange ? ` ${r.updatedRange}` : ""}.`);
   } else if (action === "gmail.draft") {
@@ -351,6 +354,9 @@ async function run(group, verb, rest) {
     if (action === "drive.move" && typeof o.to !== "string") die("drive move needs --to <folder id> (or `root` for the top of the Drive).");
     if (action === "drive.rename" && !o.name) die("drive rename needs --name <new name>.");
     args = { id: o.id, ...(action === "drive.move" ? { to: o.to } : {}), ...(action === "drive.rename" ? { name: o.name } : {}) };
+  } else if (action === "drive.copy") {
+    if (!o.id) die("drive copy needs --id <file id> (see `drive search`).");
+    args = { id: o.id, ...(o.name ? { name: o.name } : {}), ...(typeof o.to === "string" ? { to: o.to } : {}) };
   } else if (action === "drive.read") {
     if (!o.id) die("drive read needs --id <file id> (see `drive search`).");
     args = { id: o.id, ...(o.range ? { range: o.range } : {}) };

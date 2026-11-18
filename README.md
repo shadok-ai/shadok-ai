@@ -755,7 +755,11 @@ Enter to skip; you can add it later from the web UI).
   and `drive rename` a file. Those three ask first under *Drive edits* on ANY
   file, the cockpit's own included; the card shows the file, where it is now
   and exactly what will happen, and approving does nothing if the file was
-  renamed or moved in the meantime. It can also **edit the content** of a Slides deck, a Doc or a Sheet
+  renamed or moved in the meantime. `drive copy` duplicates a file — a Doc,
+  Sheet or deck keeps its whole look — beside the original at once, or into
+  another folder after a *Drive edits* card; the copy never carries the
+  original's sharing, and it is the cockpit's own file from then on (edited
+  without asking: copy a document, then translate the copy). It can also **edit the content** of a Slides deck, a Doc or a Sheet
   (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
   operations — replace or insert text, add / duplicate / delete / reorder
   slides (on a deck's own custom layouts too: `slides read` lists them), style

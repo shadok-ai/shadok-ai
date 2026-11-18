@@ -106,6 +106,17 @@ function fakeDrive() {
       if (as !== "text/plain") return new Response(Buffer.from(`EXPORT:${as}:${f.name}`), { status: 200 });
       return new Response(`\uFEFF${f.text ?? ""}`.replace(/\n/g, "\r\n"), { status: 200 });
     }
+    if ((m = /^\/drive\/v3\/files\/([^/]+)\/copy$/.exec(p)) && method === "POST") {
+      const f = files.get(m[1]);
+      if (!f) return json(404, { error: { message: "File not found" } });
+      assert.equal(url.searchParams.get("supportsAllDrives"), "true");
+      const id = `COPY${++seq}`;
+      // Drive puts the copy beside the original unless told otherwise; sharing is not copied.
+      const c: FakeFile = { ...f, name: body.name ?? `Copy of ${f.name}`, owners: ["ana@example.org"], ...(body.parents ? { parents: body.parents } : f.parents ? { parents: f.parents } : {}) };
+      files.set(id, c);
+      writes.push({ id: m[1], kind: "copy", body });
+      return json(200, meta(id, c));
+    }
     if ((m = /^\/drive\/v3\/files\/([^/]+)$/.exec(p)) && method === "PATCH") {
       const f = files.get(m[1]);
       if (!f) return json(404, { error: { message: "File not found" } });
@@ -209,13 +220,14 @@ test("the whole Drive is its own area: Drive files alone opens neither search no
 
 test("what no agent may do in a Drive is refused by name, whatever the account holds or allows", () => {
   const all = acct([S.drive, S.drive_all], { drive: "autonomous" });
-  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash", "file.copy"]) {
+  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash"]) {
     assert.deepEqual(actionVerdict(all, a), { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE }, a);
   }
   assert.match(DRIVE_REFUSED_SENTENCE, /shared with.*for good or emptying the bin/);
   assert.equal((actionVerdict(all, "drive.frobnicate") as { status: number }).status, 400, "anything else is simply unknown");
-  // …and nothing in the table shares, copies or deletes for good.
-  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge|copy/.test(k)), false);
+  // …and nothing in the table shares or deletes for good. (A copy exists —
+  // `drive.copy` — and never carries the original's sharing.)
+  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge/.test(k)), false);
 });
 
 // ---- own vs someone else's file --------------------------------------------
@@ -597,6 +609,59 @@ test("Approve applies a bin / move / rename only to the file as the card showed 
   await approveGoogleDraft(deps, acct(), fileDraft(manage({ name: "Plan 2028", parentId: "ARCHIVE" })));
   assert.equal(g.files.get("PLAN")!.trashed, true);
   await assert.rejects(approveGoogleDraft(deps, acct(), fileDraft(manage({ name: "Plan 2028", parentId: "ARCHIVE" }))), (e: unknown) => e instanceof GoogleInputError && e.message === FILE_GONE_SENTENCE, "already in the bin: gone");
+});
+
+// ---- copy -------------------------------------------------------------------
+
+test("drive copy beside the original: made at once even with Drive edits on approve, and the copy is the cockpit's own", async () => {
+  const { g, deps, ownFiles } = setup();
+  const a = acct();
+  const r = result(await runGoogleAction(deps, a, "drive.copy", { id: "BOBDOC", name: "Team roadmap (FR)" }));
+  assert.equal(r.result.status, "copied");
+  assert.equal(r.result.name, "Team roadmap (FR)");
+  const copyId = String(r.result.id);
+  assert.match(String(r.result.link), new RegExp(copyId));
+  assert.deepEqual(g.writes.at(-1), { id: "BOBDOC", kind: "copy", body: { name: "Team roadmap (FR)" } }, "no parents: Drive puts it beside the original");
+  assert.ok(ownFiles.has(a.id, copyId));
+  assert.match(r.log!.summary, /copy "Team roadmap" \(BOBDOC\) → "Team roadmap \(FR\)"/);
+  // The copy is edited without a card; the original still asks.
+  const edit = await runGoogleAction(deps, a, "doc.append", { id: copyId, text: " traduit" });
+  assert.equal(edit.kind, "result");
+  assert.equal((await runGoogleAction(deps, a, "doc.append", { id: "BOBDOC", text: "x" })).kind, "pending");
+  // --to its own folder is still "beside the original".
+  const same = result(await runGoogleAction(deps, a, "drive.copy", { id: "PLAN", to: "DIR" }));
+  assert.equal(same.result.name, "Copy of Plan 2027");
+  assert.deepEqual(g.writes.at(-1)!.body, { parents: ["DIR"] });
+});
+
+test("drive copy into another folder follows the Drive setting: a card naming both folders, the copy made only on Approve", async () => {
+  const { g, deps, ownFiles } = setup();
+  const a = acct();
+  const out = await runGoogleAction(deps, a, "drive.copy", { id: "PLAN", to: "ARCHIVE", name: "Plan 2027 (EN)" });
+  if (out.kind !== "pending" || out.payload.kind !== "file") throw new Error("expected a card");
+  assert.deepEqual([out.payload.op, out.payload.parentName, out.payload.toId, out.payload.toName, out.payload.newName], ["drive.copy", "Projects", "ARCHIVE", "Archive", "Plan 2027 (EN)"]);
+  assert.equal(out.summary, 'copy "Plan 2027" (PLAN) as "Plan 2027 (EN)" into folder "Archive" (ARCHIVE)');
+  assert.deepEqual(writesTo(g.calls), [], "nothing copied before Approve");
+  const done = await approveGoogleDraft(deps, a, fileDraft(out.payload));
+  assert.equal(done.kind, "done");
+  const copyId = [...g.files.keys()].find((k) => k.startsWith("COPY"))!;
+  assert.deepEqual(g.files.get(copyId)!.parents, ["ARCHIVE"]);
+  assert.ok(ownFiles.has(a.id, copyId), "the approved copy is the cockpit's own too");
+  assert.deepEqual(done, { kind: "done", link: `https://drive.example/${copyId}` }, "the card links to the copy");
+  // Automatic: made at once.
+  const auto = result(await runGoogleAction(deps, acct([S.drive, S.drive_all], { drive: "autonomous" }), "drive.copy", { id: "PLAN", to: "ARCHIVE" }));
+  assert.equal(auto.result.status, "copied");
+});
+
+test("drive copy refuses a folder, a missing file, a destination that is not a folder, a bad name — before anything is copied", async () => {
+  const { g, deps } = setup();
+  const a = acct();
+  await assert.rejects(runGoogleAction(deps, a, "drive.copy", { id: "DIR" }), /folder: Drive copies files/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.copy", { id: "NOPE" }), /No file 'NOPE'/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.copy", { id: "PLAN", to: "BOBDOC" }), /is not a folder/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.copy", { id: "PLAN", name: "a\nb" }), GoogleInputError);
+  assert.deepEqual(writesTo(g.calls), []);
+  assert.equal(actionSetting(acct([S.drive], { drive: "approve" }), "drive.copy"), "approve");
 });
 
 // ---- download ---------------------------------------------------------------

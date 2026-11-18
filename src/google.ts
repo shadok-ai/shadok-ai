@@ -1408,6 +1408,17 @@ export async function renameFile(token: string, id: string, name: string, fetchF
   await sendJson("file rename", "PATCH", fileUrl(id), token, { name: fileNameVerdict(name) }, fetchFn, true);
 }
 
+/** A copy of the file (`files.copy`): a Doc, Sheet or Slides deck keeps its
+ *  whole look (fonts, colours, margins, headers, images); any other file is
+ *  copied byte for byte. `name` absent = Google's "Copy of …"; `parentId`
+ *  absent = Google puts it beside the original. Sharing is NOT copied: the
+ *  copy has the destination folder's access, as Drive's own "Make a copy". */
+export async function copyFile(token: string, id: string, name: string | undefined, parentId: string | undefined, fetchFn: FetchFn): Promise<DriveFileMeta> {
+  const body = { ...(name ? { name: fileNameVerdict(name) } : {}), ...(parentId ? { parents: [pathId("folder", parentId)] } : {}) };
+  const url = `${DRIVE}/${pathId("file", id)}/copy?${new URLSearchParams({ supportsAllDrives: "true", fields: FILE_FIELDS })}`;
+  return driveFileMeta(await sendJson<GFile>("file copy", "POST", url, token, body, fetchFn, true));
+}
+
 /** Into another folder: one parent added, the current one (if any) removed. */
 export async function moveFile(token: string, id: string, from: string | undefined, to: string, fetchFn: FetchFn): Promise<void> {
   const extra = { addParents: pathId("folder", to), ...(from ? { removeParents: pathId("folder", from) } : {}) };

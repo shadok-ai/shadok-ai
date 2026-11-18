@@ -115,8 +115,9 @@ const FILE_OPS = {
   "drive.delete": { head: "Move a Drive file to the bin", go: "Move to the bin", done: "Moved to the bin", what: "Moved to the bin — it can be restored from there for about 30 days, then Google deletes it" },
   "drive.move": { head: "Move a Drive file", go: "Move the file", done: "File moved", what: "Moved to another folder" },
   "drive.rename": { head: "Rename a Drive file", go: "Rename the file", done: "File renamed", what: "Renamed" },
+  "drive.copy": { head: "Copy a Drive file into another folder", go: "Make the copy", done: "Copy made", what: "A copy goes into that folder, seen by whoever that folder is shared with — the original is not changed" },
 };
-const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename"];
+const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename", "drive.copy"];
 
 /** Rows exactly as they will be written: one JSON array per line. */
 function rowsText(rows) {
@@ -197,6 +198,10 @@ function googleCardModel(d) {
     if (manage) {
       // Where it is and what it is called NOW, then exactly what happens to it.
       fields.push({ label: "In folder", value: f.parentName ? String(f.parentName) : f.parentId ? String(f.parentId) : "(none — shared with this account)" });
+      if (f.op === "drive.copy") {
+        fields.push({ label: "Copy goes to", value: (f.toName ? String(f.toName) : "") + (f.toId ? ` (${f.toId})` : "") });
+        fields.push({ label: "Copy's name", value: typeof f.newName === "string" && f.newName ? f.newName : "Copy of " + (typeof f.name === "string" ? f.name : "") });
+      }
       if (f.op === "drive.move") fields.push({ label: "Moves to", value: (f.toName ? String(f.toName) : "") + (f.toId ? ` (${f.toId})` : "") });
       if (f.op === "drive.rename") fields.push({ label: "New name", value: typeof f.newName === "string" ? f.newName : "" });
     } else if (f.op !== "doc.append") fields.push({ label: "Range", value: f.range ? String(f.range) : "after the last row" });
