@@ -8,7 +8,7 @@ import path from "node:path";
 import { googlePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
 import type { Draft, DraftAction, DraftPayload, EditPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
 import { passthroughGet, passthroughPlan } from "./google-passthrough.js";
-import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, editOpsVerdict, editPlan, sheetState, slidesState, translateEditError, type EditApp, type EditOp, type EditState, type SlidesCreated } from "./google-edits.js";
+import { annotateOps, buildEditRequests, docHeadings, docState, docTables, editOpCounts, editOpsVerdict, editPlan, sheetState, slidesState, translateEditError, type EditApp, type EditOp, type EditState, type SlidesCreated } from "./google-edits.js";
 import {
   GoogleError,
   GoogleInputError,
@@ -103,6 +103,9 @@ import {
   replyTarget,
   searchGmail,
   readSheet,
+  formulasFlag,
+  getSlideThumbnail,
+  THUMBNAIL_SIZES,
   sendGmailDraft,
   sendGmailMessage,
   updateGmailDraft,
@@ -183,6 +186,7 @@ export const GOOGLE_ACTIONS = {
   "api.get": { class: "read", area: "url", audit: true },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "slides.read": { class: "read", area: "drive" },
+  "slides.thumbnail": { class: "read", area: "drive" },
   "slides.create": { class: "own-write", area: "drive" },
   "slides.edit": { class: "file-write", area: "drive" },
   "doc.edit": { class: "file-write", area: "drive" },
@@ -410,7 +414,8 @@ function eventPayload(op: EventPayload["op"], calendarId: string, e: Omit<Partia
 /** Read any file as text (`readDriveFile`): audited by id and name — never by
  *  content — and marked untrusted, since anyone may have written it. */
 async function driveRead(deps: GoogleDeps, account: ConnectedAccount, args: Record<string, unknown>): Promise<ActionOutcome> {
-  const r = await readDriveFile(await deps.token(account.id), { id: args.id, range: args.range }, deps.fetchFn);
+  const formulas = formulasFlag(args.formulas);
+  const r = await readDriveFile(await deps.token(account.id), { id: args.id, range: args.range, formulas }, deps.fetchFn);
   if (!r) throw new GoogleInputError(`No file '${String(args.id ?? "").slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
   return { kind: "result", result: { ...r, untrusted: true }, log: { summary: `file ${r.file.id} — "${r.file.name.slice(0, 200)}"`, ...(r.file.link ? { link: r.file.link } : {}) } };
 }
@@ -522,12 +527,14 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       if (other && !meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
       if (meta && meta.mimeType !== MIME_DOC) return driveRead(deps, account, args);
       const st = docState(await getEditSource(token, "doc", id, f));
-      // The headings are what `doc edit` can insert after.
+      // The headings are what `doc edit` can insert after; the tables' sizes
+      // are what its table operations count (only sizes: their text is in `text`).
       const headings = docHeadings(st);
+      const tables = docTables(st);
       const text = st.paragraphs.map((p) => p.text).join("").replace(/\uFFFC/g, "");
-      if (!meta) return { kind: "result", result: { id, name: st.title, text, headings } };
+      if (!meta) return { kind: "result", result: { id, name: st.title, text, headings, ...(tables.length ? { tables } : {}) } };
       const cut = truncateBody(text.replace(/\s+$/, ""), MAX_FILE_CHARS);
-      return { kind: "result", result: { file: meta, kind: "text", text: cut.body, headings, truncated: cut.truncated, untrusted: true }, log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } };
+      return { kind: "result", result: { file: meta, kind: "text", text: cut.body, headings, ...(tables.length ? { tables } : {}), truncated: cut.truncated, untrusted: true }, log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } };
     }
     case "slides.read": {
       const id = String(args.id ?? "");
@@ -542,19 +549,52 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       let truncated = false;
       // The deck's own layouts: what \`add_slide\` can name, by id or name.
       const layouts = st.layouts.map((l) => ({ id: l.id, name: l.name.slice(0, 200) }));
+      const budget = (raw: string) => {
+        const t = raw.replace(/\n$/, "");
+        const kept = [...t].slice(0, Math.max(0, left)).join("");
+        left -= kept.length;
+        if (kept.length < t.length) truncated = true;
+        return kept;
+      };
+      // Each element with its box in points (what \`move\` changes); the
+      // speaker notes after the slide's elements (what \`set_notes\` writes).
       const slides = st.slides.map((s) => ({
-        ...s,
-        elements: s.elements.map((e) => {
-          const t = e.text.replace(/\n$/, "");
-          const kept = [...t].slice(0, Math.max(0, left)).join("");
-          left -= kept.length;
-          if (kept.length < t.length) truncated = true;
-          return { ...e, text: kept };
-        }),
+        id: s.id,
+        layout: s.layout,
+        elements: s.elements.map((e) => ({ id: e.id, type: e.type, text: budget(e.text), ...(e.box ? { box: e.box } : {}), ...(e.inGroup ? { inGroup: true } : {}) })),
+        ...(s.notes !== undefined ? { notes: budget(s.notes) } : {}),
       }));
       // Always untrusted: a deck's text is whatever anyone typed into it.
       const file = meta ?? { id, name: st.title, mimeType: MIME_SLIDES, owners: [] };
       return { kind: "result", result: { file, kind: "slides", slides, layouts, truncated, untrusted: true }, ...(meta ? { log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } } : {}) };
+    }
+    case "slides.thumbnail": {
+      const id = String(args.id ?? "");
+      const slideId = String(args.slideId ?? "");
+      // Checked before a token is fetched: an object id, a size from the list.
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_:.-]{0,99}$/.test(slideId)) throw new GoogleInputError("Give the slide's id (see `slides read`).");
+      const size = args.size === undefined || args.size === null ? "LARGE" : String(args.size).toUpperCase();
+      if (!(THUMBNAIL_SIZES as readonly string[]).includes(size)) throw new GoogleInputError(`'size' must be one of ${THUMBNAIL_SIZES.join(", ")}.`);
+      const token = await deps.token(account.id);
+      const other = foreignFile(account, deps.ownFiles, id);
+      const meta = other ? await getFileMeta(token, id, f) : null;
+      if (other && !meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      if (meta && meta.mimeType !== MIME_SLIDES) throw new GoogleInputError(`File '${id.slice(0, 60)}' is not a Google Slides deck.`);
+      const shot = await getSlideThumbnail(token, id, slideId, size as (typeof THUMBNAIL_SIZES)[number], f);
+      // The name is ours, never the deck's: nothing someone else wrote goes into a path.
+      const safe = slideId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60);
+      let saved: string;
+      try {
+        saved = await deps.writeFile(`slide-${safe}.png`, shot.bytes);
+      } catch {
+        throw new GoogleInputError("The image could not be written into this agent's working directory.");
+      }
+      // The picture shows whatever anyone typed on the slide: untrusted, like the deck's text.
+      return {
+        kind: "result",
+        result: { kind: "thumbnail", path: saved, slideId, width: shot.width, height: shot.height, bytes: shot.bytes.length, untrusted: true, ...(meta ? { file: meta } : {}) },
+        ...(meta ? { log: { summary: `thumbnail of slide ${slideId} of file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } } : {}),
+      };
     }
     case "slides.create": {
       const deck = await createPresentation(await deps.token(account.id), args.title, f);
@@ -590,9 +630,11 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       // be told what the edit WILL create before anyone approves it.
       return { kind: "pending", action, payload, summary, ...(planned.length ? { result: { created: planned } } : {}) };
     }
-    case "sheet.read":
+    case "sheet.read": {
       if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
-      return { kind: "result", result: await readSheet(await deps.token(account.id), String(args.id ?? ""), args.range, f) };
+      const formulas = formulasFlag(args.formulas);
+      return { kind: "result", result: await readSheet(await deps.token(account.id), String(args.id ?? ""), args.range, f, formulas) };
+    }
     case "drive.read":
       return driveRead(deps, account, args);
     case "drive.search": {

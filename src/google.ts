@@ -1803,9 +1803,19 @@ export function rangeOk(v: unknown): string {
   return v;
 }
 
-export async function readSheet(token: string, id: string, range: unknown, fetchFn: FetchFn): Promise<{ id: string; range: string; rows: unknown[][] }> {
-  const j = await getJson<{ range?: string; values?: unknown[][] }>("spreadsheet read", `${SHEETS}/${pathId("spreadsheet", id)}/values/${encodeURIComponent(rangeOk(range))}`, token, fetchFn);
+/** `formulas`: a formula cell reads as its formula (\`=SUM(B2:B9)\`), not its
+ *  computed value — Sheets' \`valueRenderOption=FORMULA\`. */
+export async function readSheet(token: string, id: string, range: unknown, fetchFn: FetchFn, formulas = false): Promise<{ id: string; range: string; rows: unknown[][] }> {
+  const url = `${SHEETS}/${pathId("spreadsheet", id)}/values/${encodeURIComponent(rangeOk(range))}${formulas ? "?valueRenderOption=FORMULA" : ""}`;
+  const j = await getJson<{ range?: string; values?: unknown[][] }>("spreadsheet read", url, token, fetchFn);
   return { id, range: j.range ?? "", rows: j.values ?? [] };
+}
+
+/** \`--formulas\`: true, or absent. Anything else is refused, not guessed. */
+export function formulasFlag(v: unknown): boolean {
+  if (v === undefined || v === null || v === false) return false;
+  if (v === true) return true;
+  throw new GoogleInputError("'formulas' must be true or false.");
 }
 
 /** Rows of plain cells. Written RAW: a cell starting with `=` stays text, so
@@ -1999,13 +2009,13 @@ export interface DriveReadResult {
  * A PDF or any other binary gives its metadata and a sentence — nothing here
  * downloads or parses a binary. Null when the file is not there.
  */
-export async function readDriveFile(token: string, o: { id?: unknown; range?: unknown }, fetchFn: FetchFn): Promise<DriveReadResult | null> {
+export async function readDriveFile(token: string, o: { id?: unknown; range?: unknown; formulas?: boolean }, fetchFn: FetchFn): Promise<DriveReadResult | null> {
   const file = await getFileMeta(token, o.id, fetchFn);
   if (!file) return null;
   const none = (note: string): DriveReadResult => ({ file, kind: "none", truncated: false, note });
   const mt = file.mimeType;
   if (mt === MIME_SHEET) {
-    const s = await readSheet(token, file.id, o.range, fetchFn);
+    const s = await readSheet(token, file.id, o.range, fetchFn, o.formulas === true);
     const cut = truncateRows(s.rows);
     return { file, kind: "rows", rows: cut.rows, range: s.range, truncated: cut.truncated, ...(cut.truncated ? { note: `${cut.omitted} more rows not shown — read a narrower --range.` } : {}) };
   }
@@ -2484,6 +2494,35 @@ export async function createPresentation(token: string, title: unknown, fetchFn:
   const j = await sendJson<{ presentationId?: string }>("presentation creation", "POST", SLIDES, token, { title: name }, fetchFn);
   if (!j.presentationId) throw new GoogleError("Google created the presentation but returned no id.", 502, false);
   return { id: j.presentationId, name, link: `https://docs.google.com/presentation/d/${j.presentationId}/edit` };
+}
+
+export const THUMBNAIL_SIZES = ["SMALL", "MEDIUM", "LARGE"] as const;
+const THUMBNAIL_CAP = 10 * 1024 * 1024;
+
+/**
+ * A slide as an image (PNG), so an agent can LOOK at what its edit did.
+ * \`pages.getThumbnail\` returns a \`contentUrl\` that works without a token —
+ * anyone holding it sees the slide as the person would. So it is fetched HERE
+ * and the bytes handed back; the URL is never shown to the agent, never put
+ * in a log, and our token is never sent to it. Only a Google content host is
+ * fetched. (Request shape: Slides API v1 \`presentations.pages.getThumbnail\`;
+ * counts as an "expensive read" in Google's quota.)
+ */
+export async function getSlideThumbnail(token: string, id: string, slideId: string, size: (typeof THUMBNAIL_SIZES)[number], fetchFn: FetchFn): Promise<{ bytes: Buffer; width: number; height: number }> {
+  const q = `thumbnailProperties.mimeType=PNG&thumbnailProperties.thumbnailSize=${size}`;
+  const j = await getJson<{ contentUrl?: unknown; width?: unknown; height?: unknown }>("slide thumbnail", `${SLIDES}/${pathId("presentation", id)}/pages/${encodeURIComponent(slideId)}/thumbnail?${q}`, token, fetchFn);
+  let u: URL | null = null;
+  try {
+    u = typeof j.contentUrl === "string" ? new URL(j.contentUrl) : null;
+  } catch {
+    u = null;
+  }
+  if (!u || u.protocol !== "https:" || !/(^|\.)googleusercontent\.com$/.test(u.hostname)) throw new GoogleError("Google returned no usable thumbnail address.", 502, false);
+  const res = await fetchFn(u.toString(), { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  if (!res.ok) throw await failure("thumbnail download", res);
+  const bytes = await cappedBytes(res, THUMBNAIL_CAP);
+  if (bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new GoogleError("Google's thumbnail is not a PNG image.", 502, false);
+  return { bytes, width: Number(j.width) || 0, height: Number(j.height) || 0 };
 }
 
 /** The file as the API describes it now — what an edit's requests are built
