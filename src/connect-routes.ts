@@ -193,8 +193,9 @@ export function connectedMember(
  * identity the OIDC `sub`. `scopes` is what Google GRANTED (the token
  * response), never what was asked: a person may untick an area on the consent
  * screen. `expiresAt` is the access token's; the reconnect deadline is
- * `refreshExpiresAt` — Google's own figure when it sends one, else 7 days from
- * now while the broker says the app is in Testing, else unknown.
+ * `refreshExpiresAt` — Google's own figure (or the broker's, stamped per app)
+ * when one is sent, else 7 days from now while an older broker says the app is
+ * in Testing, else unknown.
  */
 export function connectedGoogle(
   person: string,
@@ -232,8 +233,8 @@ export function connectedGoogle(
  * authorizing the app grants no repository, so a GitHub account the person
  * cannot point at repositories would be a dead end.
  */
-export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean; googleAreas: GoogleArea[]; github: boolean; githubInstallUrl: string | null } {
-  const b = body as { providers?: unknown; testing?: unknown; googleAreas?: unknown; githubInstallUrl?: unknown } | null;
+export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean; googleDeadlineStamped: boolean; googleAreas: GoogleArea[]; github: boolean; githubInstallUrl: string | null } {
+  const b = body as { providers?: unknown; testing?: unknown; googleAreas?: unknown; githubInstallUrl?: unknown; deadlineStamped?: unknown } | null;
   const providers = Array.isArray(b?.providers) ? b.providers : [];
   const testing = Array.isArray(b?.testing) ? b.testing : [];
   const google = providers.includes("google");
@@ -243,7 +244,11 @@ export function healthProviders(body: unknown): { linkedin: boolean; google: boo
   const named = Array.isArray(b?.googleAreas) ? b.googleAreas : null;
   const googleAreas = !google ? [] : GOOGLE_AREAS.filter((k) => (named ? named.includes(k) : (GOOGLE_BASE_AREAS as readonly string[]).includes(k)));
   const githubInstallUrl = providers.includes("github") ? githubInstallUrlOf(b?.githubInstallUrl) : null;
-  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google"), googleAreas, github: githubInstallUrl !== null, githubInstallUrl };
+  // A broker that stamps each Testing app's deadline itself (per app, apps on
+  // some domains may be verified) must not have it stamped again here from its
+  // one broker-wide `testing` flag: that flag is only its DEFAULT app's.
+  const googleDeadlineStamped = google && b?.deadlineStamped === true;
+  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google"), googleDeadlineStamped, googleAreas, github: githubInstallUrl !== null, githubInstallUrl };
 }
 
 /** Only a github.com app-installation page becomes a link the panel opens. */

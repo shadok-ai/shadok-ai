@@ -2069,6 +2069,19 @@ every instance while another is verified on a demo instance; the refresh route
 tries the default app then the alternative, since the instance never knows
 which one minted its token.
 
+The apps themselves are configurable at run time on the broker's admin page
+(`broker/src/admin.ts`, `apps.ts`, `access.ts`): per provider one default app
+and per-domain overrides, stored in KV with each client secret sealed under
+`CONFIG_KEY` (AES-GCM, provider + host + client id as AAD), behind Cloudflare
+Access whose JWT the Worker verifies itself — no Access config, no route. The
+Worker secrets (and `GOOGLE_ALT_*`) stay as the fallback, below the page's
+entries for the same scope (`pickApp`). Google's Testing flag became PER APP:
+the callback stamps the 7-day `refresh_token_expires_in` for a Testing app, and
+`/health` adds `deadlineStamped: true` so the instance stops stamping it from
+the broker-wide `testing` flag, which now describes only the DEFAULT app
+(`healthProviders` → `googleDeadlineStamped`). Spec:
+`docs/superpowers/specs/2026-11-18-broker-admin-apps-design.md`.
+
 The hostname is shared with a separate site Worker (landing page, waitlist):
 every path the broker does not own — anything but `/health` and
 `/<provider>/{start,callback}` — is forwarded to it through the optional `SITE`
