@@ -760,7 +760,7 @@ Enter to skip; you can add it later from the web UI).
   operations — replace or insert text, add / duplicate / delete / reorder
   slides (on a deck's own custom layouts too: `slides read` lists them), style
   text and headings, tables, images from a public `https` address, cell
-  values and formulas, tabs, rows, columns, formats — applied all together or
+  values and formulas, tabs (a duplicated tab keeps its formats and formulas), rows, columns, formats — applied all together or
   not at all. On a file the cockpit created it is applied at once; on any other
   file it asks under *Drive edits*, with a card listing every operation on its
   own line, text and values included. If the file changes before you approve,

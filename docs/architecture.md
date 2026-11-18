@@ -2328,7 +2328,11 @@ card refresh), so a later `insert_text` / `delete_text` of the same batch can
 target the copy. `slidesPlan` walks the batch tracking the deck's order, each
 slide's elements and every taken id, and returns `{requests, created}`;
 `created` is the agent's result — already at `pending`, since the ids travel
-in the stored ops. `translateEditError` rewrites Google's predefined-layout 400
+in the stored ops. Sheets has the twin, `duplicate_tab` (`duplicateSheet`): it keeps formats,
+formulas, widths and conditional formatting that `add_tab` cannot rebuild; its
+name (default `Copy of <tab>`, never Google's localised default) and sheet id
+are drawn at validation, so later operations name the copy by title.
+`translateEditError` rewrites Google's predefined-layout 400
 into a sentence naming the two ways out. `annotateOps` adds to a
 Slides operation what its target is now ("slide 2: …", "the copy of …"), for the card only.
 `slides.read` is always marked untrusted; a deck or doc that is not the

@@ -270,6 +270,16 @@ function sheetOp(o: Raw, w: string): EditOp {
     case "add_tab":
       onlyKeys(o, w, ["title"]);
       return { op: "add_tab", title: tabName(o, "title", w), sheetId: 1 + (randomBytes(4).readUInt32BE(0) % 2_000_000_000) };
+    case "duplicate_tab": {
+      // A copy keeps what add_tab cannot rebuild: formats, formulas, column
+      // widths, conditional formatting. Its name is decided HERE (Google's
+      // default would be localised), so the card shows it and a later
+      // operation of the batch can name the copy.
+      onlyKeys(o, w, ["tab", "title", "at"]);
+      const tab = tabName(o, "tab", w);
+      const title = o.title === undefined ? `Copy of ${tab}`.slice(0, 100) : tabName(o, "title", w);
+      return { op: "duplicate_tab", tab, title, sheetId: 1 + (randomBytes(4).readUInt32BE(0) % 2_000_000_000), ...(o.at !== undefined ? { at: int(o, "at", w, 0, 1000) } : {}) };
+    }
     case "delete_tab":
       onlyKeys(o, w, ["title"]);
       return { op: "delete_tab", title: tabName(o, "title", w) };
@@ -293,7 +303,7 @@ function sheetOp(o: Raw, w: string): EditOp {
       return { op: "format", range: a1(o, w), ...(bold !== undefined ? { bold } : {}), ...(italic !== undefined ? { italic } : {}), ...(background !== undefined ? { background: (background as string).toLowerCase() } : {}), ...(numberFormat !== undefined ? { numberFormat } : {}) };
     }
     default:
-      return bad(`${w}: unknown Sheets operation '${String(o.op).slice(0, 40)}' (update, clear, add_tab, delete_tab, rename_tab, insert_rows, delete_rows, insert_cols, delete_cols, format).`);
+      return bad(`${w}: unknown Sheets operation '${String(o.op).slice(0, 40)}' (update, clear, add_tab, duplicate_tab, delete_tab, rename_tab, insert_rows, delete_rows, insert_cols, delete_cols, format).`);
   }
 }
 
@@ -370,6 +380,7 @@ export function editOpLines(app: EditApp, ops: readonly EditOp[]): string[] {
     if (o.op === "update") return `Write at ${o.range}${onTab(o.range)}: ${(o.values as Cell[][]).map((r) => `[${r.map((c) => (typeof c === "string" ? q(c) : String(c))).join(",")}]`).join(" ; ")}`;
     if (o.op === "clear") return `Clear ${o.range}${onTab(o.range)}`;
     if (o.op === "add_tab") return `Add a tab ${q(o.title)}`;
+    if (o.op === "duplicate_tab") return `Duplicate the tab ${q(o.tab)} as ${q(o.title)} (formats and formulas kept) ${o.at === undefined ? "right after it" : `at position ${(o.at as number) + 1}`}`;
     if (o.op === "delete_tab") return `Delete the tab ${q(o.title)} and everything in it`;
     if (o.op === "rename_tab") return `Rename the tab ${q(o.from)} to ${q(o.to)}`;
     if (o.op === "insert_rows") return `Insert ${o.count} row${o.count === 1 ? "" : "s"} before row ${o.start}${tab}`;
@@ -761,6 +772,15 @@ function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
       if (tabs.some((t) => t.title === o.title)) return bad(`${w}: there is already a tab with that name.`);
       out.push({ addSheet: { properties: { sheetId: o.sheetId, title: o.title } } });
       tabs.push({ id: Number(o.sheetId), title: String(o.title) });
+    } else if (o.op === "duplicate_tab") {
+      const src = tabId(String(o.tab));
+      if (tabs.some((t) => t.title === o.title)) return bad(`${w}: there is already a tab with that name — give the copy a 'title'.`);
+      if (tabs.some((t) => t.id === o.sheetId)) return bad(`${w}: the new tab's id is taken — send the edit again.`);
+      // \`tabs\` is in the spreadsheet's order; without \`at\` the copy goes right after its source.
+      const index = o.at === undefined ? tabs.findIndex((t) => t.id === src) + 1 : (o.at as number);
+      if (index > tabs.length) return bad(`${w}: 'at' is past the end — the spreadsheet has ${tabs.length} tabs, so 'at' goes from 0 to ${tabs.length}.`);
+      out.push({ duplicateSheet: { sourceSheetId: src, insertSheetIndex: index, newSheetId: o.sheetId, newSheetName: o.title } });
+      tabs.splice(index, 0, { id: Number(o.sheetId), title: String(o.title) });
     } else if (o.op === "delete_tab") {
       const id = tabId(String(o.title));
       if (tabs.length === 1) return bad(`${w}: a spreadsheet keeps at least one tab.`);

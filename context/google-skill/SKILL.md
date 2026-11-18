@@ -177,6 +177,8 @@ edit. `doc append` still exists for plain text at the end.
 node ~/.claude/skills/shadok-google/scripts/google.mjs sheet edit --account <id> --id <sheet id> --stdin <<'OPS'
 [
   {"op": "add_tab", "title": "2027"},
+  {"op": "duplicate_tab", "tab": "Sheet1", "title": "Forecast", "at": 1},
+  {"op": "update", "range": "Forecast!B1", "values": [["Forecast"]]},
   {"op": "update", "range": "2027!A1", "values": [["Item", "Q1", "Total"], ["Hosting", 4200, "=SUM(B2:B2)"]]},
   {"op": "format", "range": "2027!A1:C1", "bold": true, "background": "#ffe599"},
   {"op": "format", "range": "2027!B2:C9", "numberFormat": "#,##0.00"},
@@ -192,6 +194,11 @@ OPS
 In `sheet edit`, a text starting with `=` IS a formula (unlike `sheet append`
 / `sheet update`, which keep it as text); everything else is written as it is.
 Rows and columns are counted from 1; a range without a tab is on the first tab.
+`duplicate_tab` copies a tab WITH its formats, formulas, column widths and
+conditional formatting — what `add_tab` cannot rebuild: use it to start from a
+template tab. The copy is named `title` (default `Copy of <tab>`) and goes at
+`at` (0-based) or right after its source; later operations of the same edit
+name it by that title.
 
 An image is fetched by Google from its address: `https` on the public
 internet only — an internal or private address is refused.

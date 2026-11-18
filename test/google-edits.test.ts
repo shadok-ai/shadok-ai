@@ -417,6 +417,43 @@ test("Sheets requests: tabs are followed through the batch; a formula is a formu
 
 // ---- what the person reads ----------------------------------------------------
 
+test("duplicate_tab: a copy of a tab (formats, formulas kept) that later operations of the batch can name", () => {
+  const ops = v("sheet", [
+    { op: "duplicate_tab", tab: "Q3 data", title: "Q4 data" },
+    { op: "clear", range: "'Q4 data'!B2:D9" },
+    { op: "update", range: "'Q4 data'!A1", values: [["Q4"]] },
+    { op: "duplicate_tab", tab: "Sheet1", at: 0 },
+    { op: "rename_tab", from: "Copy of Sheet1", to: "Template" },
+  ]);
+  assert.deepEqual(ops[0], { op: "duplicate_tab", tab: "Q3 data", title: "Q4 data", sheetId: ops[0].sheetId });
+  assert.equal(typeof ops[0].sheetId, "number");
+  assert.equal(ops[3].title, "Copy of Sheet1", "the default name is decided here, so the card shows it and the batch can use it");
+  const [a, b] = [ops[0].sheetId, ops[3].sheetId];
+  assert.deepEqual(buildEditRequests("sheet", ops, sheetState(SHEET)), [
+    { duplicateSheet: { sourceSheetId: 77, insertSheetIndex: 2, newSheetId: a, newSheetName: "Q4 data" } },
+    { updateCells: { range: { sheetId: a, startRowIndex: 1, endRowIndex: 9, startColumnIndex: 1, endColumnIndex: 4 }, fields: "userEnteredValue" } },
+    { updateCells: { start: { sheetId: a, rowIndex: 0, columnIndex: 0 }, rows: [{ values: [{ userEnteredValue: { stringValue: "Q4" } }] }], fields: "userEnteredValue" } },
+    { duplicateSheet: { sourceSheetId: 0, insertSheetIndex: 0, newSheetId: b, newSheetName: "Copy of Sheet1" } },
+    { updateSheetProperties: { properties: { sheetId: b, title: "Template" }, fields: "title" } },
+  ]);
+  // Without 'at' the copy goes right after its source, counted in the batch's own order.
+  assert.equal((buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1" }]), sheetState(SHEET))[0] as any).duplicateSheet.insertSheetIndex, 1);
+  assert.deepEqual(editOpLines("sheet", ops.slice(3, 4).concat(ops.slice(0, 1))), [
+    'Duplicate the tab "Sheet1" as "Copy of Sheet1" (formats and formulas kept) at position 1',
+    'Duplicate the tab "Q3 data" as "Q4 data" (formats and formulas kept) right after it',
+  ]);
+  const st = () => sheetState(SHEET);
+  refuses("sheet", { op: "duplicate_tab" }, /'tab' must be text/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", title: "a\nb" }, /control character/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", at: -1 }, /whole number/);
+  refuses("sheet", { op: "duplicate_tab", tab: "Sheet1", formats: false }, /unknown field 'formats'/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Nope" }]), st()), /no tab with that name/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1", title: "Q3 data" }]), st()), /already a tab with that name — give the copy a 'title'/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1" }, { op: "duplicate_tab", tab: "Sheet1" }]), st()), /operation 2: there is already a tab with that name/);
+  assert.throws(() => buildEditRequests("sheet", v("sheet", [{ op: "duplicate_tab", tab: "Sheet1", at: 3 }]), st()), /'at' is past the end — the spreadsheet has 2 tabs, so 'at' goes from 0 to 2/);
+  assert.equal(editOpCounts(ops), "duplicate_tab ×2, clear ×1, update ×1, rename_tab ×1");
+});
+
 test("one line per operation, in order, with every text and value in full", () => {
   seq = 0;
   const slides = annotateOps("slides", v("slides", [{ op: "replace_text", find: "2026", replace: "2027", matchCase: false }, { op: "add_slide", title: "Next steps", body: "- hire\n- ship", at: 1 }, { op: "delete_slide", slideId: "p2" }, { op: "insert_text", objectId: "t1", text: " — final" }, { op: "delete_text", objectId: "g1" }, { op: "insert_image", slideId: "p1", url: "https://images.example.org/logo.png", w: 100, h: 50 }, { op: "reorder", slideIds: ["p2"], at: 0 }]), slidesState(DECK));
