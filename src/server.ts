@@ -6035,7 +6035,8 @@ app.post("/connect/:provider/complete", async (req, res) => {
     if (!payload.refresh_token) return refuse("no-refresh");
     try {
       const user = await fetchGoogleUser(payload.access_token, fetch);
-      incoming = connectedGoogle(person, user, payload, now, (await brokerProviders(now)).googleTesting);
+      const bp = await brokerProviders(now);
+      incoming = connectedGoogle(person, user, payload, now, bp.googleTesting && !bp.googleDeadlineStamped);
     } catch {
       return refuse("profile-failed");
     }

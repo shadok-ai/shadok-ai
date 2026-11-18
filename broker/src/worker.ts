@@ -15,8 +15,10 @@ import {
   type ProviderId,
   type TokenPayload,
 } from "./core.js";
+import { handleAdmin, type AdminEnv, type ProviderView } from "./admin.js";
+import { allPicks, loadConfig, openPick, pickApp, type AppsConfig, type EnvApps, type OAuthApp } from "./apps.js";
 
-export interface Env {
+export interface Env extends AdminEnv {
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   STATE_KEY: string;
@@ -58,19 +60,16 @@ interface Provider {
   extra?: Record<string, string>;
   /** Whether the instance may refresh through `POST /<id>/refresh`. */
   refresh?: boolean;
-  clientId: (env: Env) => string;
-  clientSecret: (env: Env) => string;
+  /** The Worker-secret apps (the fallback under the admin page's, apps.ts). */
+  envApps: (env: Env) => EnvApps;
   /** GitHub: `GET /<id>/setup` exists, the page GitHub's "Setup URL" lands on
    *  after a person picks repositories. */
   setup?: boolean;
-  /** An alternative app for some hosts (Google), or null. */
-  alt?: (env: Env) => (OAuthApp & { hosts: string[] }) | null;
 }
 
-interface OAuthApp {
-  id: string;
-  secret: string;
-}
+/** A Worker-secret app, or null when either half is missing. */
+const envApp = (id: string | undefined, secret: string | undefined, extra: Partial<OAuthApp> = {}): OAuthApp | null =>
+  id && secret ? { id, secret, ...extra } : null;
 
 // A second provider (or a second LinkedIn app) is one more entry here.
 const PROVIDERS: Record<ProviderId, Provider> = {
@@ -80,8 +79,7 @@ const PROVIDERS: Record<ProviderId, Provider> = {
     authorizeUrl: "https://www.linkedin.com/oauth/v2/authorization",
     tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
     scope: () => "openid profile w_member_social",
-    clientId: (e) => e.LINKEDIN_CLIENT_ID,
-    clientSecret: (e) => e.LINKEDIN_CLIENT_SECRET,
+    envApps: (e) => ({ default: envApp(e.LINKEDIN_CLIENT_ID, e.LINKEDIN_CLIENT_SECRET), alt: null }),
   },
   google: {
     id: "google",
@@ -94,11 +92,13 @@ const PROVIDERS: Record<ProviderId, Provider> = {
     // include_granted_scopes: a reconnect that adds an area keeps the others.
     extra: { access_type: "offline", prompt: "consent", include_granted_scopes: "true" },
     refresh: true,
-    clientId: (e) => e.GOOGLE_CLIENT_ID ?? "",
-    clientSecret: (e) => e.GOOGLE_CLIENT_SECRET ?? "",
-    alt: (e) => {
+    envApps: (e) => {
+      // GOOGLE_TESTING was one flag for the whole broker: it still covers both
+      // Worker-secret apps. A per-app flag is set on the admin page.
+      const testing = e.GOOGLE_TESTING === "1" ? { testing: true } : {};
       const hosts = (e.GOOGLE_ALT_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
-      return e.GOOGLE_ALT_CLIENT_ID && e.GOOGLE_ALT_CLIENT_SECRET && hosts.length ? { id: e.GOOGLE_ALT_CLIENT_ID, secret: e.GOOGLE_ALT_CLIENT_SECRET, hosts } : null;
+      const alt = envApp(e.GOOGLE_ALT_CLIENT_ID, e.GOOGLE_ALT_CLIENT_SECRET, testing);
+      return { default: envApp(e.GOOGLE_CLIENT_ID, e.GOOGLE_CLIENT_SECRET, testing), alt: alt && hosts.length ? { ...alt, hosts } : null };
     },
   },
   github: {
@@ -111,29 +111,40 @@ const PROVIDERS: Record<ProviderId, Provider> = {
     scope: () => "",
     refresh: true,
     setup: true,
-    clientId: (e) => e.GITHUB_CLIENT_ID ?? "",
-    clientSecret: (e) => e.GITHUB_CLIENT_SECRET ?? "",
+    envApps: (e) => ({ default: envApp(e.GITHUB_CLIENT_ID, e.GITHUB_CLIENT_SECRET, e.GITHUB_APP_SLUG ? { slug: e.GITHUB_APP_SLUG.trim() } : {}), alt: null }),
   },
 };
 
-/** A provider is offered only once its secrets exist: a deploy before the
- *  Google app is set up must not show a Connect button that leads nowhere. */
-const available = (p: Provider, env: Env) => !!p.clientId(env) && !!p.clientSecret(env);
+/** A provider is offered only once it has a DEFAULT app (admin page or Worker
+ *  secrets): a deploy before the Google app is set up must not show a Connect
+ *  button that leads nowhere. */
+const available = (p: Provider, env: Env, cfg: AppsConfig) => !!cfg[p.id]?.default || !!p.envApps(env).default;
 
-/** The app that serves this instance: the alternative one when its host is
- *  listed, the default one otherwise. The host comes from the validated return
- *  URL (start) or the signed state (callback), never from a header. */
-function appFor(p: Provider, env: Env, host: string): OAuthApp {
-  const alt = p.alt?.(env);
-  if (alt && alt.hosts.includes(host.toLowerCase())) return alt;
-  return { id: p.clientId(env), secret: p.clientSecret(env) };
+/** The app that serves this instance (apps.ts `pickApp`: its domain's app, else
+ *  the default). The host comes from the validated return URL (start) or the
+ *  signed state (callback), never from a header. Null when the stored secret
+ *  cannot be opened (CONFIG_KEY missing or changed). */
+async function appFor(p: Provider, env: Env, cfg: AppsConfig, host: string): Promise<OAuthApp | null> {
+  const pick = pickApp(cfg[p.id], p.envApps(env), host);
+  return pick ? openPick(pick, p.id, env.CONFIG_KEY) : null;
 }
 
-/** Every app a refresh token may belong to: the default first, then the alternative. */
-function appsOf(p: Provider, env: Env): OAuthApp[] {
-  const alt = p.alt?.(env);
-  return [{ id: p.clientId(env), secret: p.clientSecret(env) }, ...(alt ? [alt] : [])];
+/** Every app a refresh token may belong to, the default first. */
+async function appsOf(p: Provider, env: Env, cfg: AppsConfig): Promise<OAuthApp[]> {
+  const out: OAuthApp[] = [];
+  for (const pick of allPicks(cfg[p.id], p.envApps(env))) {
+    const app = await openPick(pick, p.id, env.CONFIG_KEY);
+    if (app) out.push(app);
+  }
+  return out;
 }
+
+const misconfigured = () => page(500, "Cannot connect", "<p>This connector is misconfigured. Tell its operator.</p>");
+
+/** Google issues 7-day refresh tokens while an app is in Testing, without
+ *  always saying so: the broker says it, per app, so the instance needs no
+ *  broker-wide flag (`/health` → `deadlineStamped`). */
+const TESTING_REFRESH_SECONDS = 7 * 24 * 3600;
 const providerOf = (id: string): Provider | undefined => (Object.hasOwn(PROVIDERS, id) ? PROVIDERS[id as ProviderId] : undefined);
 
 const esc = (s: string) =>
@@ -175,7 +186,7 @@ const errorCode = (j: Record<string, unknown>, fallback: string) => {
 const bad = (msg: string) => page(400, "Cannot connect", `<p>${esc(msg)}</p>`);
 const link = (returnUrl: string, nonce: string, tail: string) => `${returnUrl}#n=${nonce}&${tail}`;
 
-async function start(url: URL, env: Env, p: Provider): Promise<Response> {
+async function start(url: URL, env: Env, cfg: AppsConfig, p: Provider): Promise<Response> {
   const ret = url.searchParams.get("return") ?? "";
   const pub = url.searchParams.get("pub") ?? "";
   const nonce = url.searchParams.get("nonce") ?? "";
@@ -190,10 +201,12 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
     areas = parsed;
   }
   const st: ConnectState = { v: 1, provider: p.id, returnUrl: v.url.toString(), pub, nonce, iat: Date.now(), ...(areas ? { areas } : {}) };
+  const app = await appFor(p, env, cfg, v.url.hostname);
+  if (!app) return misconfigured();
   const state = await signState(st, env.STATE_KEY);
   const q = new URLSearchParams({
     response_type: "code",
-    client_id: appFor(p, env, v.url.hostname).id,
+    client_id: app.id,
     redirect_uri: `${url.origin}/${p.id}/callback`,
     ...(p.scope(st) ? { scope: p.scope(st) } : {}),
     ...(p.extra ?? {}),
@@ -202,7 +215,7 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
   return new Response(null, { status: 302, headers: { location: `${p.authorizeUrl}?${q}`, "cache-control": "no-store" } });
 }
 
-async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
+async function callback(url: URL, env: Env, cfg: AppsConfig, p: Provider): Promise<Response> {
   const st = await verifyState(url.searchParams.get("state") ?? "", env.STATE_KEY);
   // A state minted for one provider is never redeemed at another's callback.
   if (!st || st.provider !== p.id) return bad("This connection attempt is invalid or has expired. Start again from your cockpit.");
@@ -225,7 +238,8 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
   if (!code) return bad("Missing authorization code.");
 
   // The same app as at start: the code was issued to it.
-  const app = appFor(p, env, v.url.hostname);
+  const app = await appFor(p, env, cfg, v.url.hostname);
+  if (!app) return misconfigured();
   const failed = (sentence: string) =>
     page(200, "Connection failed", `<p>${esc(sentence)}</p><a class="b" href="${esc(link(returnUrl, st.nonce, "error=token_exchange_failed"))}">Back to ${esc(host)}</a>`);
   let res: Response;
@@ -264,6 +278,8 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
       scope: j.scope,
       ...(j.refresh_token ? { refresh_token: j.refresh_token, refresh_token_expires_in: j.refresh_token_expires_in } : {}),
     };
+    if (token.refresh_token && app.testing && !(typeof token.refresh_token_expires_in === "number" && token.refresh_token_expires_in > 0))
+      token.refresh_token_expires_in = TESTING_REFRESH_SECONDS;
   } catch {
     // HTTP 200 but no usable token: the provider did not refuse anything.
     return failed(`${p.label} returned an unexpected answer.`);
@@ -296,7 +312,7 @@ const MAX_REFRESH_TOKEN = 2048;
  * 7 days in Testing; GitHub's `bad_refresh_token`) is passed through so the
  * instance can say "reconnect". A rotated refresh token (GitHub) is returned.
  */
-async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
+async function refresh(req: Request, env: Env, cfg: AppsConfig, p: Provider): Promise<Response> {
   let body: { refresh_token?: unknown };
   try {
     body = (await req.json()) as { refresh_token?: unknown };
@@ -311,7 +327,7 @@ async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
   // `invalid_grant` is revoked or expired: the instance must reconnect.
   let last: Response = json(502, { error: "unreachable" });
   let revoked = false;
-  for (const app of appsOf(p, env)) {
+  for (const app of await appsOf(p, env, cfg)) {
     let res: Response;
     try {
       res = await fetch(p.tokenUrl, {
@@ -354,17 +370,24 @@ function setupDone(p: Provider): Response {
   return page(200, "Repositories updated", `<p>${esc(p.label)} has saved your choice of repositories. You can close this tab and go back to your cockpit: your agents can use them right away.</p>`);
 }
 
-function health(env: Env): Response {
-  const providers = Object.values(PROVIDERS).filter((p) => available(p, env)).map((p) => p.id);
+function health(env: Env, cfg: AppsConfig): Response {
+  const providers = Object.values(PROVIDERS).filter((p) => available(p, env, cfg)).map((p) => p.id);
   const google = providers.includes("google");
-  const slug = (env.GITHUB_APP_SLUG ?? "").trim();
+  // The DEFAULT app's flags: the admin page's when it set one, else the Worker's.
+  const gDefault = cfg.google?.default ?? null;
+  const googleTesting = gDefault ? !!gDefault.testing : env.GOOGLE_TESTING === "1";
+  const slug = (cfg.github?.default ? cfg.github.default.slug ?? "" : env.GITHUB_APP_SLUG ?? "").trim();
   const github = providers.includes("github") && /^[a-z0-9-]{1,64}$/.test(slug);
   // `googleAreas`: the areas THIS deploy accepts at /google/start. An instance
   // newer than the broker would otherwise offer an area the broker refuses.
   return Response.json({
     ok: true,
     providers,
-    ...(env.GOOGLE_TESTING === "1" && google ? { testing: ["google"] } : {}),
+    ...(googleTesting && google ? { testing: ["google"] } : {}),
+    // The callback stamps each Testing app's 7-day deadline itself
+    // (`refresh_token_expires_in`), so `testing` is only the default app's:
+    // an instance must not stamp it again on a domain whose app is verified.
+    ...(google ? { deadlineStamped: true } : {}),
     ...(google ? { googleAreas: Object.keys(GOOGLE_AREAS) } : {}),
     // Where a person picks (or changes) the repositories the GitHub App
     // reaches. Authorizing alone grants no repository: installing does.
@@ -372,20 +395,32 @@ function health(env: Env): Response {
   });
 }
 
+/** What the admin page shows of the Worker-secret apps: client ids, never secrets. */
+function providerViews(env: Env): ProviderView[] {
+  return Object.values(PROVIDERS).map((p) => {
+    const e = p.envApps(env);
+    return { id: p.id, label: p.label, envDefault: e.default?.id ?? null, envAlt: e.alt ? { clientId: e.alt.id, hosts: e.alt.hosts } : null };
+  });
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    const admin = await handleAdmin(req, url, env, providerViews(env));
+    if (admin) return admin;
     const m = /^\/([a-z]+)\/(start|callback|refresh|setup)$/.exec(url.pathname);
     const p = m ? providerOf(m[1]) : undefined;
-    const route = m && p && available(p, env) && (m[2] !== "refresh" || p.refresh) && (m[2] !== "setup" || p.setup) ? m[2] : undefined;
+    // KV is read only for the broker's own routes, never for the site's pages.
+    const cfg = m || url.pathname === "/health" ? await loadConfig(env.CONFIG) : {};
+    const route = m && p && available(p, env, cfg) && (m[2] !== "refresh" || p.refresh) && (m[2] !== "setup" || p.setup) ? m[2] : undefined;
     const ours = url.pathname === "/health" || route !== undefined;
     // Every path the broker does not own goes to the site, whatever the method
     // (the waitlist is a POST). The broker's own routes never do.
     if (!ours) return env.SITE ? env.SITE.fetch(req) : new Response("Not found", { status: 404 });
-    if (route === "refresh") return req.method === "POST" ? refresh(req, env, p!) : new Response("Method not allowed", { status: 405 });
+    if (route === "refresh") return req.method === "POST" ? refresh(req, env, cfg, p!) : new Response("Method not allowed", { status: 405 });
     if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
-    if (url.pathname === "/health") return health(env);
+    if (url.pathname === "/health") return health(env, cfg);
     if (route === "setup") return setupDone(p!);
-    return route === "start" ? start(url, env, p!) : callback(url, env, p!);
+    return route === "start" ? start(url, env, cfg, p!) : callback(url, env, cfg, p!);
   },
 };

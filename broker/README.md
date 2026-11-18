@@ -42,6 +42,46 @@ alternative; `invalid_grant` from either still means "reconnect". Both apps
 need the same redirect URI and scopes. The refresh token is never logged
 or echoed.
 
+**The admin page** (`/admin`, `src/admin.ts`) sets each provider's app from a
+browser: ONE default app for every instance, and any number of per-domain
+overrides (the cockpit's hostname, e.g. a demo instance going through Google's
+verification). Resolution for an instance on host H, most specific first
+(`src/apps.ts` `pickApp`): the page's app for H → the legacy `GOOGLE_ALT_*` app
+when H is in `GOOGLE_ALT_HOSTS` → the page's default → the Worker-secret
+default. So the Worker secrets keep working and are the fallback; a deploy
+without KV behaves exactly as before. A provider is offered once it has a
+default app (page or secrets). The page also carries, per app, Google's
+*Testing* flag — the callback then stamps the 7-day `refresh_token_expires_in`
+itself, so a verified app on one domain is not reported as expiring weekly —
+and GitHub's app slug (the default's feeds `githubInstallUrl`). `/refresh`
+tries every app, each client id once, default first.
+
+- Storage: one JSON document in the KV namespace bound as `CONFIG` (key
+  `apps:v1`). A client secret is stored AES-256-GCM-sealed under `CONFIG_KEY`
+  (32 random bytes, base64url, a Worker secret), with its provider, host and
+  client id as associated data, so an entry cannot be moved by editing KV. The
+  page never sends a secret back; leaving the field empty keeps the stored one
+  (only for the same client id).
+- Access: the page sits behind **Cloudflare Access**, and the Worker verifies
+  Access's JWT itself (`src/access.ts`: RS256 against the team's published keys,
+  audience, issuer, expiry; optional `ADMIN_EMAILS` allowlist). Without
+  `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` the routes do not exist, and anyone
+  without a valid token gets a bare 404 — a misconfigured Access app leaves the
+  page closed, not open. Writes also need a same-origin `Origin` (CSRF).
+- No script on the page: plain forms, CSP `default-src 'none'`.
+
+Setup, once:
+
+1. `npx wrangler kv namespace create CONFIG`, then uncomment the
+   `[[kv_namespaces]]` block in `wrangler.toml` with the printed id.
+2. `openssl rand 32 | basenc --base64url | tr -d = | npx wrangler secret put CONFIG_KEY`
+3. Zero Trust → Access → Applications → *Self-hosted*: domain
+   `connect.<your domain>`, path `admin` (it covers `/admin/*`), a policy
+   allowing your email. Copy its **Application Audience (AUD) tag**.
+4. `npx wrangler secret put ACCESS_AUD` (the tag), and set
+   `ACCESS_TEAM_DOMAIN = "<team>.cloudflareaccess.com"` in `wrangler.toml`
+   `[vars]` (optionally `ADMIN_EMAILS`), then deploy.
+
 **GitHub** is a GitHub App, not an OAuth App: it takes no scopes, and what a
 token reaches is the app's permissions on the repositories the person
 installed it on. Authorizing grants no repository by itself — installing does,
@@ -75,7 +115,11 @@ npx wrangler secret put GOOGLE_ALT_CLIENT_ID      # optional: a second Google ap
 npx wrangler secret put GOOGLE_ALT_CLIENT_SECRET
 npx wrangler secret put GITHUB_CLIENT_ID      # optional: GitHub is offered only with both
 npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put CONFIG_KEY      # optional: the admin page's storage key (see above)
+npx wrangler secret put ACCESS_AUD      # optional: the admin page's Access audience tag
 ```
+
+The client id / secret pairs above can instead be set on the admin page.
 
 ## Develop
 

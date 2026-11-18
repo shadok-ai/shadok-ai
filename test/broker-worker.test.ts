@@ -209,8 +209,8 @@ const refreshReq = (body: unknown, e: Env = genv, method = "POST") =>
 
 test("/health lists google only once its secrets exist, and says when it is in Testing", async () => {
   assert.deepEqual((await (await get("/health")).json()).providers, ["linkedin"]);
-  assert.deepEqual(await (await gget("/health")).json(), { ok: true, providers: ["linkedin", "google"], googleAreas: AREAS });
-  assert.deepEqual(await (await gget("/health", { ...genv, GOOGLE_TESTING: "1" })).json(), { ok: true, providers: ["linkedin", "google"], testing: ["google"], googleAreas: AREAS });
+  assert.deepEqual(await (await gget("/health")).json(), { ok: true, providers: ["linkedin", "google"], googleAreas: AREAS, deadlineStamped: true });
+  assert.deepEqual(await (await gget("/health", { ...genv, GOOGLE_TESTING: "1" })).json(), { ok: true, providers: ["linkedin", "google"], testing: ["google"], googleAreas: AREAS, deadlineStamped: true });
 });
 
 test("without Google secrets, /google/* is not a broker route", async () => {
