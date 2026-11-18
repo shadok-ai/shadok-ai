@@ -760,7 +760,23 @@ Enter to skip; you can add it later from the web UI).
   another folder after a *Drive edits* card; the copy never carries the
   original's sharing, and when nobody else can see it, it is the cockpit's own
   file from then on (edited without asking: copy a document, then translate the
-  copy); a copy in a shared folder stays under *Drive edits*. It can also **edit the content** of a Slides deck, a Doc or a Sheet
+  copy); a copy in a shared folder stays under *Drive edits*. `drive upload`
+  puts a local file from the agent's working directory into the Drive (50 MB;
+  `--convert doc|sheet|slides` imports it as a Google file) and `drive mkdir`
+  creates a folder: at the top of the Drive or in a folder only the person can
+  see, at once and as the cockpit's own; into a folder others can see, a
+  *Drive edits* card — an upload then waits, private, at the top of the Drive,
+  openable from the card, until it is approved into the folder (Discard bins
+  it). `drive untrash` restores a binned file (*Drive edits*, like a delete).
+  `drive comments` and `drive access` list a file's comments and who can reach
+  it (logged, untrusted); `drive reply` answers or resolves a comment, which
+  everyone who sees the comments reads — a *Drive edits* card with the comment
+  and the exact reply. Changing who has access stays impossible. For any other
+  READ, `get --url` is a generic, read-only passthrough: one GET on Gmail
+  (`gmail_read`), Calendar, Drive, Docs, Sheets or Slides API URLs the account's
+  areas cover — never a redirect, a binary or a body, 2 MB at most, every URL
+  logged and the answer fenced as untrusted (labels, attendee responses,
+  revisions, formulas, speaker notes…). It can also **edit the content** of a Slides deck, a Doc or a Sheet
   (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
   operations — replace or insert text, add / duplicate / delete / reorder
   slides (on a deck's own custom layouts too: `slides read` lists them), style

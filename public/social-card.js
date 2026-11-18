@@ -116,8 +116,18 @@ const FILE_OPS = {
   "drive.move": { head: "Move a Drive file", go: "Move the file", done: "File moved", what: "Moved to another folder" },
   "drive.rename": { head: "Rename a Drive file", go: "Rename the file", done: "File renamed", what: "Renamed" },
   "drive.copy": { head: "Copy a Drive file into another folder", go: "Make the copy", done: "Copy made", what: "A copy goes into that folder, seen by whoever that folder is shared with — the original is not changed" },
+  "drive.upload": { head: "Put an uploaded file into a shared Drive folder", go: "Put it in the folder", done: "File put in the folder", what: "The file goes into that folder, seen by whoever that folder is shared with. Until then it waits at the top of the Drive, seen by nobody else — open the link to check it; Discard moves it to the bin" },
+  "drive.mkdir": { head: "Create a folder inside a shared Drive folder", go: "Create the folder", done: "Folder created", what: "A new, empty folder, seen by whoever the folder around it is shared with" },
+  "drive.untrash": { head: "Restore a Drive file from the bin", go: "Restore the file", done: "File restored", what: "Back where it was before the bin, seen again by whoever can see that folder" },
+  "drive.reply": { head: "Reply to a comment on a Drive file", go: "Post the reply", done: "Reply posted", what: "A reply, read by everyone who can see this file's comments" },
 };
-const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename", "drive.copy"];
+/** A reply that only resolves: its own head and button. */
+const FILE_RESOLVE = { head: "Resolve a comment on a Drive file", go: "Resolve the comment", done: "Comment resolved", what: "Marks the comment resolved, for everyone who can see this file's comments" };
+const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.untrash", "drive.reply"];
+
+function fileSize(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " kB" : n + " B";
+}
 
 /** Rows exactly as they will be written: one JSON array per line. */
 function rowsText(rows) {
@@ -187,15 +197,31 @@ function googleCardModel(d) {
     // An edit to a Drive file the cockpit did not create: which file, and
     // exactly what goes into it.
     const f = d.file;
-    const op = FILE_OPS[f.op] || FILE_OPS["doc.append"];
+    const op = f.op === "drive.reply" && f.resolve && !(typeof f.text === "string" && f.text) ? FILE_RESOLVE : FILE_OPS[f.op] || FILE_OPS["doc.append"];
     kind = "file";
     kindLabel = "Drive edit";
     title = op.head + " — " + account;
-    fields.push({ label: "File", value: typeof f.name === "string" && f.name ? f.name : "(unnamed file)" });
+    fields.push({ label: f.op === "drive.mkdir" ? "In folder" : "File", value: typeof f.name === "string" && f.name ? f.name : f.op === "drive.mkdir" ? "(unnamed folder)" : "(unnamed file)" });
     if (safeUrl(f.link)) fields.push({ label: "Link", value: f.link, href: safeUrl(f.link) });
     if (strs(f.owners).length) fields.push({ label: "Owner", value: strs(f.owners).join(", ") });
     const manage = FILE_MANAGE.includes(f.op);
-    if (manage) {
+    const dest = (f.toName ? String(f.toName) : "") + (f.toId ? ` (${f.toId})` : "");
+    if (f.op === "drive.upload") {
+      // Where it waits now, where it goes, and what it is.
+      fields.push({ label: "Now", value: "at the top of the Drive, seen by nobody else" });
+      fields.push({ label: "Goes to", value: dest });
+      if (typeof f.bytes === "number") fields.push({ label: "Size", value: fileSize(f.bytes) });
+      if (f.convert) fields.push({ label: "Converted to", value: "a Google " + String(f.convert) });
+    } else if (f.op === "drive.mkdir") {
+      fields.push({ label: "New folder", value: typeof f.newName === "string" ? f.newName : "" });
+    } else if (f.op === "drive.untrash") {
+      fields.push({ label: "Returns to", value: f.parentName ? String(f.parentName) : f.parentId ? String(f.parentId) : "(its folder is unknown)" });
+    } else if (f.op === "drive.reply") {
+      // The comment answered — someone else's words, shown as text — then the reply as the body.
+      fields.push({ label: "Comment by", value: typeof f.commentAuthor === "string" ? f.commentAuthor : "unknown" });
+      fields.push({ label: "Comment", value: typeof f.commentText === "string" ? f.commentText : "" });
+      if (f.resolve) fields.push({ label: "Resolves it", value: "yes — the comment is marked resolved" });
+    } else if (manage) {
       // Where it is and what it is called NOW, then exactly what happens to it.
       fields.push({ label: "In folder", value: f.parentName ? String(f.parentName) : f.parentId ? String(f.parentId) : "(none — shared with this account)" });
       if (f.op === "drive.copy") {
@@ -206,7 +232,7 @@ function googleCardModel(d) {
       if (f.op === "drive.rename") fields.push({ label: "New name", value: typeof f.newName === "string" ? f.newName : "" });
     } else if (f.op !== "doc.append") fields.push({ label: "Range", value: f.range ? String(f.range) : "after the last row" });
     fields.push({ label: "Change", value: op.what });
-    text = manage ? "" : f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
+    text = f.op === "drive.reply" ? (typeof f.text === "string" ? f.text : "") : manage ? "" : f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
     go = op.go;
     wait = manage
       ? "Waiting for approval — the file stays as it is until someone approves it. Other people may have access to this file."

@@ -6736,7 +6736,7 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
     storeDraft(d);
     removeSnapshot(d.imageSnapshot);
     if (google && account && !(await discardGoogleDraft(googleDeps(hit.sessionId), account, hit))) {
-      console.log(`social: draft ${d.id} discarded, but its Gmail draft could not be deleted`);
+      console.log(`social: draft ${d.id} discarded, but what it left in Google (a Gmail draft, a waiting upload) could not be removed`);
     }
     broadcastDraft(d);
     notifyDraftAgent(d);

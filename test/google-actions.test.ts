@@ -153,8 +153,9 @@ const outbound = (calls: string[]) => calls.filter((c) => /messages\/send|drafts
 
 test("class table: exactly the spec's — reads, own-writes, file-writes, mail, calendar", () => {
   const by = (c: string) => Object.entries(GOOGLE_ACTIONS).filter(([, v]) => v.class === c).map(([k]) => k).sort();
-  assert.deepEqual(by("read"), ["calendar.list", "doc.read", "drive.download", "drive.list", "drive.read", "drive.search", "gmail.read", "gmail.search", "sheet.read", "slides.read"]);
-  assert.deepEqual(by("file-manage"), ["drive.delete", "drive.move", "drive.rename"]);
+  assert.deepEqual(by("read"), ["api.get", "calendar.list", "doc.read", "drive.access", "drive.comments", "drive.download", "drive.list", "drive.read", "drive.search", "gmail.read", "gmail.search", "sheet.read", "slides.read"]);
+  assert.deepEqual(by("file-manage"), ["drive.delete", "drive.move", "drive.rename", "drive.reply", "drive.untrash"]);
+  assert.deepEqual(by("file-copy"), ["drive.copy", "drive.mkdir", "drive.upload"]);
   assert.deepEqual(by("own-write"), ["doc.create", "gmail.draft", "sheet.create", "slides.create"]);
   assert.deepEqual(by("file-write"), ["doc.append", "doc.edit", "sheet.append", "sheet.edit", "sheet.update", "slides.edit"]);
   assert.deepEqual(by("mail"), ["gmail.send"]);
