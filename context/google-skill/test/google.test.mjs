@@ -300,7 +300,7 @@ test("drive read: the content is inside the fence and cannot close it; rows and 
 
 test("sharing and deleting for good are refused by the script itself — the cockpit is never asked", async () => {
   await withStub(200, {}, async (s) => {
-    for (const cmd of [["drive", "share"], ["drive", "unshare"], ["drive", "permissions"], ["drive", "purge"], ["drive", "emptytrash"], ["drive", "copy"]]) {
+    for (const cmd of [["drive", "share"], ["drive", "unshare"], ["drive", "permissions"], ["drive", "purge"], ["drive", "emptytrash"]]) {
       const r = await run([...cmd, "--account", "g1", "--id", "F1"], s.port);
       assert.equal(r.code, 1, cmd.join(" "));
       assert.match(r.err, /^Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin/);
@@ -323,6 +323,11 @@ test("drive delete / move / rename: the request, the waiting sentence, and what 
     assert.match((await run(["drive", "move", "--account", "g1", "--id", "F1"], s.port)).err, /drive move needs --to/);
     assert.match((await run(["drive", "rename", "--account", "g1", "--id", "F1"], s.port)).err, /drive rename needs --name/);
     assert.match((await run(["drive", "delete", "--account", "g1"], s.port)).err, /drive delete needs --id/);
+    await run(["drive", "copy", "--account", "g1", "--id", "F1", "--name", "Report (EN)", "--to", "FOLDER9"], s.port);
+    assert.deepEqual(s.seen.body, { account: "g1", action: "drive.copy", args: { id: "F1", name: "Report (EN)", to: "FOLDER9" } });
+    await run(["drive", "copy", "--account", "g1", "--id", "F1"], s.port);
+    assert.deepEqual(s.seen.body.args, { id: "F1" }, "no name, no folder: beside the original as Copy of …");
+    assert.match((await run(["drive", "copy", "--account", "g1"], s.port)).err, /drive copy needs --id/);
   });
   await withStub(200, { status: "done", result: { id: "F1", status: "binned" } }, async (s) => {
     assert.equal((await run(["drive", "delete", "--account", "g1", "--id", "F1"], s.port)).out, "Moved to the bin. The person can restore it from there for about 30 days.\n");

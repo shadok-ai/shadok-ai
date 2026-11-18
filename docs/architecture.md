@@ -2273,8 +2273,24 @@ it under `<agent cwd>/drive-downloads/` through `writeNewAsUserArgv`
 (`group-exec.ts`) — `sh` + `dd conv=excl` as the agent's OS user in
 multi-tenant (invariant 60), so it lands only where the agent could write and
 never over an existing name or through a symlink. `actionVerdict` still
-refuses share / permissions / purge / copy by NAME
-(`DRIVE_REFUSED_SENTENCE`) — none exists in the table.
+refuses share / permissions / purge by NAME (`DRIVE_REFUSED_SENTENCE`) —
+none exists in the table.
+
+`drive.copy` (class `file-copy`, `files.copy`) was refused by name too until a
+real need came up: duplicating a formatted Doc to translate it, which a
+`doc create` + `doc edit` rebuild cannot do (fonts, margins, header, images are
+lost). A copy changes nothing that exists, and Drive gives it the destination
+folder's access, never the original's own sharing. So a copy left BESIDE the
+original (no `--to`, or its own folder — and a file merely shared with the
+account lands in the person's own Drive) reaches no one new and never asks;
+one put in ANOTHER folder lands in front of that folder's audience and follows
+the DRIVE setting (a card naming both folders and the copy's name). The copy
+joins `ownFiles` — edited without asking — ONLY when nobody else can see it
+(`copyIsPrivate`: its `permissionIds`, inherited ones included, are the owner
+alone; a missing list counts as shared). Otherwise an agent could copy a file
+beside itself in a shared folder, unasked, then rewrite the copy unasked: the
+one route to putting content before a team with no approval at all. Every
+other `ownFiles` entry is a file the cockpit created AND placed (the root).
 
 **Editing content** (`slides.edit`, `doc.edit`, `sheet.edit`, class
 `file-write`; `src/google-edits.ts`, pure). An agent sends `{id, ops[]}`;

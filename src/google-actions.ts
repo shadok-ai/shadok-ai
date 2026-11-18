@@ -27,6 +27,7 @@ import {
   fileNameVerdict,
   getFileMeta,
   MIME_FOLDER,
+  copyFile,
   moveFile,
   renameFile,
   trashFile,
@@ -82,11 +83,18 @@ import {
  * - `file-manage`: moves a file to the bin, into another folder, or renames
  *   it. ALWAYS the account's DRIVE setting, the cockpit's own files included:
  *   a file that vanishes or changes place is felt by whoever uses it.
+ * - `file-copy`: makes a copy of a file (`drive.copy`). Nothing existing
+ *   changes, so a copy left BESIDE the original (same folder, same audience)
+ *   never asks; one put in ANOTHER folder lands in front of whoever that folder
+ *   is shared with — the account's DRIVE setting. The copy becomes the
+ *   cockpit's own file (`ownFiles`, edited without asking) only when nobody
+ *   else can see it (`copyIsPrivate`); a copy in a shared folder stays foreign,
+ *   so its edits follow the DRIVE setting like anything in a shared folder.
  * - `mail`: sends email — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
  */
-export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "mail" | "calendar";
+export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "file-copy" | "mail" | "calendar";
 
 export const GOOGLE_ACTIONS = {
   "calendar.list": { class: "read", area: "calendar" },
@@ -101,6 +109,7 @@ export const GOOGLE_ACTIONS = {
   "drive.delete": { class: "file-manage", area: "drive" },
   "drive.move": { class: "file-manage", area: "drive" },
   "drive.rename": { class: "file-manage", area: "drive" },
+  "drive.copy": { class: "file-copy", area: "drive" },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "slides.read": { class: "read", area: "drive" },
   "slides.create": { class: "own-write", area: "drive" },
@@ -134,7 +143,9 @@ export const isGoogleAction = (v: unknown): v is GoogleAction => typeof v === "s
 export function actionSetting(account: Pick<ConnectedAccount, "policies">, action: GoogleAction, foreign = false): AccountPolicy | null {
   const p = googlePolicies(account);
   const c: GoogleActionClass = GOOGLE_ACTIONS[action].class;
-  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-manage" || (c === "file-write" && foreign) ? p.drive : null;
+  // A copy's setting applies only when it leaves the original's folder —
+  // decided in `runGoogleAction`, which knows where the original is.
+  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-manage" || c === "file-copy" || (c === "file-write" && foreign) ? p.drive : null;
 }
 
 const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail", drive_all: "All of Drive" };
@@ -165,7 +176,7 @@ export function writesForeignFile(account: Pick<ConnectedAccount, "scopes" | "id
 
 /** What no agent may do in a Drive, whatever the account allows: asked for by
  *  name, it gets this sentence rather than "unknown action". */
-const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy)$/;
+const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash)$/;
 export const DRIVE_REFUSED_SENTENCE =
   "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
@@ -231,6 +242,7 @@ export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | 
   if (p.op === "drive.delete") return `move ${where} to the bin`;
   if (p.op === "drive.move") return `move ${where} to folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
   if (p.op === "drive.rename") return `rename ${where} to "${p.newName ?? ""}"`;
+  if (p.op === "drive.copy") return `copy ${where}${p.newName ? ` as "${p.newName}"` : ""} into folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
   if (p.op === "doc.append") return `append ${[...(p.text ?? "")].length} characters to ${where}`;
   const n = p.rows?.length ?? 0;
   const rows = `${n} row${n === 1 ? "" : "s"}`;
@@ -329,7 +341,8 @@ function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: 
 
 type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName">;
 
-async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string }> {
+async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string; copy?: DriveFileMeta & { private: boolean } }> {
+  if (e.op === "drive.copy") return { copy: await copyFile(token, fileId, e.newName, e.toId, f) };
   if (e.op === "drive.delete") return trashFile(token, fileId, f).then(() => ({}));
   if (e.op === "drive.rename") return renameFile(token, fileId, e.newName ?? "", f).then(() => ({}));
   if (e.op === "drive.move") return moveFile(token, fileId, e.parentId, e.toId ?? "", f).then(() => ({}));
@@ -593,6 +606,41 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       }
       return { kind: "pending", action, payload, summary };
     }
+    case "drive.copy": {
+      const id = String(args.id ?? "");
+      const newName = args.name === undefined || args.name === null || args.name === "" ? undefined : fileNameVerdict(args.name);
+      const to = args.to === undefined || args.to === null || args.to === "" ? undefined : String(args.to);
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      if (meta.mimeType === MIME_FOLDER) throw new GoogleInputError("That is a folder: Drive copies files, not folders.");
+      let dest: DriveFileMeta | null = null;
+      if (to !== undefined) {
+        dest = await getFileMeta(token, to, f);
+        if (!dest || dest.mimeType !== MIME_FOLDER) throw new GoogleInputError(`'${to.slice(0, 60)}' is not a folder of this Drive.`);
+      }
+      // Beside the original (no --to, or its own folder): the copy reaches no
+      // one the original did not — no card. Elsewhere: the DRIVE setting.
+      const elsewhere = dest !== null && dest.id !== meta.parentId;
+      if (!elsewhere || setting === "autonomous") {
+        const copy = await copyFile(token, meta.id, newName, dest?.id, f);
+        // Edited without asking ONLY when nobody else can see it: a copy in a
+        // shared folder stays someone else's file to the Drive setting, or an
+        // agent could put content it controls before a whole team, unasked.
+        if (copy.private) deps.ownFiles.add(account.id, copy.id);
+        const summary = `copy "${meta.name.slice(0, 200)}" (${meta.id}) → "${copy.name.slice(0, 200)}" (${copy.id})`;
+        return { kind: "result", result: { id: copy.id, name: copy.name, ...(copy.link ? { link: copy.link } : {}), status: "copied", private: copy.private }, log: { summary, ...(copy.link ? { link: copy.link } : {}) } };
+      }
+      const parent = meta.parentId ? await getFileMeta(token, meta.parentId, f).catch(() => null) : null;
+      const payload: FilePayload = {
+        kind: "file", op: "drive.copy", fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners,
+        ...(meta.parentId ? { parentId: meta.parentId } : {}),
+        ...(parent ? { parentName: parent.name } : {}),
+        toId: dest!.id, toName: dest!.name,
+        ...(newName !== undefined ? { newName } : {}),
+      };
+      return { kind: "pending", action: "drive.copy", payload, summary: fileEditSummary(payload) };
+    }
     case "gmail.draft":
     case "gmail.send": {
       const fields = mailFieldsVerdict(args);
@@ -767,7 +815,13 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     // moved since, the person approved something else.
     const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename";
     if (manage && (file.name !== p.name || (file.parentId ?? "") !== (p.parentId ?? ""))) throw new GoogleInputError(FILE_CHANGED_SENTENCE);
-    await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
+    const r = await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
+    if (r.copy) {
+      // Approving the copy is not approving every later edit of it: own only
+      // when nobody else can see it (`copyIsPrivate`).
+      if (r.copy.private) deps.ownFiles.add(account.id, r.copy.id);
+      return { kind: "done", ...(r.copy.link ? { link: r.copy.link } : {}) };
+    }
     const link = file.link ?? p.link;
     return { kind: "done", ...(link ? { link } : {}) };
   }

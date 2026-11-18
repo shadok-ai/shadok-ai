@@ -70,7 +70,7 @@ export interface EventPayload {
  *  for a file the cockpit did not create — its own files are edited at once. */
 export interface FilePayload {
   kind: "file";
-  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename";
+  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename" | "drive.copy";
   fileId: string;
   /** The file's name and folder WHEN THE CARD WAS MADE; a bin / move / rename
    *  is applied only if both are still the same. */
@@ -79,10 +79,10 @@ export interface FilePayload {
   owners: string[];
   parentId?: string;
   parentName?: string;
-  /** drive.move: where it goes. */
+  /** drive.move / drive.copy: where it (or its copy) goes. */
   toId?: string;
   toName?: string;
-  /** drive.rename: what it becomes. */
+  /** drive.rename: what it becomes; drive.copy: the copy's name (absent = "Copy of …"). */
   newName?: string;
   /** doc.append: the text added at the end. */
   text?: string;
@@ -111,7 +111,7 @@ export interface EditPayload {
 
 export type DraftPayload = MailPayload | EventPayload | FilePayload | EditPayload;
 export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
-const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "slides.edit", "doc.edit", "sheet.edit"];
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "slides.edit", "doc.edit", "sheet.edit"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {

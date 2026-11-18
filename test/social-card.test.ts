@@ -428,6 +428,12 @@ test("Drive edit card: the file, its link, its owner, and exactly what will be w
   assert.equal(mv.actions[0].label, "Move the file");
   const rn = draftCardModel(fileDraft({ op: "drive.rename", newName: "Roadmap 2027" }));
   assert.deepEqual(rn.fields.slice(-3), [{ label: "In folder", value: "(none — shared with this account)" }, { label: "New name", value: "Roadmap 2027" }, { label: "Change", value: "Renamed" }]);
+  const cp = draftCardModel(fileDraft({ op: "drive.copy", parentId: "D1", parentName: "Projects", toId: "D2", toName: "Shared with clients" }));
+  assert.equal(cp.title, "Copy a Drive file into another folder — ana@example.org");
+  assert.deepEqual(cp.fields.slice(-4).map((x: { label: string }) => x.label), ["In folder", "Copy goes to", "Copy's name", "Change"]);
+  assert.equal(cp.fields.at(-2).value, "Copy of Team roadmap", "Google's own default name, shown");
+  assert.match(cp.fields.at(-1).value, /original is not changed/);
+  assert.equal(cp.text, "");
   assert.equal(draftCardModel(fileDraft({ op: "drive.delete" }, { status: "published" })).statusLine, "Moved to the bin.");
   // A link that is not http(s) never becomes one.
   assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x", link: "javascript:alert(1)" })).fields.some((f: { label: string }) => f.label === "Link"), false);
