@@ -21,6 +21,11 @@ export const GOOGLE_AREA_CHOICES = [
   { key: "gmail_read", label: "Read Gmail", hint: "search and read the mailbox", defaultOn: false },
   // Off by default too: every file of the Drive, the shared ones included.
   { key: "drive_all", label: "All of Drive", hint: "search, read, download, edit, rename, move and bin every file of the Drive, shared ones included — changes ask first", defaultOn: false },
+  // Off by default: filing the person's mail. Includes reading it (Google's
+  // own scope does), never deleting for good.
+  { key: "gmail_modify", label: "Triage Gmail", hint: "read the mailbox, archive, mark read or unread, star, label and bin messages — never delete for good", defaultOn: false },
+  // Off by default: other people's availability.
+  { key: "calendar_freebusy", label: "Others' free/busy", hint: "see when the people you meet are busy (times only, never what), to find a slot", defaultOn: false },
 ];
 
 /**
@@ -138,7 +143,29 @@ const EVENT_OPS = {
   create: { head: "New calendar event", go: "Add to calendar", wait: "nothing is added until someone approves it", done: "Added to the calendar" },
   update: { head: "Change to a calendar event", go: "Apply the change", wait: "nothing changes until someone approves it", done: "Event changed" },
   delete: { head: "Delete a calendar event", go: "Delete the event", wait: "the event stays until someone approves it", done: "Event deleted" },
+  respond: { head: "Answer an invitation", go: "Send the answer", wait: "no answer is sent until someone approves it", done: "Answer sent" },
 };
+
+/** What an invitation answer says, as Google's own buttons say it. */
+const RSVP_WORDS = { accepted: "Yes — accept", declined: "No — decline", tentative: "Maybe" };
+
+/** A checked RRULE in words (the server's `describeRrule`, same rules): the
+ *  card says what the person approves, the raw rule follows it. */
+export function rruleWords(rule) {
+  if (typeof rule !== "string" || !rule) return "";
+  const kv = new Map(rule.replace(/^RRULE:/i, "").split(";").map((p) => p.split("=")));
+  const n = Number(kv.get("INTERVAL") || "1");
+  const noun = { DAILY: "day", WEEKLY: "week", MONTHLY: "month", YEARLY: "year" }[kv.get("FREQ")] || "time";
+  const parts = [n > 1 ? `every ${n} ${noun}s` : `every ${noun}`];
+  if (kv.get("BYDAY")) parts.push("on " + kv.get("BYDAY").split(",").join(", "));
+  if (kv.get("BYMONTHDAY")) parts.push("on day " + kv.get("BYMONTHDAY").split(",").join(", "));
+  if (kv.get("BYMONTH")) parts.push("in month " + kv.get("BYMONTH").split(",").join(", "));
+  const until = kv.get("UNTIL");
+  if (kv.get("COUNT")) parts.push(kv.get("COUNT") + (kv.get("COUNT") === "1" ? " time" : " times"));
+  else if (until) parts.push(`until ${until.slice(0, 4)}-${until.slice(4, 6)}-${until.slice(6, 8)}`);
+  else parts.push("with no end");
+  return parts.join(", ") + " (" + rule.replace(/^RRULE:/i, "") + ")";
+}
 
 /**
  * The approval card of a Google action: an EMAIL (from, to/cc/bcc, subject,
@@ -256,8 +283,21 @@ function googleCardModel(d) {
       fields.push({ label: "Starts", value: eventWhen(e.start, e.timeZone) });
       fields.push({ label: "Ends", value: eventWhen(e.end, e.timeZone) });
     }
+    // A repeating event: does this reach one occurrence, or every one?
+    if (e.scope === "series") fields.push({ label: "Applies to", value: "every occurrence of the series" });
+    else if (e.scope === "occurrence") fields.push({ label: "Applies to", value: "this occurrence only" + (e.occurrence ? ` (${eventWhen(e.occurrence, e.timeZone)})` : "") + " — the rest of the series stays as it is" });
+    if (e.recurrence) fields.push({ label: "Repeats", value: rruleWords(e.recurrence) });
+    if (e.op === "respond") {
+      fields.push({ label: "Your answer", value: RSVP_WORDS[e.response] || String(e.response || "") });
+      fields.push({ label: "Organizer", value: (e.organizer ? String(e.organizer) : "(unknown)") + " — Google tells them" });
+    }
     const who = strs(e.attendees);
-    if (who.length) fields.push({ label: "Attendees", value: who.join(", ") + " — Google will email them" });
+    // An answer reaches the organizer only; everyone else is listed for context.
+    if (who.length) fields.push({ label: e.op === "respond" ? "Guests" : "Attendees", value: who.join(", ") + (e.op === "respond" ? "" : " — Google will email them") });
+    if (strs(e.added).length) fields.push({ label: "Added", value: strs(e.added).join(", ") + " — invited by this change" });
+    if (strs(e.removed).length) fields.push({ label: "Removed", value: strs(e.removed).join(", ") + " — taken off the guest list (Google tells them)" });
+    if (e.addMeet) fields.push({ label: "Video call", value: "a Google Meet link is added — anyone with the link can ask to join" });
+    else if (safeUrl(e.meetLink)) fields.push({ label: "Video call", value: e.meetLink, href: safeUrl(e.meetLink) });
     if (e.location) fields.push({ label: "Location", value: String(e.location) });
     if (e.color) fields.push({ label: "Colour", value: e.color === "default" ? "the calendar's colour" : String(e.color) });
     if (e.calendarId && e.calendarId !== "primary") fields.push({ label: "Calendar", value: String(e.calendarId) });
@@ -271,7 +311,7 @@ function googleCardModel(d) {
   else if (status === "publishing") statusLine = kind === "mail" ? "Sending…" : "Applying…";
   else if (status === "published") statusLine = done + (link ? " — " + link : ".");
   else if (status === "discarded") statusLine = "Discarded by " + (d.decidedBy || "someone") + " — nothing left the account.";
-  else if (status === "expired") statusLine = kind === "mail" ? "Expired — this email was never sent." : kind === "file" ? "Expired — the file was not changed." : "Expired — the calendar was not changed.";
+  else if (status === "expired") statusLine = kind === "mail" ? "Expired — this email was never sent." : kind === "file" ? "Expired — the file was not changed." : (d.event && d.event.op === "respond") ? "Expired — no answer was sent." : "Expired — the calendar was not changed.";
   else if (status === "gone") statusLine = "This draft is no longer in Gmail — deleted there, or already sent from Gmail. The cockpit sent nothing.";
   else if (status === "failed") statusLine = d.error || "This could not be completed.";
   else statusLine = status;

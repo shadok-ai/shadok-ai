@@ -32,6 +32,11 @@ export const GOOGLE_AREAS = {
   // The WHOLE Drive, read and write — apart from `drive` (drive.file, only
   // the files the cockpit created). Restricted scope: ticked on purpose.
   drive_all: ["https://www.googleapis.com/auth/drive"],
+  // Triage of the person's own mailbox: archive, read/unread, star, labels,
+  // the bin. Restricted scope — ticked on purpose, like reading mail.
+  gmail_modify: ["https://www.googleapis.com/auth/gmail.modify"],
+  // Free/busy of other people's calendars (start/end only). Sensitive scope.
+  calendar_freebusy: ["https://www.googleapis.com/auth/calendar.events.freebusy"],
 } as const;
 export type GoogleArea = keyof typeof GOOGLE_AREAS;
 const GOOGLE_IDENTITY = ["openid", "email", "profile"];

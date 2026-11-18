@@ -12,6 +12,32 @@ import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, ed
 import {
   GoogleError,
   GoogleInputError,
+  attendeeChangeVerdict,
+  attachmentPickVerdict,
+  forwardBody,
+  forwardSource,
+  forwardSubject,
+  freeBusyIdsVerdict,
+  freeBusyQuery,
+  freeOptionsVerdict,
+  freeSlots,
+  getMailAttachment,
+  listGmailLabels,
+  mailTargetVerdict,
+  modifyGmail,
+  ownAddresses,
+  ownBusy,
+  recipientsVerdict,
+  replyAllRecipients,
+  resolveLabels,
+  respondEvent,
+  rsvpVerdict,
+  trashGmail,
+  zonedIso,
+  addrSpecs,
+  type EventPatch,
+  type MailFields,
+  type MailTarget,
   MAX_ATTACHMENTS_BYTES,
   MIME_DOC,
   MIME_SHEET,
@@ -112,11 +138,18 @@ import {
  *   existing changes, so at the top of the Drive or in a folder only the
  *   person can see they never ask; in a folder others can see, the DRIVE
  *   setting. Own (`ownFiles`) only when private, by the same rule.
- * - `mail`: sends email — the account's MAIL setting.
+ * - `mailbox`: triage of the person's OWN mailbox (`gmail_modify`): archive,
+ *   read/unread, star, labels, the bin. Never asks, always logged: it changes
+ *   how the person's own mail is filed and nothing anyone else sees — no mail
+ *   leaves, no sender is told, and every move is undone from Gmail (the bin
+ *   keeps a message 30 days; nothing deletes for good). An approval card for
+ *   "mark as read" would train the person to click through cards — the very
+ *   habit the cards that DO reach other people depend on not forming.
+ * - `mail`: sends email (a forward too) — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
  */
-export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "file-copy" | "mail" | "calendar";
+export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "file-copy" | "mailbox" | "mail" | "calendar";
 
 export const GOOGLE_ACTIONS = {
   "calendar.list": { class: "read", area: "calendar" },
@@ -125,6 +158,13 @@ export const GOOGLE_ACTIONS = {
   "sheet.read": { class: "read", area: "drive" },
   "gmail.search": { class: "read", area: "gmail_read", audit: true },
   "gmail.read": { class: "read", area: "gmail_read", audit: true },
+  "gmail.attachment": { class: "read", area: "gmail_read", audit: true },
+  "gmail.labels": { class: "read", area: "gmail_read" },
+  "gmail.archive": { class: "mailbox", area: "gmail_modify" },
+  "gmail.mark": { class: "mailbox", area: "gmail_modify" },
+  "gmail.star": { class: "mailbox", area: "gmail_modify" },
+  "gmail.label": { class: "mailbox", area: "gmail_modify" },
+  "gmail.trash": { class: "mailbox", area: "gmail_modify" },
   "drive.search": { class: "read", area: "drive_all", audit: true },
   "drive.read": { class: "read", area: "drive_all", audit: true },
   "drive.download": { class: "read", area: "drive", audit: true },
@@ -153,9 +193,12 @@ export const GOOGLE_ACTIONS = {
   "sheet.append": { class: "file-write", area: "drive" },
   "sheet.update": { class: "file-write", area: "drive" },
   "gmail.send": { class: "mail", area: "gmail" },
+  "gmail.forward": { class: "mail", area: "gmail" },
   "calendar.create": { class: "calendar", area: "calendar" },
   "calendar.update": { class: "calendar", area: "calendar" },
   "calendar.delete": { class: "calendar", area: "calendar" },
+  "calendar.respond": { class: "calendar", area: "calendar" },
+  "calendar.free": { class: "read", area: "calendar" },
 } as const satisfies Record<string, { class: GoogleActionClass; area: GoogleArea | "url"; audit?: boolean }>;
 
 /** Does this action go in the account's log? Everything but a plain read. */
@@ -179,12 +222,22 @@ export function actionSetting(account: Pick<ConnectedAccount, "policies">, actio
   return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-manage" || c === "file-copy" || (c === "file-write" && foreign) ? p.drive : null;
 }
 
-const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail", drive_all: "All of Drive" };
+const AREA_LABEL: Record<GoogleArea, string> = {
+  calendar: "Calendar",
+  drive: "Drive files",
+  gmail: "Gmail",
+  gmail_read: "Read Gmail",
+  drive_all: "All of Drive",
+  gmail_modify: "Triage Gmail",
+  calendar_freebusy: "Others' free/busy",
+};
 
-/** Does the account hold this area? The whole Drive includes the cockpit's own files. */
+/** Does the account hold this area? The whole Drive includes the cockpit's
+ *  own files; triaging Gmail (gmail.modify) includes reading it — Google's
+ *  own consent screen says "view and modify", and the token can read. */
 export function areaHeld(account: Pick<ConnectedAccount, "scopes">, area: GoogleArea): boolean {
   const g = grantedAreas(account);
-  return g.includes(area) || (area === "drive" && g.includes("drive_all"));
+  return g.includes(area) || (area === "drive" && g.includes("drive_all")) || (area === "gmail_read" && g.includes("gmail_modify"));
 }
 
 /**
@@ -211,12 +264,18 @@ const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|
 export const DRIVE_REFUSED_SENTENCE =
   "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
+/** The mail twin: nothing deletes mail for good, whatever the account holds. */
+const MAIL_REFUSED = /^gmail\.(delete|purge|destroy|erase|batchdelete|emptytrash|empty-trash|spam|filter|filters|forwarding|settings)$/;
+export const MAIL_REFUSED_SENTENCE =
+  "Not available to agents: deleting mail for good, reporting spam, and changing Gmail's settings (filters, forwarding). `gmail trash` moves a message to the bin, where the person can restore it for 30 days — the rest is for the person to do in Gmail.";
+
 /** Is this an action we know, on an area Google GRANTED to this account? */
 export function actionVerdict(
   account: Pick<ConnectedAccount, "scopes" | "label" | "owner">,
   action: unknown,
 ): { ok: true; action: GoogleAction } | { ok: false; status: number; reason: string } {
   if (typeof action === "string" && REFUSED.test(action)) return { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE };
+  if (typeof action === "string" && MAIL_REFUSED.test(action)) return { ok: false, status: 403, reason: MAIL_REFUSED_SENTENCE };
   if (!isGoogleAction(action)) return { ok: false, status: 400, reason: `Unknown Google action '${String(action).slice(0, 40)}'.` };
   const area: GoogleArea | "url" = GOOGLE_ACTIONS[action].area;
   if (area !== "url" && !areaHeld(account, area)) {
@@ -242,11 +301,14 @@ export interface GoogleDeps {
   ownGmailDrafts: { has: (accountId: string, draftId: string) => boolean; add: (accountId: string, draftId: string) => void };
   /** Write a NEW file into the requesting agent's working directory, with
    *  the AGENT's rights (invariant 60); returns the absolute path. */
-  writeFile: (fileName: string, bytes: Buffer) => Promise<string>;
+  writeFile: (fileName: string, bytes: Buffer, folder?: DownloadFolder) => Promise<string>;
   /** The Drive files `doc create` / `sheet create` made for an account,
    *  oldest first — what tells the cockpit's own files from the rest of a Drive. */
   ownFiles: { has: (accountId: string, fileId: string) => boolean; add: (accountId: string, fileId: string) => void; list: (accountId: string) => readonly string[] };
 }
+
+/** Where a download lands under the agent's working directory: a closed list. */
+export type DownloadFolder = "drive-downloads" | "mail-attachments";
 
 export type ActionOutcome =
   /** Done at once. `log` is absent for a plain read (it leaves nothing). */
@@ -317,7 +379,7 @@ async function readAttachments(deps: GoogleDeps, raw: unknown): Promise<MailAtta
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 const calendarOf = (args: Record<string, unknown>) => str(args.calendar) ?? "primary";
 
-function eventPayload(op: EventPayload["op"], calendarId: string, e: Partial<EventView> & Pick<EventFields, "title" | "start" | "end">, extra: Partial<EventPayload> = {}): EventPayload {
+function eventPayload(op: EventPayload["op"], calendarId: string, e: Omit<Partial<EventView>, "meet"> & Pick<EventFields, "title" | "start" | "end"> & { meet?: unknown }, extra: Partial<EventPayload> = {}): EventPayload {
   return {
     kind: "event",
     op,
@@ -333,6 +395,8 @@ function eventPayload(op: EventPayload["op"], calendarId: string, e: Partial<Eve
     // card names the colour only when it says something — an own colour, or
     // an update that takes one away.
     ...(e.color && (e.color !== "default" || extra.patch?.color === "default") ? { color: e.color } : {}),
+    ...(e.meet === true ? { addMeet: true } : typeof e.meet === "string" ? { meetLink: e.meet } : {}),
+    ...(e.recurrence ? { recurrence: e.recurrence } : {}),
     ...extra,
   };
 }
@@ -808,7 +872,10 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
     }
     case "gmail.draft":
     case "gmail.send": {
-      const fields = mailFieldsVerdict(args);
+      const replyAll = args.replyAll === true;
+      const replyTo = str(args.replyTo);
+      if (replyAll && !replyTo) throw new GoogleInputError("--reply-all goes with --reply <message id>: it fills the recipients from that message.");
+      const fields = mailFieldsVerdict(args, { recipientsLater: replyAll });
       const replace = action === "gmail.draft" ? str(args.update) : undefined;
       // A draft waiting on an approval card is what a person is about to send:
       // the agent may not rewrite it under them. Only a new `send` makes a new card.
@@ -822,51 +889,150 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
         throw new GoogleInputError("That Gmail draft was not created by this cockpit for this account, so it cannot be rewritten — make a new one with `gmail draft`.");
       }
       const attachments = await readAttachments(deps, args.attachments);
-      const names = attachments.map((a) => a.name);
-      const token = await deps.token(account.id);
       // A reply goes in the original's conversation. Finding the original's
       // ids means READING a message, which only `gmail_read` may do.
-      const replyTo = str(args.replyTo);
+      if (replyTo && !areaHeld(account, "gmail_read")) {
+        throw new GoogleInputError(`Replying in a thread needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, send a new email instead.`);
+      }
+      if (args.signature === true) needReadGmail(account, "Adding the Gmail signature", "write the signature into the body yourself");
+      const token = await deps.token(account.id);
       let threadId: string | undefined;
       if (replyTo) {
-        if (!areaHeld(account, "gmail_read")) {
-          throw new GoogleInputError(`Replying in a thread needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, send a new email instead.`);
-        }
         const t = await replyTarget(token, replyTo, f);
         fields.inReplyTo = t.inReplyTo;
         fields.references = t.references;
         threadId = t.threadId;
-      }
-      // The person's signature, which Gmail never adds to mail an API creates.
-      // Reading it is reading their settings: `gmail_read` (gmail.readonly).
-      if (args.signature === true) {
-        if (!areaHeld(account, "gmail_read")) {
-          throw new GoogleInputError(`Adding the Gmail signature needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, write the signature into the body yourself.`);
+        if (replyAll) {
+          // Gmail's own reply-all: the original's sender and recipients, minus
+          // every address of the person. Added to what the agent named.
+          const all = replyAllRecipients(t.headers, await ownAddresses(token, f));
+          const taken = new Set([...fields.to, ...fields.cc, ...fields.bcc].flatMap((x) => addrSpecs(x)));
+          const fresh = (l: string[]) => l.filter((a) => !taken.has(a) && (taken.add(a), true));
+          fields.to = [...fields.to, ...fresh(all.to)];
+          fields.cc = [...fields.cc, ...fresh(all.cc)];
+          recipientsVerdict(fields);
         }
-        const sig = await gmailSignature(token, f);
-        if (!sig) throw new GoogleInputError(`Google account '${account.label}' has no Gmail signature set — nothing to add. Send without --signature, or ask ${account.owner} to set one in Gmail's settings.`);
-        fields.signature = sig;
       }
-      const raw = rawMessage(buildMime(fields, attachments));
-      const summary = mailSummary(fields) + (replyTo ? " (reply)" : "") + (fields.signature ? " (signed)" : "");
+      if (args.signature === true) await addSignature(token, account, fields, f);
+      const summary = mailSummary(fields) + (replyTo ? (replyAll ? " (reply all)" : " (reply)") : "") + (fields.signature ? " (signed)" : "");
       if (action === "gmail.draft") {
+        const raw = rawMessage(buildMime(fields, attachments));
         const d = replace ? await updateGmailDraft(token, replace, raw, f, threadId) : await createGmailDraft(token, raw, f, threadId);
         if (!replace) deps.ownGmailDrafts.add(account.id, d.id);
-        return { kind: "result", result: { draftId: d.id, status: "draft" }, log: { summary: `draft ${summary}` } };
+        return { kind: "result", result: { draftId: d.id, status: "draft", to: fields.to, cc: fields.cc }, log: { summary: `draft ${summary}` } };
       }
-      if (setting === "autonomous") {
-        const sent = await sendGmailMessage(token, raw, f, threadId);
-        return { kind: "result", result: { status: "sent", messageId: sent.id }, log: { summary } };
+      return deliverMail(deps, account, token, setting, fields, attachments, summary, threadId);
+    }
+    case "gmail.forward": {
+      const id = str(args.id);
+      if (!id) throw new GoogleInputError("Say which message to forward: --id <message id> (see `gmail search`).");
+      const note = args.body === undefined || args.body === null ? "" : args.body;
+      if (typeof note !== "string") throw new GoogleInputError("The note above a forward must be text.");
+      // Recipients (and a subject, when given) are checked like any email's;
+      // the body is the forwarded message, built below.
+      const fields = mailFieldsVerdict({ ...args, subject: args.subject ?? "Fwd", body: "-" });
+      const ownSubject = typeof args.subject === "string" && args.subject.trim() ? fields.subject : undefined;
+      // Forwarding means READING the original — text and attachments.
+      needReadGmail(account, "Forwarding a message", "write a new email instead");
+      if (args.signature === true) needReadGmail(account, "Adding the Gmail signature", "write the signature into the note yourself");
+      const token = await deps.token(account.id);
+      const src = await forwardSource(token, id, f);
+      fields.subject = ownSubject ?? forwardSubject(src.subject);
+      fields.body = forwardBody(note, src);
+      if (args.signature === true) await addSignature(token, account, fields, f);
+      const summary = `${mailSummary(fields)} (forward of ${id}${src.attachments.length ? `, ${src.attachments.length} attachment${src.attachments.length === 1 ? "" : "s"}` : ""})`;
+      return deliverMail(deps, account, token, setting, fields, src.attachments, summary);
+    }
+    case "gmail.attachment": {
+      // Which attachment, checked before a token is fetched.
+      attachmentPickVerdict({ index: args.index, name: args.name });
+      if (typeof args.id !== "string" || !args.id) throw new GoogleInputError("Say which message: --id <message id> (see `gmail search`).");
+      const r = await getMailAttachment(await deps.token(account.id), { id: args.id, index: args.index, name: args.name }, f);
+      let saved: string;
+      try {
+        saved = await deps.writeFile(r.fileName, r.bytes, "mail-attachments");
+      } catch {
+        throw new GoogleInputError("The attachment could not be written into this agent's working directory.");
       }
-      // With approval, the Gmail draft IS the draft: the person may open Gmail
-      // and edit it; the card's fingerprint is what Send compares against.
-      const d = await createGmailDraft(token, raw, f, threadId);
-      // The card shows, and fingerprints, the text part as built — signature
-      // included — which is what re-reading the Gmail draft gives back.
-      const { signature: _sig, ...shown } = fields;
-      const content: MailContent = { ...shown, body: mailPlainBody(fields), attachments: names };
-      const payload: MailPayload = { kind: "mail", from: account.label, ...content, gmailDraftId: d.id, fingerprint: mailFingerprint(content) };
-      return { kind: "pending", action: "gmail.send", payload, summary };
+      // Audited by message id and attachment number — never the name, which
+      // is the sender's words. The path carries that name: untrusted.
+      return {
+        kind: "result",
+        result: { kind: "attachment", messageId: r.messageId, attachment: r.attachment, path: saved, bytes: r.bytes.length, untrusted: true },
+        log: { summary: `attachment ${r.attachment.index} of message ${r.messageId} (${r.bytes.length} bytes)` },
+      };
+    }
+    case "gmail.labels": {
+      const labels = await listGmailLabels(await deps.token(account.id), f);
+      return { kind: "result", result: { labels } };
+    }
+    case "gmail.archive":
+    case "gmail.mark":
+    case "gmail.star":
+    case "gmail.label":
+    case "gmail.trash": {
+      const target = mailTargetVerdict({ ids: args.ids, threadId: args.threadId });
+      let add: string[] = [];
+      let remove: string[] = [];
+      let want: { add: string[]; remove: string[] } | null = null;
+      let what: string;
+      if (action === "gmail.archive") [remove, what] = [["INBOX"], "archive"];
+      else if (action === "gmail.mark") {
+        if (typeof args.read !== "boolean") throw new GoogleInputError("Say --read or --unread.");
+        [add, remove, what] = args.read ? [[], ["UNREAD"], "mark read"] : [["UNREAD"], [], "mark unread"];
+      } else if (action === "gmail.star") {
+        if (typeof args.star !== "boolean") throw new GoogleInputError("Say --on or --off (star or unstar).");
+        [add, remove, what] = args.star ? [["STARRED"], [], "star"] : [[], ["STARRED"], "unstar"];
+      } else if (action === "gmail.label") {
+        const names = (k: string) => {
+          const v = args[k] === undefined || args[k] === null ? [] : args[k];
+          if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x && x.length <= 200)) throw new GoogleInputError(`${k} must be a list of label names.`);
+          return v as string[];
+        };
+        want = { add: names("add"), remove: names("remove") };
+        if (!want.add.length && !want.remove.length) throw new GoogleInputError("Give a label to add (--add) or remove (--remove) — see `gmail labels`.");
+        what = "label";
+      } else what = "move to the bin";
+      const token = await deps.token(account.id);
+      if (want) {
+        const labels = await listGmailLabels(token, f);
+        add = resolveLabels(want.add, labels);
+        remove = resolveLabels(want.remove, labels);
+        const name = (id: string) => labels.find((l) => l.id === id)?.name ?? id;
+        what = [add.length ? `add ${add.map(name).join(", ")}` : "", remove.length ? `remove ${remove.map(name).join(", ")}` : ""].filter(Boolean).join("; ");
+      }
+      if (action === "gmail.trash") await trashGmail(token, target, f);
+      else await modifyGmail(token, target, add, remove, f);
+      // Logged by ids, never by subject: what was filed, not what it said.
+      return { kind: "result", result: { status: "done", ...("threadId" in target ? { threadId: target.threadId } : { ids: target.ids }) }, log: { summary: `${what} — ${targetLine(target)}` } };
+    }
+    case "calendar.free": {
+      const o = freeOptionsVerdict({ from: args.from, to: args.to, minutes: args.minutes, dayStart: args.dayStart, dayEnd: args.dayEnd, timeZone: args.timeZone, weekends: args.weekends }, deps.now());
+      const ids = args.with === undefined || args.with === null ? [] : freeBusyIdsVerdict(args.with);
+      // The person's OWN free time is read from their events (calendar.events);
+      // anyone else's needs the free/busy area.
+      if (ids.length && !areaHeld(account, "calendar_freebusy")) {
+        throw new GoogleInputError(`Seeing other people's free/busy needs the Others' free/busy area, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick it. Without it, \`calendar free\` finds the person's own free time only.`);
+      }
+      const token = await deps.token(account.id);
+      const own = await ownBusy(token, o.from, o.to, f);
+      const timeZone = o.timeZone ?? own.timeZone ?? "UTC";
+      const others = ids.length ? await freeBusyQuery(token, ids, o.from, o.to, f) : [];
+      const busy = [...own.busy, ...others.flatMap((c) => c.busy)];
+      const slots = freeSlots(busy, { ...o, timeZone }).map((s) => ({ start: zonedIso(s.start, timeZone), end: zonedIso(s.end, timeZone), minutes: Math.round((s.end - s.start) / 60_000) }));
+      const result = {
+        timeZone,
+        from: zonedIso(o.from, timeZone),
+        to: zonedIso(o.to, timeZone),
+        dayStart: o.dayStart,
+        dayEnd: o.dayEnd,
+        minutes: o.minutes,
+        slots,
+        calendars: others.map((c) => ({ id: c.id, busy: c.busy.map((b) => ({ start: zonedIso(b.start, timeZone), end: zonedIso(b.end, timeZone) })), ...(c.error ? { error: c.error } : {}) })),
+      };
+      // Other people's availability is logged (whose, over which window); the
+      // person's own is a plain read, like `calendar list`.
+      return { kind: "result", result, ...(ids.length ? { log: { summary: `free/busy of ${ids.join(", ")} — ${result.from} → ${result.to}` } } : {}) };
     }
     case "calendar.create": {
       const fields = eventFieldsVerdict(args) as EventFields;
@@ -878,32 +1044,154 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       return { kind: "pending", action: "calendar.create", payload: eventPayload("create", calendarId, fields), summary: eventSummary("create", fields) };
     }
     case "calendar.update":
-    case "calendar.delete": {
+    case "calendar.delete":
+    case "calendar.respond": {
       const calendarId = calendarOf(args);
       const eventId = String(args.event ?? "");
-      const patch = action === "calendar.update" ? eventFieldsVerdict(args, true) : null;
+      // `--attendee` on an update used to REPLACE the whole guest list, which
+      // silently dropped everyone not repeated: replacing is now explicit.
+      if (action === "calendar.update" && args.attendees !== undefined && args.attendees !== null && args.replaceAttendees !== true) {
+        throw new GoogleInputError("To change the guests of an event use --add-attendee / --remove-attendee. Replacing the whole list needs --attendee together with --replace-attendees.");
+      }
+      const change = action === "calendar.update" ? attendeeChangeVerdict(args) : { add: [], remove: [] };
+      const changesGuests = change.add.length + change.remove.length > 0;
+      const patch = action === "calendar.update" ? eventFieldsVerdict(args, true, changesGuests) : null;
+      const response = action === "calendar.respond" ? rsvpVerdict(args.response) : null;
+      const series = args.series === true;
       const token = await deps.token(account.id);
       // The event as it is now: what the card shows for a delete, and what an
       // update is merged over so the card shows the event as it WILL be.
-      const current = await getEvent(token, calendarId, eventId, f);
-      if (!current) throw new GoogleInputError(`No event '${eventId.slice(0, 60)}' in that calendar. Run \`calendar list\` to find its id.`);
+      const given = await getEvent(token, calendarId, eventId, f);
+      if (!given) throw new GoogleInputError(`No event '${eventId.slice(0, 60)}' in that calendar. Run \`calendar list\` to find its id.`);
+      // A repeating event: an occurrence id (what `calendar list` prints)
+      // changes that occurrence; `--series` reaches the whole series, through
+      // the series' own id. The card says which.
+      let current: EventView = given;
+      let targetId = eventId;
+      let scope: EventPayload["scope"];
+      if (series) {
+        if (given.recurringEventId) {
+          const master = await getEvent(token, calendarId, given.recurringEventId, f);
+          if (!master) throw new GoogleInputError("The series this occurrence belongs to is no longer there.");
+          current = master;
+          targetId = given.recurringEventId;
+        } else if (!given.recurrence) throw new GoogleInputError("That event does not repeat — drop --series.");
+        scope = "series";
+      } else if (given.recurringEventId) scope = "occurrence";
+      else if (given.recurrence) scope = "series";
+      const occurrence = scope === "occurrence" ? { occurrence: given.start } : {};
       if (action === "calendar.delete") {
-        const summary = eventSummary("delete", current);
+        const summary = eventSummary("delete", current) + scopeNote(scope);
         if (setting === "autonomous") {
-          await deleteEvent(token, calendarId, eventId, f);
-          return { kind: "result", result: { status: "deleted", event: eventId }, log: { summary } };
+          await deleteEvent(token, calendarId, targetId, f);
+          return { kind: "result", result: { status: "deleted", event: targetId, ...(scope ? { scope } : {}) }, log: { summary } };
         }
-        return { kind: "pending", action: "calendar.delete", payload: eventPayload("delete", calendarId, current, { eventId }), summary };
+        return { kind: "pending", action: "calendar.delete", payload: eventPayload("delete", calendarId, current, { eventId: targetId, ...(scope ? { scope } : {}), ...occurrence }), summary };
       }
-      const next = { ...current, ...patch } as EventView;
-      const summary = eventSummary("update", next);
+      if (action === "calendar.respond") {
+        const me = (current.guests ?? []).find((g) => g.self);
+        if (!me) throw new GoogleInputError("The person is not on that event's guest list, so there is no invitation to answer.");
+        if (me.organizer) throw new GoogleInputError("The person organises that event — there is no invitation to answer.");
+        const summary = `respond ${response} to "${current.title}" ${current.start}${scopeNote(scope)}`;
+        if (setting === "autonomous") {
+          const e = await respondEvent(token, calendarId, targetId, response!, f);
+          return { kind: "result", result: { status: "responded", response, event: e }, log: { summary, ...(e.link ? { link: e.link } : {}) } };
+        }
+        return {
+          kind: "pending",
+          action: "calendar.respond",
+          payload: eventPayload("respond", calendarId, current, { eventId: targetId, response: response!, ...(current.organizer ? { organizer: current.organizer } : {}), ...(scope ? { scope } : {}), ...occurrence }),
+          summary,
+        };
+      }
+      const p = patch as Partial<EventFields>;
+      if (p.recurrence && scope === "occurrence") throw new GoogleInputError("How an event repeats belongs to the whole series: add --series to change it.");
+      if (p.meet && current.meet) throw new GoogleInputError("That event already has a Google Meet link — drop --meet.");
+      const guests = current.attendees.map((a) => a.toLowerCase());
+      const missing = change.remove.filter((a) => !guests.includes(a));
+      if (missing.length) throw new GoogleInputError(`'${missing[0]}' is not a guest of that event.`);
+      // What the card lists: the guests as they WILL be, and who is added or
+      // dropped — a replaced list included (the organizer always stays).
+      const organizerOf = new Set((current.guests ?? []).filter((g) => g.organizer).map((g) => g.email.toLowerCase()));
+      const base = p.attendees ? [...current.attendees.filter((a) => organizerOf.has(a.toLowerCase()) && !p.attendees!.includes(a.toLowerCase())), ...p.attendees] : current.attendees;
+      const now = base.map((a) => a.toLowerCase());
+      const added = [...(p.attendees ?? []), ...change.add].filter((a, i, l) => !guests.includes(a) && l.indexOf(a) === i);
+      const dropped = [...guests.filter((a) => !now.includes(a)), ...change.remove];
+      const attendees = [...base.filter((a) => !change.remove.includes(a.toLowerCase())), ...change.add.filter((a) => !now.includes(a))];
+      const { meet: _m, ...view } = current;
+      const next: Omit<EventView, "meet"> & { meet?: string | boolean } = { ...view, ...p, attendees, ...(p.meet ? { meet: true } : current.meet ? { meet: current.meet } : {}) };
+      const summary = eventSummary("update", next) + scopeNote(scope);
+      const sent: EventPatch = { ...p, ...(change.add.length ? { addAttendees: change.add } : {}), ...(change.remove.length ? { removeAttendees: change.remove } : {}) };
       if (setting === "autonomous") {
-        const e = await patchEvent(token, calendarId, eventId, patch as Partial<EventFields>, f);
-        return { kind: "result", result: { status: "updated", event: e }, log: { summary, link: e.link } };
+        const e = await patchEvent(token, calendarId, targetId, sent, f);
+        return { kind: "result", result: { status: "updated", event: e, ...(scope ? { scope } : {}) }, log: { summary, link: e.link } };
       }
-      return { kind: "pending", action: "calendar.update", payload: eventPayload("update", calendarId, next, { eventId, patch: patch as Record<string, unknown> }), summary };
+      return {
+        kind: "pending",
+        action: "calendar.update",
+        payload: eventPayload("update", calendarId, next, {
+          eventId: targetId,
+          patch: sent as Record<string, unknown>,
+          ...(scope ? { scope } : {}),
+          ...(added.length ? { added } : {}),
+          ...(dropped.length ? { removed: dropped } : {}),
+          ...occurrence,
+        }),
+        summary,
+      };
     }
   }
+}
+
+/** The Read-Gmail gate of a mail write that reads something first. */
+function needReadGmail(account: ConnectedAccount, what: string, instead: string): void {
+  if (!areaHeld(account, "gmail_read")) {
+    throw new GoogleInputError(`${what} needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, ${instead}.`);
+  }
+}
+
+/** The person's signature, which Gmail never adds to mail an API creates.
+ *  Reading it is reading their settings: `gmail_read` (gmail.readonly). */
+async function addSignature(token: string, account: ConnectedAccount, fields: MailFields, f: FetchFn): Promise<void> {
+  const sig = await gmailSignature(token, f);
+  if (!sig) throw new GoogleInputError(`Google account '${account.label}' has no Gmail signature set — nothing to add. Send without --signature, or ask ${account.owner} to set one in Gmail's settings.`);
+  fields.signature = sig;
+}
+
+/** Send now (MAIL setting automatic) or make the Gmail draft a person
+ *  approves — the one cycle every outgoing mail goes through, a forward too. */
+async function deliverMail(
+  deps: GoogleDeps,
+  account: ConnectedAccount,
+  token: string,
+  setting: AccountPolicy | null,
+  fields: MailFields,
+  attachments: readonly MailAttachment[],
+  summary: string,
+  threadId?: string,
+): Promise<ActionOutcome> {
+  const f = deps.fetchFn;
+  const raw = rawMessage(buildMime(fields, attachments));
+  if (setting === "autonomous") {
+    const sent = await sendGmailMessage(token, raw, f, threadId);
+    return { kind: "result", result: { status: "sent", messageId: sent.id, to: fields.to, cc: fields.cc }, log: { summary } };
+  }
+  // With approval, the Gmail draft IS the draft: the person may open Gmail
+  // and edit it; the card's fingerprint is what Send compares against.
+  const d = await createGmailDraft(token, raw, f, threadId);
+  // The card shows, and fingerprints, the text part as built — signature
+  // included — which is what re-reading the Gmail draft gives back.
+  const { signature: _sig, inReplyTo: _irt, references: _ref, ...shown } = fields;
+  const content: MailContent = { to: shown.to, cc: shown.cc, bcc: shown.bcc, subject: shown.subject, body: mailPlainBody(fields), attachments: attachments.map((a) => a.name) };
+  const payload: MailPayload = { kind: "mail", from: account.label, ...content, gmailDraftId: d.id, fingerprint: mailFingerprint(content) };
+  return { kind: "pending", action: "gmail.send", payload, summary, result: { to: fields.to, cc: fields.cc } };
+}
+
+const scopeNote = (scope: EventPayload["scope"]) => (scope === "series" ? " (whole series)" : scope === "occurrence" ? " (this occurrence)" : "");
+
+function targetLine(t: MailTarget): string {
+  if ("threadId" in t) return `thread ${t.threadId}`;
+  return `${t.ids.length} message${t.ids.length === 1 ? "" : "s"} (${t.ids.slice(0, 10).join(", ")}${t.ids.length > 10 ? ", …" : ""})`;
 }
 
 export type ApprovalOutcome =
@@ -1012,7 +1300,14 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     return { kind: "done", ...(e.link ? { link: e.link } : {}) };
   }
   if (p.op === "update") {
-    const e = await patchEvent(token, p.calendarId, p.eventId ?? "", (p.patch ?? {}) as Partial<EventFields>, deps.fetchFn);
+    // Attendee changes are re-applied to the guest list as it is NOW
+    // (`patchEvent` → `mergeAttendees`): an answer that came in since the
+    // card is kept, never overwritten by the card's snapshot.
+    const e = await patchEvent(token, p.calendarId, p.eventId ?? "", (p.patch ?? {}) as EventPatch, deps.fetchFn);
+    return { kind: "done", ...(e.link ? { link: e.link } : {}) };
+  }
+  if (p.op === "respond") {
+    const e = await respondEvent(token, p.calendarId, p.eventId ?? "", p.response ?? "accepted", deps.fetchFn);
     return { kind: "done", ...(e.link ? { link: e.link } : {}) };
   }
   await deleteEvent(token, p.calendarId, p.eventId ?? "", deps.fetchFn);

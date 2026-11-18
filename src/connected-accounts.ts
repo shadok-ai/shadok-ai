@@ -124,6 +124,12 @@ export const GOOGLE_AREA_SCOPES = {
   gmail_read: "https://www.googleapis.com/auth/gmail.readonly",
   // The whole Drive, read and write — never implied by `drive` (drive.file).
   drive_all: "https://www.googleapis.com/auth/drive",
+  // Triage of the person's own mailbox (archive, read state, star, labels,
+  // the bin — never a permanent delete). Restricted: ticked on purpose.
+  gmail_modify: "https://www.googleapis.com/auth/gmail.modify",
+  // Free/busy of OTHER people's calendars (start/end only, never a title).
+  // The person's own free time needs no such scope (events.list).
+  calendar_freebusy: "https://www.googleapis.com/auth/calendar.events.freebusy",
 } as const;
 /** What every broker that offers Google accepts; a broker that names its own
  *  list on `/health` (`googleAreas`) may accept more. */

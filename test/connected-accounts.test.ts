@@ -378,3 +378,10 @@ test("switching a setting to automatic is the owner's alone — never an admin o
   assert.equal(accountEditVerdict(a, person("bob", "admin"), "policy", { policy: "approve" }, groups).ok, false, "nor may an admin change it back");
   assert.equal(accountEditVerdict(a, agent("p-ann"), "policy", { policy: "autonomous" }, groups).ok, false, "an agent never changes a setting");
 });
+
+test("the two opt-in areas map back from Google's scopes, apart from the ones they resemble", () => {
+  assert.deepEqual(grantedAreas(gacct({ scopes: [GOOGLE_AREA_SCOPES.gmail_modify] })), ["gmail_modify"], "triage is never read as Read Gmail's scope");
+  assert.deepEqual(grantedAreas(gacct({ scopes: [GOOGLE_AREA_SCOPES.calendar_freebusy] })), ["calendar_freebusy"], "free/busy is not the calendar area");
+  assert.equal(GOOGLE_AREA_SCOPES.gmail_modify, "https://www.googleapis.com/auth/gmail.modify");
+  assert.equal(GOOGLE_AREA_SCOPES.calendar_freebusy, "https://www.googleapis.com/auth/calendar.events.freebusy");
+});

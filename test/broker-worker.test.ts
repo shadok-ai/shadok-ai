@@ -25,7 +25,7 @@ const mkState = (pub: string, over: Partial<ConnectState> = {}): ConnectState =>
 const get = (path: string) => worker.fetch(new Request(BASE + path), env);
 
 // What /health says a Google-enabled broker accepts at /google/start.
-const AREAS = ["calendar", "drive", "gmail", "gmail_read", "drive_all"];
+const AREAS = ["calendar", "drive", "gmail", "gmail_read", "drive_all", "gmail_modify", "calendar_freebusy"];
 
 test("/health lists the providers", async () => {
   const r = await get("/health");
