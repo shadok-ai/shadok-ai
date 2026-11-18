@@ -213,6 +213,35 @@ export interface MailFields {
    *  the person AND for the recipient's client, whatever the threadId says. */
   inReplyTo?: string;
   references?: string;
+  /** The person's Gmail signature (`gmailSignature`), appended by the builder.
+   *  Gmail adds it only to mail composed in its web UI, never to mail an API
+   *  creates — so without this every agent's email went out unsigned. */
+  signature?: MailSignature;
+}
+
+/** A Gmail signature: the HTML Gmail stores, and the same as plain text. */
+export interface MailSignature {
+  html: string;
+  text: string;
+}
+
+/** The usual signature delimiter ("-- " + newline), so mail clients can fold it. */
+const SIGNATURE_DELIMITER = "\n\n-- \n";
+
+/** The text/plain body exactly as built: the body, then the signature. Also
+ *  what the approval card shows and fingerprints, so a draft re-read from
+ *  Gmail (its text part) still matches the card. */
+export function mailPlainBody(f: Pick<MailFields, "body" | "signature">): string {
+  return f.signature?.text ? f.body + SIGNATURE_DELIMITER + f.signature.text : f.body;
+}
+
+const escHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** The text/html body when a signature is added: the agent's text escaped
+ *  (never interpreted as markup), then the signature as Gmail renders it. */
+export function mailHtmlBody(f: Pick<MailFields, "body" | "signature">): string {
+  const body = escHtml(f.body).replace(/\r?\n/g, "<br>\r\n");
+  return `<div dir="ltr">${body}</div>\r\n<br>\r\n<div dir="ltr" class="gmail_signature">${f.signature?.html ?? ""}</div>\r\n`;
 }
 
 export interface MailAttachment {
@@ -358,7 +387,15 @@ export function buildMime(fields: MailFields, attachments: readonly MailAttachme
     head.push(`In-Reply-To: ${fields.inReplyTo}`, `References: ${fields.references || fields.inReplyTo}`);
   }
   head.push("MIME-Version: 1.0");
-  const text = ['Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64", "", wrap76(Buffer.from(fields.body, "utf8").toString("base64"))];
+  const b64part = (type: string, content: string) => [`Content-Type: ${type}; charset="UTF-8"`, "Content-Transfer-Encoding: base64", "", wrap76(Buffer.from(content, "utf8").toString("base64"))];
+  // With a signature the mail is text + HTML (multipart/alternative): the
+  // signature is HTML (links, images, layout) and only an HTML part keeps it.
+  // Never `${boundary}-alt`: the outer delimiter would then be a PREFIX of
+  // the inner one, and a parser matching by prefix splits the wrong lines.
+  const alt = `alt-${boundary}`;
+  const text = fields.signature?.html
+    ? [`Content-Type: multipart/alternative; boundary="${alt}"`, "", `--${alt}`, ...b64part("text/plain", mailPlainBody(fields)), `--${alt}`, ...b64part("text/html", mailHtmlBody(fields)), `--${alt}--`]
+    : b64part("text/plain", mailPlainBody(fields));
   if (!attachments.length) return [...head, ...text].join("\r\n") + "\r\n";
   const parts = [`--${boundary}`, ...text];
   for (const at of attachments) {
@@ -610,6 +647,31 @@ export function replyHeaders(m: { threadId?: string; payload?: { headers?: { nam
   const prior = raw("references").split(/\s+/).filter((r) => MESSAGE_ID_RE.test(r) && r !== id);
   const references = [...prior.slice(-(MAX_REFERENCES - 1)), id].join(" ");
   return { threadId: m.threadId, inReplyTo: id, references, subject: decodeWords(raw("subject")).replace(/\s+/g, " ").trim() };
+}
+
+interface GmailSendAs {
+  sendAsEmail?: string;
+  signature?: string;
+  isPrimary?: boolean;
+  isDefault?: boolean;
+}
+
+/** Pure half of `gmailSignature`: the DEFAULT "From" address's signature
+ *  (the one Gmail itself would add), else the primary's; null when empty. */
+export function signatureOf(list: { sendAs?: GmailSendAs[] }): MailSignature | null {
+  const all = list.sendAs ?? [];
+  const pick = all.find((x) => x.isDefault) ?? all.find((x) => x.isPrimary);
+  const html = (pick?.signature ?? "").trim();
+  if (!html) return null;
+  const text = htmlToText(html).replace(/[ \t]+\n/g, "\n").trim();
+  return { html, text };
+}
+
+/** The person's Gmail signature, read from their settings (`settings.sendAs`
+ *  — readable with gmail.readonly, the `gmail_read` area; changing it would
+ *  need a restricted settings scope, which the cockpit does not ask for). */
+export async function gmailSignature(token: string, fetchFn: FetchFn): Promise<MailSignature | null> {
+  return signatureOf(await getJson<{ sendAs?: GmailSendAs[] }>("signature lookup", `${GMAIL}/settings/sendAs`, token, fetchFn));
 }
 
 // ---- Gmail, reading (the `gmail_read` area: gmail.readonly) --------------

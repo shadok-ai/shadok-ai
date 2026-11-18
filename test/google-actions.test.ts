@@ -654,3 +654,73 @@ test("--reply needs Read Gmail, and a message without a Message-ID is refused, n
   await assert.rejects(runGoogleAction(t.deps, t.account, "gmail.draft", { ...MAIL, replyTo: "m1" }), /no usable Message-ID/);
   assert.equal(t.g.drafts.size, 0);
 });
+
+// ── the Gmail signature (--signature) ──
+
+const SIG_HTML = '<div>Ana Example<br><a href="https://example.org">example.org</a> &amp; co</div>';
+function withSignature(g: ReturnType<typeof fakeGoogle>, signature = SIG_HTML) {
+  const bodies: Record<string, any>[] = [];
+  const inner = g.fetchFn;
+  const fetchFn = (async (input: unknown, init: RequestInit = {}) => {
+    if (new URL(String(input)).pathname === "/gmail/v1/users/me/settings/sendAs") {
+      g.calls.push("GET /gmail/v1/users/me/settings/sendAs");
+      return new Response(JSON.stringify({ sendAs: [
+        { sendAsEmail: "alias@example.org", signature: "<b>alias sig</b>" },
+        { sendAsEmail: "ana@example.org", isPrimary: true, isDefault: true, signature },
+      ] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (init.body) bodies.push(JSON.parse(String(init.body)));
+    return inner(input as string, init);
+  }) as FetchFn;
+  return { fetchFn, bodies };
+}
+
+test("gmail draft --signature puts the default address's Gmail signature under the text, as text and HTML", async () => {
+  const { g, deps, account } = setup();
+  const r = withSignature(g);
+  deps.fetchFn = r.fetchFn;
+  const out = await runGoogleAction(deps, account, "gmail.draft", { ...MAIL, body: "Hello <Bob>,\nsee you", signature: true });
+  assert.equal(out.kind, "result");
+  const mime = Buffer.from(r.bodies.find((b) => b.message?.raw)!.message.raw, "base64url").toString("utf8");
+  assert.match(mime, /Content-Type: multipart\/alternative; boundary="alt-/);
+  const part = (type: string) => {
+    const m = new RegExp(`Content-Type: ${type}; charset="UTF-8"\\r\\nContent-Transfer-Encoding: base64\\r\\n\\r\\n([A-Za-z0-9+/=\\r\\n]+)`).exec(mime);
+    return Buffer.from(m![1].replace(/\s+/g, ""), "base64").toString("utf8");
+  };
+  assert.equal(part("text/plain"), "Hello <Bob>,\nsee you\n\n-- \nAna Example\nexample.org & co");
+  const html = part("text/html");
+  assert.match(html, /Hello &lt;Bob&gt;,<br>/, "the agent's text is escaped, never markup");
+  assert.ok(html.includes(SIG_HTML), "the signature as Gmail stores it");
+  assert.ok(!html.includes("alias sig"), "the DEFAULT address's signature, not another alias's");
+});
+
+test("--signature with approval: the card shows the signed text, and an unchanged draft is still sent", async () => {
+  const s = setup();
+  const r = withSignature(s.g);
+  s.deps.fetchFn = r.fetchFn;
+  const out = await runGoogleAction(s.deps, s.account, "gmail.send", { ...MAIL, signature: true });
+  assert.equal(out.kind, "pending");
+  if (out.kind !== "pending") throw new Error("unreachable");
+  const payload = out.payload as MailPayload;
+  assert.match(payload.body, /\n-- \nAna Example/);
+  assert.match(out.summary, /\(signed\)/);
+  assert.ok(!("signature" in payload), "no HTML signature stored on the card");
+  const draft = makeDraft({ id: "d1d1d1d1", sessionId: "s1", accountId: s.account.id, text: out.summary, origin: "agent", now: NOW, provider: "google", action: out.action, payload: out.payload });
+  assert.deepEqual(await approveGoogleDraft(s.deps, s.account, draft), { kind: "done" }, "re-reading the draft matches the fingerprint");
+  assert.equal(s.g.sent.length, 1);
+});
+
+test("--signature needs Read Gmail, and an account without a signature is told so", async () => {
+  const draftsOnly = acct({ scopes: ["openid", GOOGLE_AREA_SCOPES.gmail] });
+  const s = setup(draftsOnly);
+  await assert.rejects(runGoogleAction(s.deps, draftsOnly, "gmail.draft", { ...MAIL, signature: true }), /needs Read Gmail/);
+  assert.equal(s.g.drafts.size, 0);
+  const t = setup();
+  t.deps.fetchFn = withSignature(t.g, "  ").fetchFn;
+  await assert.rejects(runGoogleAction(t.deps, t.account, "gmail.draft", { ...MAIL, signature: true }), /no Gmail signature/);
+  assert.equal(t.g.drafts.size, 0);
+  const u = setup();
+  u.deps.fetchFn = withSignature(u.g).fetchFn;
+  await runGoogleAction(u.deps, u.account, "gmail.draft", MAIL);
+  assert.ok(!u.g.calls.includes("GET /gmail/v1/users/me/settings/sendAs"), "no signature asked, none read");
+});

@@ -2331,6 +2331,28 @@ else's header) and `buildMime` re-checks them before writing. Reading the
 original needs `gmail_read`; `gmail.compose` cannot, so a reply without it is
 refused rather than silently sent as a new conversation.
 
+`--signature` appends the person's Gmail signature: Gmail adds it only to mail
+composed in its web UI, never to a message an API creates. `gmailSignature`
+reads `settings.sendAs` (gmail.readonly, so `gmail_read`; changing a
+signature would need the restricted `gmail.settings.basic`, which the cockpit
+does not ask for) and takes the default "From" address's. The mail then
+becomes multipart/alternative — text (`mailPlainBody`: body, `-- `, signature
+as text) and HTML (`mailHtmlBody`: the agent's text ESCAPED, then the
+signature HTML as Gmail stores it). The approval card shows and fingerprints
+`mailPlainBody`, which is what re-reading the Gmail draft yields, so an
+unchanged signed draft still sends at the first click.
+
+`--signature` appends the person's Gmail signature: Gmail adds it only to mail
+composed in its web UI, never to a message an API creates. `gmailSignature`
+reads `settings.sendAs` (gmail.readonly, so `gmail_read`; changing a
+signature would need the restricted `gmail.settings.basic`, which the cockpit
+does not ask for) and takes the default "From" address's. The mail then
+becomes multipart/alternative — text (`mailPlainBody`: body, `-- `, signature
+as text) and HTML (`mailHtmlBody`: the agent's text ESCAPED, then the
+signature HTML as Gmail stores it). The approval card shows and fingerprints
+`mailPlainBody`, which is what re-reading the Gmail draft yields, so an
+unchanged signed draft still sends at the first click.
+
 `actionVerdict` refuses an action whose area was not granted, naming who can
 reconnect and tick it. Under `approve` nothing leaves the account from the
 agent's route: `runGoogleAction` returns a `pending` outcome and the route

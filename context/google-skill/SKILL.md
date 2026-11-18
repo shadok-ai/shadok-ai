@@ -243,6 +243,14 @@ original's conversation — for the person and for the recipient. It needs
 `gmail_read` (finding the original is reading it); without it, say so and
 send a new email instead.
 
+**Their signature:** Gmail adds the person's signature only to mail written
+in Gmail itself, never to mail made here. Add `--signature` to `gmail draft` or
+`gmail send` and their Gmail signature (the default "From" address's) is put
+under your text, as Gmail would — don't type it into the body yourself. It
+needs `gmail_read` (the signature is read from their settings); without it, or
+if they have no signature, the command says so. The cockpit can READ the
+signature, never change it.
+
 `gmail draft` leaves a draft in their Gmail and sends nothing. `--update <draft id>`
 rewrites one made with `gmail draft` through this cockpit — never another
 draft of their mailbox, which is refused. Sheet cells are written as plain values: a cell starting
