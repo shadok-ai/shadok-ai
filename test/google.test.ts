@@ -36,6 +36,18 @@ import {
   mailMessageView,
   truncateBody,
   type FetchFn,
+  rruleVerdict,
+  describeRrule,
+  mergeAttendees,
+  replyAllRecipients,
+  freeSlots,
+  zonedInstant,
+  zonedIso,
+  busyFromEvents,
+  forwardSubject,
+  forwardBody,
+  attachmentParts,
+  resolveLabels,
 } from "../src/google.js";
 import type { ConnectedAccount } from "../src/connected-accounts.js";
 import { gmailPayloadFromMime } from "./fixtures/fake-gmail.js";
@@ -379,7 +391,7 @@ test("mailMessageView: text/plain wins over HTML, attachments by name and size o
   assert.equal(v.from, "Zoé <zoe@example.org>");
   assert.equal(v.cc, "bob@example.org");
   assert.equal(v.body, "plain text");
-  assert.deepEqual(v.attachments, [{ name: "plan.pdf", size: 2048 }]);
+  assert.deepEqual(v.attachments, [{ index: 1, name: "plan.pdf", size: 2048, mimeType: "application/pdf" }]);
   assert.equal(v.unread, false);
   assert.equal("data" in (v.attachments[0] as object), false, "no attachment content");
   const htmlOnly = mailMessageView({ payload: { mimeType: "text/html", body: { data: b64("<div>only <i>html</i></div>") } } });
@@ -404,4 +416,99 @@ test("event colour: written by name (any case) or number, 'default' clears it, a
   assert.deepEqual(eventFieldsVerdict({ color: "9" }, true), { color: "Blueberry" });
   assert.deepEqual(eventFieldsVerdict({ color: "Default" }, true), { color: "default" });
   assert.throws(() => eventFieldsVerdict({ color: "mauve" }, true), /not an event colour/);
+});
+
+// ---- Gmail helpers: attachments, forward, reply-all, labels ----------------
+
+test("attachmentParts: depth first, 1-based, the same walk the listing uses; inline bytes or an attachment id", () => {
+  const parts = attachmentParts({
+    mimeType: "multipart/mixed",
+    parts: [
+      { mimeType: "multipart/alternative", parts: [{ mimeType: "text/plain", body: { data: "eA" } }] },
+      { mimeType: "application/pdf", filename: "a.pdf", body: { attachmentId: "AID", size: 10 } },
+      { mimeType: "multipart/related", parts: [{ mimeType: "image/png", filename: "b.png", body: { data: "UE5H", size: 3 } }] },
+    ],
+  });
+  assert.deepEqual(parts, [
+    { index: 1, name: "a.pdf", mimeType: "application/pdf", size: 10, attachmentId: "AID" },
+    { index: 2, name: "b.png", mimeType: "image/png", size: 3, data: "UE5H" },
+  ]);
+});
+
+test("forward: Fwd: once, control characters gone; the body is the note then Gmail's forwarded block", () => {
+  assert.equal(forwardSubject("Plans"), "Fwd: Plans");
+  assert.equal(forwardSubject("Fwd: Plans"), "Fwd: Plans");
+  assert.equal(forwardSubject("TR: Plans"), "TR: Plans");
+  assert.equal(forwardSubject("a\u0007b"), "Fwd: a b");
+  assert.equal(forwardSubject(""), "Fwd: (no subject)");
+  assert.equal(forwardBody("", { from: "B <b@x.test>", date: "d", subject: "s", to: "a@x.test", cc: "", body: "hi" }), "---------- Forwarded message ---------\nFrom: B <b@x.test>\nDate: d\nSubject: s\nTo: a@x.test\n\nhi");
+});
+
+test("replyAllRecipients: Reply-To beats From, own addresses (any case) are dropped, a mail the person sent goes back to its recipients", () => {
+  const own = new Set(["ana@example.org", "ana.alias@example.org"]);
+  assert.deepEqual(replyAllRecipients({ from: "Bob <bob@example.org>", to: "ana@example.org, cat@example.org", cc: "Dan <dan@example.org>, ANA.ALIAS@example.org", replyTo: "" }, own), { to: ["bob@example.org", "cat@example.org"], cc: ["dan@example.org"] });
+  assert.deepEqual(replyAllRecipients({ from: "bob@example.org", to: "cat@example.org", cc: "cat@example.org", replyTo: "list@example.org" }, own), { to: ["list@example.org", "cat@example.org"], cc: [] }, "deduplicated across To and Cc");
+  assert.deepEqual(replyAllRecipients({ from: "Ana <ana@example.org>", to: "cat@example.org", cc: "", replyTo: "" }, own), { to: ["cat@example.org"], cc: [] }, "the person's own mail: to its recipients, not to themselves");
+  assert.deepEqual(replyAllRecipients({ from: "undisclosed-recipients:;", to: "", cc: "", replyTo: "" }, own), { to: [], cc: [] }, "nothing unusable slips in");
+});
+
+test("resolveLabels: by name (any case) or id; unknown and the system labels with their own command are refused", () => {
+  const labels = [{ id: "INBOX", name: "INBOX", type: "system" as const }, { id: "SPAM", name: "SPAM", type: "system" as const }, { id: "Label_1", name: "Clients", type: "user" as const }];
+  assert.deepEqual(resolveLabels(["clients", "INBOX", "Label_1"], labels), ["Label_1", "INBOX", "Label_1"]);
+  assert.throws(() => resolveLabels(["SPAM"], labels), /not set by `gmail label`/);
+  assert.throws(() => resolveLabels(["Nope"], labels), /No label 'Nope'/);
+});
+
+// ---- Calendar helpers: recurrence, guests, free time -----------------------
+
+test("rruleVerdict: a closed subset, upper-cased, RRULE: prefixed; anything the card could not say in words is refused", () => {
+  assert.equal(rruleVerdict("freq=daily;count=5"), "RRULE:FREQ=DAILY;COUNT=5");
+  assert.equal(rruleVerdict("RRULE:FREQ=MONTHLY;BYDAY=-1FR;UNTIL=20271231T235959Z"), "RRULE:FREQ=MONTHLY;BYDAY=-1FR;UNTIL=20271231T235959Z");
+  assert.equal(rruleVerdict("FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=-1"), "RRULE:FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=-1");
+  for (const bad of ["", "COUNT=3", "FREQ=SECONDLY", "FREQ=DAILY;FREQ=WEEKLY", "FREQ=DAILY;INTERVAL=0", "FREQ=DAILY;COUNT=731", "FREQ=DAILY;UNTIL=2027-01-01", "FREQ=WEEKLY;BYDAY=MON", "FREQ=MONTHLY;BYMONTHDAY=0", "FREQ=YEARLY;BYMONTH=13", "FREQ=DAILY;WKST=MO", "FREQ=DAILY\r\nRDATE:20270101", "FREQ=DAILY;COUNT=2;UNTIL=20270101", 7]) {
+    assert.throws(() => rruleVerdict(bad), /repeat rule is not accepted/, String(bad));
+  }
+  assert.equal(describeRrule("RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=10"), "every 2 weeks, on MO, WE, 10 times");
+  assert.equal(describeRrule("RRULE:FREQ=DAILY"), "every day, with no end");
+});
+
+test("mergeAttendees: current objects kept whole (answers survive); add, remove, and an explicit replace that keeps the organizer", () => {
+  const cur = [{ email: "Eve@example.org", organizer: true, responseStatus: "accepted" }, { email: "bob@example.org", responseStatus: "declined", optional: true }];
+  assert.deepEqual(mergeAttendees(cur, { add: ["zoe@example.org", "BOB@example.org"] }), [...cur, { email: "zoe@example.org" }], "an existing guest is not added twice");
+  assert.deepEqual(mergeAttendees(cur, { remove: ["BOB@example.org"] }), [cur[0]]);
+  assert.deepEqual(mergeAttendees(cur, { replace: ["zoe@example.org", "bob@example.org"] }), [cur[0], { email: "zoe@example.org" }, cur[1]]);
+  assert.deepEqual(mergeAttendees(undefined, { add: ["a@example.org"] }), [{ email: "a@example.org" }]);
+});
+
+test("busyFromEvents: free-marked, declined, all-day and cancelled events do not block time", () => {
+  const t = (h: number) => `2026-11-23T${String(h).padStart(2, "0")}:00:00Z`;
+  const busy = busyFromEvents([
+    { start: { dateTime: t(8) }, end: { dateTime: t(9) } },
+    { start: { dateTime: t(10) }, end: { dateTime: t(11) }, transparency: "transparent" },
+    { start: { dateTime: t(12) }, end: { dateTime: t(13) }, attendees: [{ email: "a@x.test", self: true, responseStatus: "declined" }] },
+    { start: { date: "2026-11-23" }, end: { date: "2026-11-24" } },
+    { start: { dateTime: t(14) }, end: { dateTime: t(15) }, status: "cancelled" },
+  ]);
+  assert.deepEqual(busy, [{ start: Date.parse(t(8)), end: Date.parse(t(9)) }]);
+});
+
+test("zonedInstant / zonedIso: wall-clock times of a zone, across a DST change", () => {
+  assert.equal(new Date(zonedInstant(2026, 3, 27, 9, 0, "Europe/Paris")).toISOString(), "2026-03-27T08:00:00.000Z", "winter: +01:00");
+  assert.equal(new Date(zonedInstant(2026, 3, 30, 9, 0, "Europe/Paris")).toISOString(), "2026-03-30T07:00:00.000Z", "summer: +02:00");
+  assert.equal(zonedIso(Date.parse("2026-03-30T07:00:00Z"), "Europe/Paris"), "2026-03-30T09:00+02:00");
+  assert.equal(zonedIso(Date.parse("2026-11-23T14:30:00Z"), "America/New_York"), "2026-11-23T09:30-05:00");
+});
+
+test("freeSlots: working hours of the zone, weekends out unless asked, busy blocks cut out, short gaps dropped", () => {
+  const P = (s: string) => Date.parse(s);
+  const o = { from: P("2026-11-20T00:00:00+01:00"), to: P("2026-11-24T00:00:00+01:00"), minutes: 30, dayStart: "09:00", dayEnd: "12:00", timeZone: "Europe/Paris", weekends: false };
+  const busy = [
+    { start: P("2026-11-20T09:00:00+01:00"), end: P("2026-11-20T10:00:00+01:00") },
+    { start: P("2026-11-20T10:15:00+01:00"), end: P("2026-11-20T11:00:00+01:00") }, // leaves a 15-minute gap: too short
+    { start: P("2026-11-23T08:00:00+01:00"), end: P("2026-11-23T09:30:00+01:00") }, // overlaps the day's start
+  ];
+  const show = (l: { start: number; end: number }[]) => l.map((s) => `${zonedIso(s.start, "Europe/Paris")}→${zonedIso(s.end, "Europe/Paris").slice(11, 16)}`);
+  assert.deepEqual(show(freeSlots(busy, o)), ["2026-11-20T11:00+01:00→12:00", "2026-11-23T09:30+01:00→12:00"], "Saturday and Sunday are left out");
+  assert.equal(freeSlots(busy, { ...o, weekends: true }).length, 4);
+  assert.deepEqual(show(freeSlots([], { ...o, from: P("2026-11-20T10:30:00+01:00"), to: P("2026-11-20T11:00:00+01:00") })), ["2026-11-20T10:30+01:00→11:00"], "clipped to the window");
 });

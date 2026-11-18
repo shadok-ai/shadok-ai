@@ -600,6 +600,7 @@ import {
   runGoogleAction,
   writesForeignFile,
   type GoogleDeps,
+  type DownloadFolder,
 } from "./google-actions.js";
 import {
   appendLog,
@@ -6315,11 +6316,13 @@ const ownDriveFiles: GoogleDeps["ownFiles"] = {
  * safe segment (`downloadFileName`); a name that exists gets a numbered twin
  * rather than being overwritten.
  */
-async function writeSessionDownload(sessionId: string, name: string, bytes: Buffer): Promise<string> {
+async function writeSessionDownload(sessionId: string, name: string, bytes: Buffer, folder: DownloadFolder = "drive-downloads"): Promise<string> {
   const who = sessionOsUser(sessionId);
   if (!who.ok) throw new Error("unknown agent");
   if (path.basename(name) !== name || name.startsWith(".")) throw new Error("unsafe file name");
-  const dir = path.join(resolveSessionTarget(loadChannels(), sessionId, process.cwd()).cwd, "drive-downloads");
+  // A closed list (`DownloadFolder`): the folder never comes from a request.
+  if (folder !== "drive-downloads" && folder !== "mail-attachments") throw new Error("unknown download folder");
+  const dir = path.join(resolveSessionTarget(loadChannels(), sessionId, process.cwd()).cwd, folder);
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
   for (let i = 1; i <= 50; i++) {
@@ -6343,7 +6346,7 @@ async function writeSessionDownload(sessionId: string, name: string, bytes: Buff
 function googleDeps(sessionId: string): GoogleDeps {
   return {
     ownFiles: ownDriveFiles,
-    writeFile: (name, bytes) => writeSessionDownload(sessionId, name, bytes),
+    writeFile: (name, bytes, folder) => writeSessionDownload(sessionId, name, bytes, folder),
     fetchFn: fetch,
     token: (accountId) => googleTokens.accessToken(accountId),
     readFile: (p) => readSessionFile(sessionId, p),

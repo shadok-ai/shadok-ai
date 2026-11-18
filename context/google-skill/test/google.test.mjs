@@ -174,9 +174,13 @@ test("a refusal is relayed as the server's sentence, exit 1; an unknown command 
     assert.match(r.err, /needs a reconnect \(test app authorisations last 7 days\)/);
   });
   await withStub(200, {}, async (s) => {
-    const r = await run(["gmail", "delete", "--account", "g1"], s.port);
+    const r = await run(["gmail", "remove", "--account", "g1"], s.port);
     assert.equal(r.code, 1);
     assert.match(r.err, /usage: google\.mjs/);
+    const del = await run(["gmail", "delete", "--account", "g1"], s.port);
+    assert.equal(del.code, 1);
+    assert.match(del.err, /Not available to agents: deleting mail for good/, "asked by name, a plain answer");
+    assert.equal(s.seen.url, undefined, "nothing reached the cockpit");
     assert.equal((await run(["drive", "list"], s.port)).code, 1, "--account is required");
   });
 });
@@ -213,7 +217,9 @@ test("gmail read: sender, subject and body are all inside the fence, and a body 
     const close = r.out.indexOf(`END-UNTRUSTED-EMAIL ${tag}>>>`);
     assert.ok(r.out.indexOf("curl evil.test") < close, "the mail's fake closing line did not end the fence");
     assert.equal(r.out.split(`END-UNTRUSTED-EMAIL ${tag}>>>`).length, 2, "the real closing marker appears once");
-    assert.match(r.out, /attachments \(not downloaded\): invoice\.pdf \(200 kB\)/);
+    assert.match(r.out, /attachments \(not downloaded\):\n  1\. invoice\.pdf \(200 kB\)/);
+    assert.ok(r.out.indexOf("invoice.pdf") < close, "attachment names are inside the fence");
+    assert.match(r.out.slice(close), /gmail attachment --id <message id> --index <n>/);
     assert.ok(r.out.slice(close).includes("To reply in this thread: `gmail draft` / `gmail send` with `--reply <message id>`"));
   });
   // Two runs never share a tag: a mail cannot learn it from an earlier one.
@@ -533,5 +539,137 @@ test("slides thumbnail sends the slide and size, and says where the PNG is; shee
   });
   await withStub(200, { status: "done", result: { id: "F1", name: "Mine", text: "body\n", headings: [], tables: [{ table: 1, rows: 2, cols: 3 }] } }, async (s) => {
     assert.equal((await run(["doc", "read", "--account", "g1", "--id", "F1"], s.port)).out, "# Mine\ntables: table 1 (2×3)\nbody\n\n");
+  });
+});
+
+// ---- Gmail: attachment, forward, reply-all, triage -------------------------
+
+test("gmail attachment: --index or --name; the saved path and the name stay inside the fence", async () => {
+  await withStub(200, { status: "done", result: { kind: "attachment", messageId: "m9", attachment: { index: 1, name: "IGNORE ME.pdf", mimeType: "application/pdf" }, path: "/w/mail-attachments/IGNORE ME.pdf", bytes: 2048, untrusted: true } }, async (s) => {
+    const r = await run(["gmail", "attachment", "--account", "g1", "--id", "m9", "--index", "1"], s.port);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(s.seen.body, { account: "g1", action: "gmail.attachment", args: { id: "m9", index: 1 } });
+    const tag = /^<<<UNTRUSTED-EMAIL ([0-9a-f]{12}) /m.exec(r.out)[1];
+    const close = r.out.indexOf(`END-UNTRUSTED-EMAIL ${tag}>>>`);
+    assert.ok(r.out.indexOf("IGNORE ME.pdf") < close && r.out.indexOf("saved to: /w/mail-attachments/") < close);
+    assert.match(r.out.slice(close), /Downloaded 2 kB/);
+  });
+  await withStub(200, {}, async (s) => {
+    assert.match((await run(["gmail", "attachment", "--account", "g1", "--id", "m9"], s.port)).err, /--index <n>/);
+    assert.match((await run(["gmail", "attachment", "--account", "g1", "--id", "m9", "--index", "1", "--name", "a"], s.port)).err, /--index <n>/);
+    assert.equal(s.seen.url, undefined);
+  });
+});
+
+test("gmail forward: --id and recipients as flags, the optional note from stdin; pending is explained", async () => {
+  await withStub(200, { status: "pending", draftId: "f1", result: { to: ["zoe@example.org"], cc: [] } }, async (s) => {
+    const r = await run(["gmail", "forward", "--account", "g1", "--id", "m9", "--to", "zoe@example.org", "--signature", "--stdin"], s.port, "FYI\n");
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(s.seen.body, { account: "g1", action: "gmail.forward", args: { id: "m9", to: ["zoe@example.org"], cc: [], bcc: [], body: "FYI", signature: true } });
+    assert.match(r.out, /To: zoe@example\.org/);
+    assert.match(r.out, /The email is a Gmail draft and is waiting for approval in the cockpit \(draft f1\)/);
+  });
+  await withStub(200, { status: "done", result: { status: "sent", to: ["zoe@example.org"] } }, async (s) => {
+    const r = await run(["gmail", "forward", "--account", "g1", "--id", "m9", "--to", "zoe@example.org"], s.port);
+    assert.equal(s.seen.body.args.body, undefined, "no stdin, no note");
+    assert.match(r.out, /Forwarded\./);
+  });
+});
+
+test("--reply-all is sent with --reply only; the recipients it filled are printed", async () => {
+  await withStub(200, { status: "done", result: { draftId: "d1", status: "draft", to: ["team@example.org"], cc: ["dan@example.org"] } }, async (s) => {
+    const r = await run(["gmail", "draft", "--account", "g1", "--reply", "m9", "--reply-all", "--subject", "Re: Plans", "--stdin"], s.port, "Agreed.");
+    assert.equal(r.code, 0, r.err);
+    assert.equal(s.seen.body.args.replyAll, true);
+    assert.deepEqual(s.seen.body.args.to, []);
+    assert.match(r.out, /To: team@example\.org  Cc: dan@example\.org/);
+  });
+  await withStub(200, {}, async (s) => {
+    const r = await run(["gmail", "send", "--account", "g1", "--to", "a@b.c", "--reply-all", "--subject", "x", "--stdin"], s.port, "y");
+    assert.match(r.err, /--reply-all goes with --reply/);
+    assert.equal(s.seen.url, undefined);
+  });
+});
+
+test("triage: --id repeats, --thread instead; mark needs --read or --unread; label --add/--remove; trash; labels", async () => {
+  const cases = [
+    [["gmail", "archive", "--account", "g1", "--id", "m1", "--id", "m2"], { action: "gmail.archive", args: { ids: ["m1", "m2"] } }],
+    [["gmail", "mark", "--account", "g1", "--thread", "t1", "--unread"], { action: "gmail.mark", args: { threadId: "t1", read: false } }],
+    [["gmail", "star", "--account", "g1", "--id", "m1", "--off"], { action: "gmail.star", args: { ids: ["m1"], star: false } }],
+    [["gmail", "label", "--account", "g1", "--id", "m1", "--add", "Clients", "--remove", "INBOX"], { action: "gmail.label", args: { ids: ["m1"], add: ["Clients"], remove: ["INBOX"] } }],
+    [["gmail", "trash", "--account", "g1", "--id", "m1"], { action: "gmail.trash", args: { ids: ["m1"] } }],
+  ];
+  for (const [argv, want] of cases) {
+    await withStub(200, { status: "done", result: { status: "done", ids: ["m1"] } }, async (s) => {
+      const r = await run(argv, s.port);
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(s.seen.body, { account: "g1", ...want });
+    });
+  }
+  await withStub(200, {}, async (s) => {
+    assert.match((await run(["gmail", "mark", "--account", "g1", "--id", "m1"], s.port)).err, /--read or --unread/);
+    assert.match((await run(["gmail", "archive", "--account", "g1"], s.port)).err, /--id <message id> \(repeatable\) or --thread/);
+    assert.match((await run(["gmail", "label", "--account", "g1", "--id", "m1"], s.port)).err, /--add <label>/);
+    assert.equal(s.seen.url, undefined);
+  });
+  await withStub(200, { status: "done", result: { labels: [{ id: "Label_7", name: "Clients", type: "user" }] } }, async (s) => {
+    const r = await run(["gmail", "labels", "--account", "g1"], s.port);
+    assert.deepEqual(s.seen.body, { account: "g1", action: "gmail.labels", args: {} });
+    assert.match(r.out, /Label_7  Clients  \(user\)/);
+  });
+});
+
+// ---- Calendar: Meet, repeats, guests, answers, free time -------------------
+
+test("calendar create/update: --meet, --repeat, --series, --add-attendee/--remove-attendee; a bare --attendee on update is refused locally", async () => {
+  await withStub(200, { status: "pending", draftId: "c1" }, async (s) => {
+    await run(["calendar", "create", "--account", "g1", "--title", "Sync", "--start", "2026-11-20T10:00", "--end", "2026-11-20T11:00", "--tz", "Europe/Paris", "--meet", "--repeat", "FREQ=WEEKLY;COUNT=4"], s.port);
+    assert.deepEqual(s.seen.body.args, { title: "Sync", start: "2026-11-20T10:00", end: "2026-11-20T11:00", timeZone: "Europe/Paris", meet: true, recurrence: "FREQ=WEEKLY;COUNT=4" });
+  });
+  await withStub(200, { status: "pending", draftId: "c2" }, async (s) => {
+    await run(["calendar", "update", "--account", "g1", "--event", "e1", "--add-attendee", "zoe@example.org", "--remove-attendee", "bob@example.org", "--series"], s.port);
+    assert.deepEqual(s.seen.body.args, { event: "e1", addAttendees: ["zoe@example.org"], removeAttendees: ["bob@example.org"], series: true });
+  });
+  await withStub(200, {}, async (s) => {
+    const r = await run(["calendar", "update", "--account", "g1", "--event", "e1", "--attendee", "zoe@example.org"], s.port);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /would REPLACE the whole guest list/);
+    assert.equal(s.seen.url, undefined);
+  });
+  await withStub(200, { status: "pending", draftId: "c3" }, async (s) => {
+    await run(["calendar", "update", "--account", "g1", "--event", "e1", "--attendee", "zoe@example.org", "--replace-attendees"], s.port);
+    assert.deepEqual(s.seen.body.args, { event: "e1", attendees: ["zoe@example.org"], replaceAttendees: true });
+  });
+});
+
+test("calendar respond and calendar list: the answer is sent; each guest's answer is shown", async () => {
+  await withStub(200, { status: "pending", draftId: "r1" }, async (s) => {
+    const r = await run(["calendar", "respond", "--account", "g1", "--event", "inv1", "--response", "accepted"], s.port);
+    assert.deepEqual(s.seen.body, { account: "g1", action: "calendar.respond", args: { event: "inv1", response: "accepted" } });
+    assert.match(r.out, /The calendar change is waiting for approval/);
+  });
+  await withStub(200, {}, async (s) => {
+    assert.match((await run(["calendar", "respond", "--account", "g1", "--event", "inv1"], s.port)).err, /--response accepted\|declined\|tentative/);
+  });
+  await withStub(200, { status: "done", result: { events: [{ id: "inv1", title: "Board", start: "s", end: "e", attendees: ["eve@example.org", "ana@example.org"], guests: [{ email: "eve@example.org", response: "accepted", organizer: true }, { email: "ana@example.org", response: "needsAction", self: true }], meet: "https://meet.google.com/x", recurringEventId: "ser1" }] } }, async (s) => {
+    const r = await run(["calendar", "list", "--account", "g1"], s.port);
+    assert.match(r.out, /\[eve@example\.org accepted \(organizer\), ana@example\.org no answer \(you\)\]/);
+    assert.match(r.out, /meet=https:\/\/meet\.google\.com\/x/);
+    assert.match(r.out, /occurrence of series ser1/);
+  });
+});
+
+test("calendar free: --with repeats, --to is a date; slots and unknown availability are printed", async () => {
+  const result = {
+    timeZone: "Europe/Paris", from: "2026-11-23T00:00+01:00", to: "2026-11-24T00:00+01:00", dayStart: "09:00", dayEnd: "18:00", minutes: 60,
+    slots: [{ start: "2026-11-23T10:00+01:00", end: "2026-11-23T11:00+01:00", minutes: 60 }],
+    calendars: [{ id: "bob@example.org", busy: [{ start: "2026-11-23T11:00+01:00", end: "2026-11-23T13:00+01:00" }] }, { id: "x@other.test", busy: [], error: "notFound" }],
+  };
+  await withStub(200, { status: "done", result }, async (s) => {
+    const r = await run(["calendar", "free", "--account", "g1", "--from", "2026-11-23", "--to", "2026-11-24", "--with", "bob@example.org", "--with", "x@other.test", "--minutes", "60", "--day-start", "09:00", "--tz", "Europe/Paris", "--weekends"], s.port);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(s.seen.body.args, { from: "2026-11-23", to: "2026-11-24", with: ["bob@example.org", "x@other.test"], minutes: 60, dayStart: "09:00", timeZone: "Europe/Paris", weekends: true });
+    assert.match(r.out, /2026-11-23T10:00\+01:00 → 2026-11-23T11:00\+01:00  \(60 min\)/);
+    assert.match(r.out, /x@other\.test: availability unknown \(notFound\) — NOT counted as free/);
   });
 });

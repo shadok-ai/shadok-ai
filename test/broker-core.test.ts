@@ -149,3 +149,14 @@ test("reading mail is its own area: gmail.readonly, never implied by gmail (draf
   assert.equal(googleScope(["drive_all"]), "openid email profile https://www.googleapis.com/auth/drive");
   assert.doesNotMatch(googleScope(["calendar", "drive", "gmail", "gmail_read"]), /auth\/drive( |$)/, "not ticked, not asked for");
 });
+
+test("two opt-in areas: triaging Gmail (gmail.modify) and others' free/busy — each asked for only when ticked", () => {
+  assert.equal(GOOGLE_AREAS.gmail_modify[0], "https://www.googleapis.com/auth/gmail.modify");
+  assert.equal(GOOGLE_AREAS.calendar_freebusy[0], "https://www.googleapis.com/auth/calendar.events.freebusy");
+  assert.deepEqual(parseGoogleAreas("calendar_freebusy,gmail_modify,gmail"), ["gmail", "gmail_modify", "calendar_freebusy"]);
+  assert.equal(googleScope(["gmail_modify"]), "openid email profile https://www.googleapis.com/auth/gmail.modify");
+  const everythingElse = googleScope(["calendar", "drive", "gmail", "gmail_read", "drive_all"]);
+  assert.doesNotMatch(everythingElse, /gmail\.modify/, "reading mail never brings triage with it");
+  assert.doesNotMatch(everythingElse, /freebusy/, "the person's calendar never brings other people's availability");
+  assert.doesNotMatch(googleScope(Object.keys(GOOGLE_AREAS) as (keyof typeof GOOGLE_AREAS)[]), /mail\.google\.com/, "no area can delete mail for good");
+});

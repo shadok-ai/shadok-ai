@@ -731,8 +731,11 @@ Enter to skip; you can add it later from the web UI).
   default**, shown once the broker offers it; add it later with *Reconnect*) —
   then Google asks you to confirm each one. With *Read Gmail* an agent can
   `gmail search` (Gmail's own search syntax, 50 results at most) and
-  `gmail read` a message or a thread as plain text; it cannot change or delete
-  mail, nor download attachments. Email is **untrusted content**: the skill
+  `gmail read` a message or a thread as plain text, `gmail attachment` to save
+  one attachment into its working directory (25 MB at most; logged), reply to
+  everyone on a message (`--reply-all`: the original's sender and recipients
+  minus your own addresses) and `gmail forward` a message with its attachments
+  (an email like any other: the Mail setting and its card apply). Email is **untrusted content**: the skill
   hands it to the agent inside a fence saying it is data, never instructions,
   and replying still goes through the Mail setting. Every search (its query)
   and every message opened (its id and subject, never its content) is written
@@ -795,6 +798,24 @@ Enter to skip; you can add it later from the web UI).
   own line, text and values included. If the file changes before you approve,
   nothing is applied and the card asks again. No new Google permission is
   needed. Sharing and permanent deletion are never available.
+  Two more chips, both **unticked by default** and shown once the broker offers
+  them: **Triage Gmail** (`gmail.modify`, which includes reading) lets an agent
+  `gmail archive`, `mark` read/unread, `star`, `label` (existing labels only —
+  `gmail labels` lists them) and `trash` your own mail — done at once, no card,
+  since it changes how YOUR mail is filed and nothing anyone else sees, but
+  every action is logged by message id; nothing deletes mail for good, reports
+  spam or touches filters and forwarding. **Others' free/busy**
+  (`calendar.events.freebusy`) lets `calendar free --with <email>` see when
+  other people are busy (times only, never what) to find a slot; without it
+  `calendar free` still finds YOUR free slots, from your own events. On the
+  calendar side an agent can also add a **Google Meet** link (`--meet`), create
+  a **repeating** event (`--repeat`, a checked subset of RRULE) and change or
+  delete one occurrence or (`--series`) the whole series — the card says which —,
+  see each guest's **answer** in `calendar list`, **answer an invitation**
+  (`calendar respond`, an Events card naming the organizer Google tells), and
+  add or remove guests on an update (`--add-attendee` / `--remove-attendee`;
+  replacing the whole list needs `--replace-attendees`, and guests kept keep
+  their answers).
   The account row
   shows the areas Google actually granted, the same *Shared with* / *Profiles*
   chips as LinkedIn, and **its own settings** instead of one posting policy:
@@ -805,7 +826,8 @@ Enter to skip; you can add it later from the web UI).
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
   `drive list|search|read|download|delete|move|rename`, `doc create|read|append|edit`, `sheet create|read|append|update|edit`, `slides create|read|edit`,
-  `gmail search|read|draft|send` — content on stdin, never argv) and never sees the token.
+  `gmail search|read|attachment|draft|send|forward|labels|archive|mark|star|label|trash`,
+  `calendar respond|free` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
   files and drafts** (a Gmail draft, a Doc, a Sheet) are done at once;
   **sending mail** follows the Mail setting and **calendar changes** the Events
@@ -1740,7 +1762,7 @@ googleTesting, githubInstallUrl}`: what the broker offers; `available` is Linked
 `/connect/<provider>/start` · `/connect/<provider>/complete` (POST, browser
 person only — the OAuth hand-back, `<provider>` = `linkedin`, `google` or `github`;
 Google's `start` also takes `areas`, a list among `calendar`, `drive`, `gmail`,
-`gmail_read`, `drive_all` — only those `/connect/status` → `googleAreas` says the broker accepts;
+`gmail_read`, `drive_all`, `gmail_modify`, `calendar_freebusy` — only those `/connect/status` → `googleAreas` says the broker accepts;
 `/connect/<provider>/done` (GET) is the page the broker returns the browser
 to), `/connected-accounts` (GET — the accounts you may use, never a token, plus
 `softLayer`; a Google account carries `areas`, `policies` and

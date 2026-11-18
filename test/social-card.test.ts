@@ -19,6 +19,7 @@ import {
   googlePolicyRows,
   GOOGLE_AREA_CHOICES,
   googleAreaChips,
+  rruleWords,
   githubReposLines,
   safeInstallUrl,
 } from "../public/social-card.js";
@@ -344,8 +345,10 @@ test("Google settings: two rows, each its own; the confirmation spells out what 
   );
 });
 
-test("the Connect Google dialog offers the three areas, in the broker's order", () => {
-  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"], ["drive_all", "All of Drive"]]);
+test("the Connect Google dialog offers the areas, in the broker's order", () => {
+  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [
+    ["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"], ["drive_all", "All of Drive"], ["gmail_modify", "Triage Gmail"], ["calendar_freebusy", "Others' free/busy"],
+  ]);
 });
 
 test("Google banner: named Google, dated by the deadline, and its dismissal key survives the hourly token renewal", () => {
@@ -557,3 +560,29 @@ test("Drive cards for an upload, a folder, a restore and a comment reply: where,
   assert.equal(rs.text, "");
 });
 const FILE_CHANGE_UPLOAD = "The file goes into that folder, seen by whoever that folder is shared with. Until then it waits at the top of the Drive, seen by nobody else — open the link to check it; Discard moves it to the bin";
+
+test("Triage Gmail and Others' free/busy are offered only when the broker names them, and are unticked by default", () => {
+  const offered = ["calendar", "drive", "gmail", "gmail_read", "drive_all", "gmail_modify", "calendar_freebusy"];
+  assert.equal(googleAreaChips(offered.slice(0, 5)).some((c: { key: string }) => c.key === "gmail_modify" || c.key === "calendar_freebusy"), false);
+  const chips = googleAreaChips(offered);
+  for (const key of ["gmail_modify", "calendar_freebusy"]) assert.equal(chips.find((c: { key: string }) => c.key === key).checked, false, `${key} is a deliberate tick`);
+  assert.match(chips.find((c: { key: string }) => c.key === "gmail_modify").hint, /never delete for good/);
+  assert.equal(googleAreaChips(offered, ["calendar", "gmail_modify"]).find((c: { key: string }) => c.key === "gmail_modify").checked, true, "a reconnect keeps what it holds");
+});
+
+test("calendar cards: an answer names it and who is told; a guest change lists who is added and removed; a Meet link is a link", () => {
+  const base = { provider: "google", status: "pending", account: "ana@example.org" };
+  const respond = draftCardModel({ ...base, event: { op: "respond", calendarId: "primary", title: "Board", start: "2026-11-24T14:00:00+01:00", end: "2026-11-24T15:00:00+01:00", attendees: ["eve@example.org", "ana@example.org"], response: "declined", organizer: "eve@example.org" } });
+  assert.equal(respond.actions[0].label, "Send the answer");
+  const by = (m: { fields: { label: string; value: string; href?: string }[] }, l: string) => m.fields.find((f) => f.label === l);
+  assert.equal(by(respond, "Your answer")?.value, "No — decline");
+  assert.equal(by(respond, "Guests")?.value, "eve@example.org, ana@example.org", "an answer does not email every guest");
+  assert.equal(by(respond, "Attendees"), undefined);
+  const upd = draftCardModel({ ...base, event: { op: "update", calendarId: "primary", title: "Board", start: "2026-11-24T14:00:00+01:00", end: "2026-11-24T15:00:00+01:00", attendees: ["eve@example.org", "zoe@example.org"], added: ["zoe@example.org"], removed: ["bob@example.org"], meetLink: "https://meet.google.com/abc-defg-hij" } });
+  assert.match(by(upd, "Added")!.value, /^zoe@example\.org/);
+  assert.match(by(upd, "Removed")!.value, /^bob@example\.org/);
+  assert.equal(by(upd, "Video call")?.href, "https://meet.google.com/abc-defg-hij");
+  const bad = draftCardModel({ ...base, event: { op: "update", title: "x", start: "2026-11-24", end: "2026-11-25", attendees: [], meetLink: "javascript:alert(1)" } });
+  assert.equal(by(bad, "Video call"), undefined, "only an https link is shown");
+  assert.equal(rruleWords("RRULE:FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=15;UNTIL=20270601"), "every 2 months, on day 15, until 2027-06-01 (FREQ=MONTHLY;INTERVAL=2;BYMONTHDAY=15;UNTIL=20270601)");
+});

@@ -22,7 +22,10 @@ Google specifics (spec `docs/superpowers/specs/2026-11-13-connected-accounts-goo
 send), `gmail_read` (`gmail.readonly` — reading mail, its own area so drafts
 can be granted without it) and `drive_all` (`drive` — the whole Drive, read
 and write, apart from `drive` = `drive.file`; restricted, part of the CASA
-scope set at publication) (a fixed table in `src/core.ts`, never raw scopes;
+scope set at publication), `gmail_modify` (`gmail.modify` — archive, read
+state, star, labels, the bin on the person's own mail; restricted, CASA scope
+set) and `calendar_freebusy` (`calendar.events.freebusy` — other people's
+free/busy; sensitive) (a fixed table in `src/core.ts`, never raw scopes;
 carried in the signed state; `/health` lists them as `googleAreas`, so an
 instance never offers an area this deploy would refuse — **redeploy the broker
 to offer a new one**, and declare the scope on the Google consent screen) and asks for

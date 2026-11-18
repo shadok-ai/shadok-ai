@@ -49,7 +49,8 @@ export interface MailPayload {
  *  update) or as it is (delete), and for an update the fields that change. */
 export interface EventPayload {
   kind: "event";
-  op: "create" | "update" | "delete";
+  /** `respond`: the person answers an invitation (their own attendee entry). */
+  op: "create" | "update" | "delete" | "respond";
   calendarId: string;
   eventId?: string;
   title: string;
@@ -63,6 +64,23 @@ export interface EventPayload {
   color?: string;
   /** update only: exactly what is sent to Google. */
   patch?: Record<string, unknown>;
+  /** A Google Meet link is CREATED by this write. */
+  addMeet?: boolean;
+  /** The Meet link the event already has (update, delete, respond). */
+  meetLink?: string;
+  /** How the event repeats (`RRULE:` line) — the series' rule. */
+  recurrence?: string;
+  /** For an event that repeats: does the change reach ONE occurrence or the
+   *  whole series? Absent for a single event. */
+  scope?: "occurrence" | "series";
+  /** An occurrence's own start, when only that occurrence changes. */
+  occurrence?: string;
+  /** update: the guests added / removed by name (`attendees` is the result). */
+  added?: string[];
+  removed?: string[];
+  /** respond: the answer sent, and who Google tells. */
+  response?: "accepted" | "declined" | "tentative";
+  organizer?: string;
 }
 
 /** What a Drive-edit approval card holds: the file (name and link as they
@@ -120,7 +138,7 @@ export interface EditPayload {
 }
 
 export type DraftPayload = MailPayload | EventPayload | FilePayload | EditPayload;
-export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
+export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | "calendar.respond" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
 const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.reply", "drive.untrash", "slides.edit", "doc.edit", "sheet.edit"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
@@ -610,6 +628,15 @@ function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "eve
       ...(p.location ? { location: p.location } : {}),
       ...(p.description ? { description: p.description } : {}),
       ...(p.color ? { color: p.color } : {}),
+      ...(p.addMeet ? { addMeet: true } : {}),
+      ...(p.meetLink ? { meetLink: p.meetLink } : {}),
+      ...(p.recurrence ? { recurrence: p.recurrence } : {}),
+      ...(p.scope ? { scope: p.scope } : {}),
+      ...(p.occurrence ? { occurrence: p.occurrence } : {}),
+      ...(p.added?.length ? { added: [...p.added] } : {}),
+      ...(p.removed?.length ? { removed: [...p.removed] } : {}),
+      ...(p.response ? { response: p.response } : {}),
+      ...(p.organizer ? { organizer: p.organizer } : {}),
     },
   };
 }

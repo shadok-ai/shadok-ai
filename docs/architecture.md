@@ -2169,7 +2169,8 @@ What differs from LinkedIn, and why:
 - **The store.** `provider: "google"`, `label` = the email, `externalId` = the
   OIDC `sub`, `scopes` = what Google GRANTED (read from the token response — a
   person may untick an area on Google's own screen, so it is never assumed;
-  `grantedAreas` maps it back to `calendar` / `drive` / `gmail` / `gmail_read` / `drive_all`), and
+  `grantedAreas` maps it back to `calendar` / `drive` / `gmail` / `gmail_read` / `drive_all` /
+  `gmail_modify` / `calendar_freebusy`), and
   `policies: {mail, calendar}` instead of LinkedIn's single `policy` (both
   `approve` at connect; a reconnect keeps them). A connect that returns no
   refresh token is refused rather than stored: it would die within the hour.
@@ -2208,6 +2209,9 @@ whether an approval setting applies, and which:
 | Class | Actions | Approval |
 |---|---|---|
 | read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read`, `slides.read`, `slides.thumbnail` | never — it leaves nothing; not logged |
+| read | `gmail.labels` (area `gmail_read`), `calendar.free` without `--with` | never; not logged |
+| read, audited | `calendar.free --with` (area `calendar_freebusy`) | never — but logged: whose availability, over which window |
+| read, audited | `gmail.attachment` (area `gmail_read`) | never — but logged: message id, attachment number, size; never its name |
 | read, audited | `gmail.search`, `gmail.read` (area `gmail_read`) | never — but logged: the query and result count, the message id and subject; never a body or a snippet (`actionLogged`) |
 | read, audited | `drive.search`, `drive.read` (area `drive_all`) | never — but logged: the query and result count, the file id and name; never content |
 | own-write | `gmail.draft`, `doc.create`, `sheet.create`, `slides.create` | never — only the person's own drafts and files |
@@ -2217,8 +2221,9 @@ whether an approval setting applies, and which:
 | read, audited | `api.get` (area from the URL, `passthroughPlan`) | never — but logged: the URL; never the answer |
 | file-manage | `drive.delete` (to the bin), `drive.untrash`, `drive.move`, `drive.rename`, `drive.reply` | always `policies.drive`, the cockpit's own files included |
 | file-copy | `drive.copy`, `drive.upload`, `drive.mkdir` | `policies.drive` only when the new item lands where others can see it (copy: another folder than the original's; upload / folder: a folder whose `permissionIds` are not the owner alone) |
-| mail | `gmail.send` | `policies.mail` |
-| calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
+| mailbox | `gmail.archive`, `gmail.mark`, `gmail.star`, `gmail.label`, `gmail.trash` (area `gmail_modify`) | never — but always logged by message ids |
+| mail | `gmail.send`, `gmail.forward` | `policies.mail` |
+| calendar | `calendar.create`, `calendar.update`, `calendar.delete`, `calendar.respond` (with or without attendees) | `policies.calendar` |
 
 **Reading mail** is a fourth area, `gmail_read` (`gmail.readonly`), apart from
 `gmail` (drafts + send) and unticked by default on the Connect dialog. Three
@@ -2520,6 +2525,72 @@ both let the card say "10:00 (America/New_York)" for an event created at
 another hour. A day that does not exist, an end not after the start and a
 zone given alone are refused when the agent drafts, not when a person
 approves; an all-day card names the LAST day (Google's end date is exclusive).
+
+**Filing mail is not sending it.** `gmail_modify` (`gmail.modify`, a
+restricted scope, unticked by default) is the sixth area. Its actions form the
+`mailbox` class, which never asks: archiving, read state, a star, a label or
+the bin change how the person's OWN mail is filed, reach no one, tell no
+sender, and are each undone from Gmail (the bin keeps a message 30 days). A
+card for "mark as read" would teach the person to click cards through — the
+habit the cards that DO reach other people rely on not forming. What keeps
+it honest is the log (every action, by message ids — never a subject) and
+what is NOT there: no permanent delete (`messages.delete`, `batchDelete`), no
+spam report, no filters or forwarding (`MAIL_REFUSED` answers those by name,
+like `DRIVE_REFUSED`), and `gmail label` refuses the system labels that have
+their own command or belong to Gmail (`LABELS_NOT_APPLIED`). Labels are
+resolved against the account's own list and never created. Because
+`gmail.modify` can read, `areaHeld` counts it as `gmail_read` — the twin of
+`drive_all` standing in for `drive`; the chip says so.
+
+**Attachments and forwarding.** `attachmentParts` is the ONE walk over a
+message's parts that both the listing (`gmail read` numbers attachments) and
+`gmail.attachment` use, so a number printed is the number fetched. The bytes
+come inline or from `messages.attachments.get` (its id is URL-encoded — it is
+not a path word), are capped at 25 MB (Gmail's own message limit), and are
+written by `writeFile` under `mail-attachments/` with the agent's rights; the
+name goes through `downloadFileName` and is printed inside the untrusted fence.
+`gmail.forward` reads the original (needs `gmail_read`), builds its text under
+Gmail's "Forwarded message" header and carries every attachment within the
+15 MB send total — refused before any draft exists when they are over — then
+goes through `deliverMail`, the same cycle as `gmail.send`: same card, same
+fingerprint, same Send. `--reply-all` reads the original's From / Reply-To /
+To / Cc with the reply lookup and drops every `settings.sendAs` address
+(`replyAllRecipients`); the agent is shown the resulting recipients.
+
+**Calendar: Meet, repeats, guests, answers.** `--meet` sends a
+`conferenceData.createRequest` (`hangoutsMeet`, a fresh `requestId`) with
+`conferenceDataVersion=1`; without that parameter Google ignores the
+request. `--repeat` is checked by `rruleVerdict` against a CLOSED subset of
+RFC 5545 (FREQ, INTERVAL, COUNT|UNTIL, BYDAY, BYMONTHDAY, BYMONTH) because the
+card must be able to say in words what is approved (`describeRrule` /
+`rruleWords`). With `singleEvents=true` a listing shows occurrences with
+their own ids: acting on one changes that occurrence (Google stores an
+exception); `--series` resolves `recurringEventId` and acts on the series —
+the card's *Applies to* names which. "This and following" (splitting a
+series) is not offered. A PATCH REPLACES array fields wholesale (Google's
+`events.patch` reference), which is how `--attendee` on an update used to drop
+every guest not repeated: an update now takes `addAttendees` /
+`removeAttendees`, a whole list only with `replaceAttendees`, and
+`patchEvent` re-reads the event at apply time and sends `mergeAttendees` of
+the CURRENT attendee objects — an answer that came in after the card is kept.
+`calendar.respond` is the same move on the person's own `self` entry; it is a
+`calendar` action because Google notifies the organizer (`sendUpdates=all`).
+
+**Free time.** `calendar.free` reads the person's own busy blocks from
+`events.list` — `calendar.events` is enough; `freebusy.query` does not accept
+it — dropping events marked free, declined and all-day ones (`busyFromEvents`).
+Other people's busy blocks need `calendar_freebusy`
+(`calendar.events.freebusy`, sensitive, unticked by default) and come back as
+start/end only; a calendar Google cannot answer for is reported, never
+counted as free. `freeSlots` walks the window (31 days at most) day by day in
+the calendar's own zone (`events.list` → `timeZone`, or `--tz`), working
+hours only, weekends out unless asked, and returns maximal slots with their
+offset (`zonedInstant` re-reads the offset at the result, so a DST change
+lands right).
+
+None of these request shapes could be run against Google from here: they
+follow the API reference pages, and the fakes in `test/google-actions.test.ts`
+encode those shapes.
 
 ### Files
 

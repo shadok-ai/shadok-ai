@@ -325,12 +325,14 @@ const strings = (v: unknown): string[] | null =>
  * raw MIME, so a subject or an address with a line break is refused here
  * rather than becoming a second header. Throws `GoogleInputError`.
  */
-export function mailFieldsVerdict(raw: { to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; body?: unknown }): MailFields {
+export function mailFieldsVerdict(raw: { to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; body?: unknown }, o: { recipientsLater?: boolean } = {}): MailFields {
   const to = strings(raw.to);
   const cc = strings(raw.cc);
   const bcc = strings(raw.bcc);
   if (!to || !cc || !bcc) throw new GoogleInputError("to, cc and bcc must be lists of email addresses.");
-  if (to.length + cc.length + bcc.length === 0) throw new GoogleInputError("The email has no recipient.");
+  // Reply-all fills the recipients from the original: an empty list is
+  // checked again once they are known (`recipientsVerdict`).
+  if (to.length + cc.length + bcc.length === 0 && !o.recipientsLater) throw new GoogleInputError("The email has no recipient.");
   if (to.length + cc.length + bcc.length > MAX_RECIPIENTS) throw new GoogleInputError(`An email takes at most ${MAX_RECIPIENTS} recipients.`);
   if (typeof raw.subject !== "string" || !raw.subject.trim()) throw new GoogleInputError("The email has no subject.");
   if (CONTROL.test(raw.subject)) throw new GoogleInputError("The subject contains a line break or control character.");
@@ -338,6 +340,13 @@ export function mailFieldsVerdict(raw: { to?: unknown; cc?: unknown; bcc?: unkno
   if (typeof raw.body !== "string" || !raw.body.trim()) throw new GoogleInputError("The email body is empty.");
   const fmt = (field: string, list: string[]) => addressList(field, list).map(formatDisplay);
   return { to: fmt("To", to), cc: fmt("Cc", cc), bcc: fmt("Bcc", bcc), subject: raw.subject.trim(), body: raw.body };
+}
+
+/** The recipient count of finished fields: at least one, at most `MAX_RECIPIENTS`. */
+export function recipientsVerdict(f: Pick<MailFields, "to" | "cc" | "bcc">): void {
+  const n = f.to.length + f.cc.length + f.bcc.length;
+  if (n === 0) throw new GoogleInputError("The email has no recipient.");
+  if (n > MAX_RECIPIENTS) throw new GoogleInputError(`An email takes at most ${MAX_RECIPIENTS} recipients.`);
 }
 
 /** How an address is shown on the card and kept in the draft: readable, not encoded. */
@@ -484,7 +493,7 @@ interface GmailPart {
   mimeType?: string;
   filename?: string;
   headers?: { name?: string; value?: string }[];
-  body?: { data?: string; size?: number };
+  body?: { data?: string; size?: number; attachmentId?: string };
   parts?: GmailPart[];
 }
 
@@ -624,6 +633,8 @@ export interface ReplyTarget {
   references: string;
   /** The original's subject, for the card and the log. */
   subject: string;
+  /** The original's address headers, raw — what `--reply-all` fills from. */
+  headers: { from: string; to: string; cc: string; replyTo: string };
 }
 
 /**
@@ -633,7 +644,7 @@ export interface ReplyTarget {
  * recipient's client, file the reply under the original.
  */
 export async function replyTarget(token: string, messageId: unknown, fetchFn: FetchFn): Promise<ReplyTarget> {
-  const q = ["Message-ID", "References", "Subject"].map((h) => `metadataHeaders=${h}`).join("&");
+  const q = ["Message-ID", "References", "Subject", "From", "To", "Cc", "Reply-To"].map((h) => `metadataHeaders=${h}`).join("&");
   const m = await getJson<GmailMessage>("reply lookup", `${GMAIL}/messages/${pathId("message", messageId)}?format=metadata&${q}`, token, fetchFn);
   return replyHeaders(m);
 }
@@ -646,7 +657,13 @@ export function replyHeaders(m: { threadId?: string; payload?: { headers?: { nam
   // Only well-formed ids survive: the chain is someone else's header.
   const prior = raw("references").split(/\s+/).filter((r) => MESSAGE_ID_RE.test(r) && r !== id);
   const references = [...prior.slice(-(MAX_REFERENCES - 1)), id].join(" ");
-  return { threadId: m.threadId, inReplyTo: id, references, subject: decodeWords(raw("subject")).replace(/\s+/g, " ").trim() };
+  return {
+    threadId: m.threadId,
+    inReplyTo: id,
+    references,
+    subject: decodeWords(raw("subject")).replace(/\s+/g, " ").trim(),
+    headers: { from: raw("from"), to: raw("to"), cc: raw("cc"), replyTo: raw("reply-to") },
+  };
 }
 
 interface GmailSendAs {
@@ -706,7 +723,8 @@ export interface MailMessageView {
   /** Plain text: the text/plain part, else the HTML stripped to text. */
   body: string;
   truncated: boolean;
-  attachments: { name: string; size: number }[];
+  /** `index` is what `gmail attachment --index` fetches (`attachmentParts`). */
+  attachments: { index: number; name: string; size: number; mimeType: string }[];
   unread: boolean;
   labels: string[];
 }
@@ -749,13 +767,10 @@ export function truncateBody(body: string, max = MAX_BODY_CHARS): { body: string
 export function mailMessageView(m: GmailMessage, maxBody = MAX_BODY_CHARS): MailMessageView {
   let plain: string | null = null;
   let html: string | null = null;
-  const attachments: { name: string; size: number }[] = [];
+  const attachments = attachmentParts(m.payload).map((a) => ({ index: a.index, name: a.name, size: a.size, mimeType: a.mimeType }));
   const walk = (p: GmailPart | undefined) => {
     if (!p) return;
-    if (p.filename) {
-      attachments.push({ name: p.filename, size: Number(p.body?.size) || 0 });
-      return;
-    }
+    if (p.filename) return;
     const data = p.body?.data ? Buffer.from(p.body.data, "base64url").toString("utf8") : null;
     if (p.mimeType === "text/plain" && data !== null && plain === null) plain = data;
     else if (p.mimeType === "text/html" && data !== null && html === null) html = data;
@@ -828,6 +843,241 @@ export async function readGmail(
   return { messages: [mailMessageView(m)], omitted: 0 };
 }
 
+
+// ---- Gmail: attachments, forwarding, reply-all ---------------------------
+
+/** One attachment part of a message, in the order `gmail read` lists them
+ *  (its `index` is 1-based). A small one may carry its bytes inline (`data`);
+ *  otherwise `attachmentId` fetches them (`messages.attachments.get`). */
+export interface MailAttachmentPart {
+  index: number;
+  name: string;
+  mimeType: string;
+  size: number;
+  attachmentId?: string;
+  data?: string;
+}
+
+/** Every part that carries a file name, depth first — the ONE walk both the
+ *  listing (`mailMessageView`) and the download use, so an index printed by
+ *  `gmail read` is the index `gmail attachment` fetches. */
+export function attachmentParts(payload: GmailPart | undefined): MailAttachmentPart[] {
+  const out: MailAttachmentPart[] = [];
+  const walk = (p: GmailPart | undefined) => {
+    if (!p) return;
+    if (p.filename) {
+      const b = p.body as { data?: string; size?: number; attachmentId?: string } | undefined;
+      out.push({
+        index: out.length + 1,
+        name: p.filename,
+        mimeType: typeof p.mimeType === "string" ? p.mimeType : "application/octet-stream",
+        size: Number(b?.size) || 0,
+        ...(typeof b?.attachmentId === "string" && b.attachmentId ? { attachmentId: b.attachmentId } : {}),
+        ...(typeof b?.data === "string" && b.data ? { data: b.data } : {}),
+      });
+      return;
+    }
+    for (const c of p.parts ?? []) walk(c);
+  };
+  walk(payload);
+  return out;
+}
+
+/** A message attachment is at most this big: Gmail itself refuses a message
+ *  over 25 MB, so a bigger "attachment" is not one a mail can carry. */
+export const MAX_MAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** Which attachment the agent asked for: `--index n` (as `gmail read` numbers
+ *  them) or `--name` (exact). Checked before any token is fetched. */
+export function attachmentPickVerdict(o: { index?: unknown; name?: unknown }): { index: number } | { name: string } {
+  const hasIndex = o.index !== undefined && o.index !== null;
+  const hasName = typeof o.name === "string" && o.name !== "";
+  if (hasIndex === hasName) throw new GoogleInputError("Say which attachment: --index <n> (as `gmail read` numbers them) or --name <file name>, not both.");
+  if (hasIndex) {
+    if (typeof o.index !== "number" || !Number.isInteger(o.index) || o.index < 1 || o.index > 500) throw new GoogleInputError("--index must be a whole number from 1 (as `gmail read` numbers the attachments).");
+    return { index: o.index };
+  }
+  if (CONTROL.test(o.name as string) || (o.name as string).length > 300) throw new GoogleInputError("--name must be one line (an attachment's file name).");
+  return { name: o.name as string };
+}
+
+async function attachmentBytes(token: string, messageId: string, part: MailAttachmentPart, fetchFn: FetchFn, cap: number): Promise<Buffer> {
+  if (part.size > cap) throw new GoogleInputError(`That attachment is over ${Math.round(cap / 1024 / 1024)} MB — too large to fetch here.`);
+  let data = part.data;
+  if (!data) {
+    if (!part.attachmentId) throw new GoogleInputError("Gmail gives no content for that attachment.");
+    // The attachment id is long and opaque (not a pathId word): encoded, never trusted.
+    const j = await getJson<{ data?: string; size?: number }>(
+      "attachment download",
+      `${GMAIL}/messages/${pathId("message", messageId)}/attachments/${encodeURIComponent(part.attachmentId)}`,
+      token,
+      fetchFn,
+    );
+    data = j.data ?? "";
+  }
+  const bytes = Buffer.from(data, "base64url");
+  if (bytes.length > cap) throw new GoogleInputError(`That attachment is over ${Math.round(cap / 1024 / 1024)} MB — too large to fetch here.`);
+  return bytes;
+}
+
+/** One attachment of a message, as bytes and a safe local file name
+ *  (`downloadFileName`: the name is the SENDER's words). Needs `gmail_read`. */
+export async function getMailAttachment(
+  token: string,
+  o: { id?: unknown; index?: unknown; name?: unknown },
+  fetchFn: FetchFn,
+  cap = MAX_MAIL_ATTACHMENT_BYTES,
+): Promise<{ messageId: string; subject: string; attachment: { index: number; name: string; mimeType: string }; bytes: Buffer; fileName: string }> {
+  const pick = attachmentPickVerdict(o);
+  const id = pathId("message", o.id);
+  const m = await getJson<GmailMessage>("mail read", `${GMAIL}/messages/${id}?format=full`, token, fetchFn);
+  const parts = attachmentParts(m.payload);
+  const part = "index" in pick ? parts[pick.index - 1] : parts.find((p) => p.name === pick.name);
+  if (!part) {
+    throw new GoogleInputError(
+      parts.length ? `That message has ${parts.length} attachment${parts.length === 1 ? "" : "s"}, and none is ${"index" in pick ? `number ${pick.index}` : "named so"} — see \`gmail read --id ${id}\`.` : "That message has no attachment.",
+    );
+  }
+  const bytes = await attachmentBytes(token, id, part, fetchFn, cap);
+  return { messageId: id, subject: headerOf(m, "subject"), attachment: { index: part.index, name: part.name, mimeType: part.mimeType }, bytes, fileName: downloadFileName(part.name) };
+}
+
+/** What a forward carries from the original: who wrote it, when, to whom, its
+ *  text and its attachments' bytes. */
+export interface ForwardSource {
+  subject: string;
+  from: string;
+  to: string;
+  cc: string;
+  date: string;
+  body: string;
+  attachments: MailAttachment[];
+}
+
+/** The original of a forward (needs `gmail_read`): its whole text — never cut,
+ *  it is what the recipient receives — and its attachments, within the same
+ *  total as an agent's own (`MAX_ATTACHMENTS_BYTES`). */
+export async function forwardSource(token: string, messageId: unknown, fetchFn: FetchFn, cap = MAX_ATTACHMENTS_BYTES): Promise<ForwardSource> {
+  const id = pathId("message", messageId);
+  const m = await getJson<GmailMessage>("mail read", `${GMAIL}/messages/${id}?format=full`, token, fetchFn);
+  const view = mailMessageView(m, Number.MAX_SAFE_INTEGER);
+  const parts = attachmentParts(m.payload);
+  const declared = parts.reduce((n, p) => n + p.size, 0);
+  const tooBig = () => new GoogleInputError(`That message's attachments are over ${Math.round(cap / 1024 / 1024)} MB in total — too large to forward from here. Forward it from Gmail, or send a link instead.`);
+  if (declared > cap) throw tooBig();
+  const attachments: MailAttachment[] = [];
+  let total = 0;
+  for (const p of parts) {
+    const bytes = await attachmentBytes(token, id, p, fetchFn, cap);
+    total += bytes.length;
+    if (total > cap) throw tooBig();
+    attachments.push({ name: attachmentName(p.name.replace(CONTROL_ALL, " ")), mime: p.mimeType, bytes });
+  }
+  return { subject: view.subject, from: view.from, to: view.to, cc: view.cc, date: view.date, body: view.body, attachments };
+}
+
+const CONTROL_ALL = /[\u0000-\u001f\u007f]/g;
+
+/** The subject of a forward: `Fwd: ` once, never stacked. */
+export function forwardSubject(original: string): string {
+  const s = [...original.replace(CONTROL_ALL, " ").replace(/\s+/g, " ").trim()].slice(0, MAX_SUBJECT - 5).join("");
+  return /^(fwd?|tr|wg):/i.test(s) ? s : `Fwd: ${s || "(no subject)"}`;
+}
+
+/** The body of a forward: the agent's note, then the original as Gmail's own
+ *  "Forwarded message" block does it. */
+export function forwardBody(note: string, src: Pick<ForwardSource, "from" | "date" | "subject" | "to" | "cc" | "body">): string {
+  const head = ["---------- Forwarded message ---------", `From: ${src.from}`, `Date: ${src.date}`, `Subject: ${src.subject}`, `To: ${src.to}`, ...(src.cc ? [`Cc: ${src.cc}`] : [])];
+  return `${note ? `${note.replace(/\s+$/, "")}\n\n` : ""}${head.join("\n")}\n\n${src.body}`;
+}
+
+/** The person's own addresses: every "Send mail as" address of the account
+ *  (gmail.readonly can read them) — what reply-all leaves out. */
+export async function ownAddresses(token: string, fetchFn: FetchFn): Promise<Set<string>> {
+  const j = await getJson<{ sendAs?: GmailSendAs[] }>("address lookup", `${GMAIL}/settings/sendAs`, token, fetchFn);
+  return new Set((j.sendAs ?? []).map((x) => (x.sendAsEmail ?? "").trim().toLowerCase()).filter(Boolean));
+}
+
+/**
+ * Reply-all's recipients, the way Gmail fills them: To = the original's
+ * Reply-To (else its From) plus its other To addresses, Cc = its Cc — minus
+ * every address of the person. A message the person sent themselves is
+ * replied to its own recipients. Bare addresses, deduplicated across both.
+ */
+export function replyAllRecipients(h: { from: string; to: string; cc: string; replyTo: string }, own: ReadonlySet<string>): { to: string[]; cc: string[] } {
+  const ok = (a: string) => ADDR_SPEC.test(a) && !own.has(a);
+  const sender = addrSpecs(h.replyTo || h.from);
+  const fromSelf = addrSpecs(h.from).some((a) => own.has(a));
+  const seen = new Set<string>();
+  const keep = (l: string[]) => l.filter((a) => ok(a) && !seen.has(a) && (seen.add(a), true));
+  const to = keep(fromSelf ? addrSpecs(h.to) : [...sender, ...addrSpecs(h.to)]);
+  const cc = keep(addrSpecs(h.cc));
+  return { to, cc };
+}
+
+// ---- Gmail, triage (the `gmail_modify` area: gmail.modify) ---------------
+
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type: "system" | "user";
+}
+
+export async function listGmailLabels(token: string, fetchFn: FetchFn): Promise<GmailLabel[]> {
+  const j = await getJson<{ labels?: { id?: string; name?: string; type?: string }[] }>("label listing", `${GMAIL}/labels`, token, fetchFn);
+  return (j.labels ?? [])
+    .filter((l) => typeof l.id === "string" && l.id)
+    .map((l) => ({ id: l.id as string, name: l.name ?? l.id ?? "", type: l.type === "user" ? ("user" as const) : ("system" as const) }));
+}
+
+/** System labels `gmail label` never moves: each has its own command, or is
+ *  Gmail's to set (spam, sent, drafts), or is a permanent-delete door. */
+export const LABELS_NOT_APPLIED = ["TRASH", "SPAM", "DRAFT", "SENT", "CHAT"] as const;
+
+/** Label names (any case) or ids → ids, from the account's own list. An
+ *  unknown one is refused, never created. */
+export function resolveLabels(want: readonly string[], labels: readonly GmailLabel[]): string[] {
+  return want.map((w) => {
+    const l = labels.find((x) => x.id === w) ?? labels.find((x) => x.name.toLowerCase() === w.toLowerCase());
+    if (!l) throw new GoogleInputError(`No label '${w.slice(0, 80)}' in this mailbox — see \`gmail labels\` (labels are created by the person, in Gmail).`);
+    if ((LABELS_NOT_APPLIED as readonly string[]).includes(l.id)) throw new GoogleInputError(`The ${l.id} label is not set by \`gmail label\`${l.id === "TRASH" ? " — use `gmail trash`" : ""}.`);
+    return l.id;
+  });
+}
+
+/** What a triage action acts on: one or more messages, or one whole thread. */
+export type MailTarget = { ids: string[] } | { threadId: string };
+export const MAX_TRIAGE_MESSAGES = 50;
+
+export function mailTargetVerdict(o: { ids?: unknown; threadId?: unknown }): MailTarget {
+  const ids = o.ids === undefined || o.ids === null ? [] : Array.isArray(o.ids) ? o.ids : [o.ids];
+  const thread = typeof o.threadId === "string" && o.threadId ? o.threadId : undefined;
+  if ((ids.length > 0) === !!thread) throw new GoogleInputError("Say what to act on: --id <message id> (repeatable) or --thread <thread id>, not both.");
+  if (thread) return { threadId: pathId("thread", thread) };
+  if (ids.length > MAX_TRIAGE_MESSAGES) throw new GoogleInputError(`At most ${MAX_TRIAGE_MESSAGES} messages at a time.`);
+  return { ids: [...new Set(ids.map((i) => pathId("message", i)))] };
+}
+
+/** Add / remove labels on messages or a thread (`messages.batchModify`,
+ *  `threads.modify`) — archiving, read state, star and labels are all this. */
+export async function modifyGmail(token: string, target: MailTarget, add: readonly string[], remove: readonly string[], fetchFn: FetchFn): Promise<void> {
+  const body = { ...(add.length ? { addLabelIds: [...add] } : {}), ...(remove.length ? { removeLabelIds: [...remove] } : {}) };
+  if ("threadId" in target) {
+    await sendJson("thread change", "POST", `${GMAIL}/threads/${target.threadId}/modify`, token, body, fetchFn);
+    return;
+  }
+  await sendJson("message change", "POST", `${GMAIL}/messages/batchModify`, token, { ids: target.ids, ...body }, fetchFn);
+}
+
+/** To the bin (`messages.trash` / `threads.trash`) — Gmail empties it after
+ *  30 days; nothing here deletes for good. */
+export async function trashGmail(token: string, target: MailTarget, fetchFn: FetchFn): Promise<void> {
+  if ("threadId" in target) {
+    await sendJson("thread trash", "POST", `${GMAIL}/threads/${target.threadId}/trash`, token, {}, fetchFn);
+    return;
+  }
+  for (const id of target.ids) await sendJson("message trash", "POST", `${GMAIL}/messages/${id}/trash`, token, {}, fetchFn);
+}
 // ---- Calendar ------------------------------------------------------------
 
 const CAL = "https://www.googleapis.com/calendar/v3/calendars";
@@ -844,12 +1094,34 @@ export interface EventFields {
   /** One of `EVENT_COLORS` (an event's own colour), or `"default"` — no colour
    *  of its own, so Google paints it in its calendar's colour. */
   color?: string;
+  /** Add a Google Meet link (`conferenceData.createRequest`). */
+  meet?: boolean;
+  /** How the event repeats: ONE `RRULE:` line of the closed subset `rruleVerdict` accepts. */
+  recurrence?: string;
 }
 
-export interface EventView extends EventFields {
+/** A guest and their answer, as Google reports it. */
+export interface EventGuest {
+  email: string;
+  /** `needsAction` (no answer yet), `accepted`, `declined`, `tentative`. */
+  response: string;
+  organizer?: boolean;
+  /** The connected person themselves. */
+  self?: boolean;
+  optional?: boolean;
+}
+
+export interface EventView extends Omit<EventFields, "meet"> {
   id: string;
   allDay: boolean;
   link?: string;
+  /** The Meet link the event already has. */
+  meet?: string;
+  /** Each guest with their answer (`attendees` keeps the bare addresses). */
+  guests?: EventGuest[];
+  organizer?: string;
+  /** An occurrence of a repeating event: the series' own id. */
+  recurringEventId?: string;
 }
 
 /**
@@ -919,7 +1191,7 @@ function eventTime(what: string, v: unknown, tz: string | undefined): { date: st
  * The fields of an event write, checked and normalised. `partial` (an update)
  * accepts any subset; a create needs title, start and end. Throws `GoogleInputError`.
  */
-export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false): Partial<EventFields> {
+export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false, allowEmpty = false): Partial<EventFields> {
   const out: Partial<EventFields> = {};
   const text = (k: "title" | "location" | "description", max: number) => {
     const v = raw[k];
@@ -943,11 +1215,13 @@ export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false
     out[k] = raw[k] as string;
   }
   if (raw.attendees !== undefined && raw.attendees !== null) {
-    const list = strings(raw.attendees);
-    if (!list) throw new GoogleInputError("attendees must be a list of email addresses.");
-    if (list.length > MAX_RECIPIENTS) throw new GoogleInputError(`An event takes at most ${MAX_RECIPIENTS} attendees.`);
-    out.attendees = addressList("attendee", list).map((a) => a.addr);
+    out.attendees = attendeeList(raw.attendees, "attendees");
   }
+  if (raw.meet !== undefined && raw.meet !== null && raw.meet !== false) {
+    if (raw.meet !== true) throw new GoogleInputError("meet must be true (add a Google Meet link).");
+    out.meet = true;
+  }
+  if (raw.recurrence !== undefined && raw.recurrence !== null && raw.recurrence !== "") out.recurrence = rruleVerdict(raw.recurrence);
   if (!partial) {
     if (!out.title) throw new GoogleInputError("The event has no title.");
     if (!out.start || !out.end) throw new GoogleInputError("The event needs a start and an end.");
@@ -969,8 +1243,50 @@ export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false
     // change and the event would stay as it was.
     throw new GoogleInputError("To change an event's time zone give its start and its end too.");
   }
-  if (partial && Object.keys(out).length === 0) throw new GoogleInputError("Nothing to change: give at least one field.");
+  if (partial && !allowEmpty && Object.keys(out).length === 0) throw new GoogleInputError("Nothing to change: give at least one field.");
   return out;
+}
+
+function attendeeList(v: unknown, what: string): string[] {
+  const list = strings(v);
+  if (!list) throw new GoogleInputError(`${what} must be a list of email addresses.`);
+  if (list.length > MAX_RECIPIENTS) throw new GoogleInputError(`An event takes at most ${MAX_RECIPIENTS} attendees.`);
+  return [...new Set(addressList("attendee", list).map((a) => a.addr.toLowerCase()))];
+}
+
+/** `--add-attendee` / `--remove-attendee` of an update, checked. */
+export function attendeeChangeVerdict(raw: { addAttendees?: unknown; removeAttendees?: unknown }): { add: string[]; remove: string[] } {
+  const add = raw.addAttendees === undefined || raw.addAttendees === null ? [] : attendeeList(raw.addAttendees, "addAttendees");
+  const remove = raw.removeAttendees === undefined || raw.removeAttendees === null ? [] : attendeeList(raw.removeAttendees, "removeAttendees");
+  const both = add.filter((a) => remove.includes(a));
+  if (both.length) throw new GoogleInputError(`'${both[0]}' is both added and removed.`);
+  return { add, remove };
+}
+
+/** A Google attendee object, kept WHOLE: a PATCH replaces the attendees array,
+ *  so an attendee sent as a bare address would lose their answer. */
+type GAttendee = { email?: string; responseStatus?: string; organizer?: boolean; self?: boolean; optional?: boolean; displayName?: string; [k: string]: unknown };
+
+/**
+ * The attendees array an update sends: the event's CURRENT attendees (read
+ * just before the PATCH, objects untouched — their answers survive), then
+ * `replace` (the whole list, when the agent asked for that explicitly) or
+ * `add` / `remove`. Addresses compare without case.
+ */
+export function mergeAttendees(current: readonly GAttendee[] | undefined, c: { replace?: readonly string[]; add?: readonly string[]; remove?: readonly string[] }): GAttendee[] {
+  const cur = [...(current ?? [])];
+  const key = (a: GAttendee) => (a.email ?? "").toLowerCase();
+  let next: GAttendee[];
+  if (c.replace) {
+    // Kept guests keep their object (and answer); the organizer's own entry
+    // stays even when the list omits it — the event belongs to them.
+    next = c.replace.map((email) => cur.find((a) => key(a) === email.toLowerCase()) ?? { email });
+    for (const a of cur) if (a.organizer && !next.some((n) => key(n) === key(a))) next.unshift(a);
+  } else next = cur;
+  const drop = new Set((c.remove ?? []).map((e) => e.toLowerCase()));
+  next = next.filter((a) => !drop.has(key(a)));
+  for (const email of c.add ?? []) if (!next.some((a) => key(a) === email.toLowerCase())) next.push({ email });
+  return next;
 }
 
 function eventBody(f: Partial<EventFields>): Record<string, unknown> {
@@ -987,6 +1303,11 @@ function eventBody(f: Partial<EventFields>): Record<string, unknown> {
     const id = EVENT_COLORS.indexOf(f.color as (typeof EVENT_COLORS)[number]) + 1;
     b.colorId = id > 0 ? String(id) : null;
   }
+  if (f.recurrence !== undefined) b.recurrence = [f.recurrence];
+  // A NEW Meet conference: Google creates it asynchronously from this request
+  // (sent with conferenceDataVersion=1, or ignored). The requestId only has
+  // to be unique per request.
+  if (f.meet) b.conferenceData = { createRequest: { requestId: randomBytes(12).toString("hex"), conferenceSolutionKey: { type: "hangoutsMeet" } } };
   return b;
 }
 
@@ -999,7 +1320,14 @@ interface GEvent {
   colorId?: string;
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
-  attendees?: { email?: string }[];
+  attendees?: GAttendee[];
+  hangoutLink?: string;
+  conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
+  recurrence?: string[];
+  recurringEventId?: string;
+  organizer?: { email?: string; self?: boolean };
+  transparency?: string;
+  status?: string;
 }
 
 export function eventView(e: GEvent): EventView {
@@ -1016,7 +1344,96 @@ export function eventView(e: GEvent): EventView {
     ...(e.description ? { description: e.description } : {}),
     ...(e.htmlLink ? { link: e.htmlLink } : {}),
     color: eventColorName(e.colorId) ?? "default",
+    ...(meetLink(e) ? { meet: meetLink(e) } : {}),
+    ...(e.attendees?.length ? { guests: e.attendees.filter((a) => a.email).map(guestOf) } : {}),
+    ...(e.organizer?.email ? { organizer: e.organizer.email } : {}),
+    ...(Array.isArray(e.recurrence) && e.recurrence.find((r) => /^RRULE:/i.test(r)) ? { recurrence: e.recurrence.find((r) => /^RRULE:/i.test(r)) } : {}),
+    ...(e.recurringEventId ? { recurringEventId: e.recurringEventId } : {}),
   };
+}
+
+const guestOf = (a: GAttendee): EventGuest => ({
+  email: a.email ?? "",
+  response: typeof a.responseStatus === "string" ? a.responseStatus : "needsAction",
+  ...(a.organizer ? { organizer: true } : {}),
+  ...(a.self ? { self: true } : {}),
+  ...(a.optional ? { optional: true } : {}),
+});
+
+/** The event's video link: `hangoutLink`, else a video entry point. */
+function meetLink(e: GEvent): string | undefined {
+  const uri = e.hangoutLink ?? e.conferenceData?.entryPoints?.find((p) => p.entryPointType === "video")?.uri;
+  return typeof uri === "string" && /^https:\/\//.test(uri) ? uri : undefined;
+}
+
+// ---- recurrence: a closed RRULE subset -------------------------------------
+
+const RRULE_FREQ = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"] as const;
+const WEEKDAY = "(MO|TU|WE|TH|FR|SA|SU)";
+/** At most this many occurrences (`COUNT`): two years of a daily event. */
+export const MAX_RRULE_COUNT = 730;
+
+/**
+ * One recurrence rule, checked against a CLOSED subset of RFC 5545: FREQ
+ * (required), INTERVAL, COUNT or UNTIL (never both), BYDAY, BYMONTHDAY,
+ * BYMONTH. Anything else (BYSETPOS, BYHOUR, EXDATE, several rules…) is
+ * refused rather than passed on: the card must be able to say in words what
+ * the person approves. Returns the `RRULE:` line. Throws `GoogleInputError`.
+ */
+export function rruleVerdict(v: unknown): string {
+  const bad = (why: string) => new GoogleInputError(`That repeat rule is not accepted: ${why}. Use e.g. FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10 (FREQ, INTERVAL, COUNT or UNTIL, BYDAY, BYMONTHDAY, BYMONTH).`);
+  if (typeof v !== "string" || CONTROL.test(v) || v.length > 300) throw bad("it must be one line");
+  const body = v.trim().replace(/^RRULE:/i, "").toUpperCase();
+  const seen = new Map<string, string>();
+  for (const part of body.split(";")) {
+    const m = /^([A-Z]+)=([A-Z0-9,+\-]+)$/.exec(part);
+    if (!m) throw bad(`'${part.slice(0, 40)}' is not KEY=VALUE`);
+    if (seen.has(m[1])) throw bad(`${m[1]} is given twice`);
+    seen.set(m[1], m[2]);
+  }
+  const allowed = ["FREQ", "INTERVAL", "COUNT", "UNTIL", "BYDAY", "BYMONTHDAY", "BYMONTH"];
+  for (const k of seen.keys()) if (!allowed.includes(k)) throw bad(`${k} is not supported here`);
+  const freq = seen.get("FREQ");
+  if (!freq || !(RRULE_FREQ as readonly string[]).includes(freq)) throw bad("FREQ must be DAILY, WEEKLY, MONTHLY or YEARLY");
+  const intIn = (k: string, lo: number, hi: number) => {
+    const x = seen.get(k);
+    if (x !== undefined && (!/^\d+$/.test(x) || +x < lo || +x > hi)) throw bad(`${k} must be a number from ${lo} to ${hi}`);
+  };
+  intIn("INTERVAL", 1, 99);
+  intIn("COUNT", 1, MAX_RRULE_COUNT);
+  if (seen.has("COUNT") && seen.has("UNTIL")) throw bad("give COUNT or UNTIL, not both");
+  const until = seen.get("UNTIL");
+  if (until !== undefined) {
+    if (!/^\d{8}(T\d{6}Z)?$/.test(until)) throw bad("UNTIL must be YYYYMMDD or YYYYMMDDTHHMMSSZ");
+    if (!realDay(`${until.slice(0, 4)}-${until.slice(4, 6)}-${until.slice(6, 8)}`)) throw bad("UNTIL is not a real day");
+  }
+  const byday = seen.get("BYDAY");
+  if (byday !== undefined && !byday.split(",").every((d) => new RegExp(`^([+-]?([1-9]|[1-4]\\d|5[0-3]))?${WEEKDAY}$`).test(d))) throw bad("BYDAY takes MO,TU,WE,TH,FR,SA,SU (optionally numbered, e.g. 1MO or -1FR)");
+  const list = (k: string, ok: (n: number) => boolean) => {
+    const x = seen.get(k);
+    if (x !== undefined && !x.split(",").every((n) => /^[+-]?\d{1,2}$/.test(n) && ok(+n))) throw bad(`${k} has a value out of range`);
+  };
+  list("BYMONTHDAY", (n) => n !== 0 && n >= -31 && n <= 31);
+  list("BYMONTH", (n) => n >= 1 && n <= 12);
+  return `RRULE:${[...seen].map(([k, x]) => `${k}=${x}`).join(";")}`;
+}
+
+const FREQ_NOUN: Record<string, string> = { DAILY: "day", WEEKLY: "week", MONTHLY: "month", YEARLY: "year" };
+
+/** A checked rule in words, for the approval card: "every 2 weeks on MO, WE, 10 times". */
+export function describeRrule(rule: string): string {
+  const kv = new Map(rule.replace(/^RRULE:/i, "").split(";").map((p) => p.split("=") as [string, string]));
+  const n = Number(kv.get("INTERVAL") ?? "1");
+  const noun = FREQ_NOUN[kv.get("FREQ") ?? ""] ?? "time";
+  const parts = [n > 1 ? `every ${n} ${noun}s` : `every ${noun}`];
+  if (kv.get("BYDAY")) parts.push(`on ${kv.get("BYDAY")!.split(",").join(", ")}`);
+  if (kv.get("BYMONTHDAY")) parts.push(`on day ${kv.get("BYMONTHDAY")!.split(",").join(", ")}`);
+  if (kv.get("BYMONTH")) parts.push(`in month ${kv.get("BYMONTH")!.split(",").join(", ")}`);
+  const until = kv.get("UNTIL");
+  if (kv.get("COUNT")) parts.push(`${kv.get("COUNT")} time${kv.get("COUNT") === "1" ? "" : "s"}`);
+  else if (until) parts.push(`until ${until.slice(0, 4)}-${until.slice(4, 6)}-${until.slice(6, 8)}`);
+  else parts.push("with no end");
+  return parts.join(", ");
 }
 
 const calUrl = (calendarId: string, tail = "") => {
@@ -1058,12 +1475,60 @@ export async function getEvent(token: string, calendarId: string, eventId: strin
 
 // `sendUpdates=all`: the attendees are mailed about what happened to the
 // event — which is exactly what the approval card says will happen.
+const writeQuery = (f: Partial<EventFields>) => `?sendUpdates=all${f.meet ? "&conferenceDataVersion=1" : ""}`;
+
 export async function insertEvent(token: string, calendarId: string, f: EventFields, fetchFn: FetchFn): Promise<EventView> {
-  return eventView(await sendJson<GEvent>("event creation", "POST", `${calUrl(calendarId)}?sendUpdates=all`, token, eventBody(f), fetchFn, true));
+  return eventView(await sendJson<GEvent>("event creation", "POST", `${calUrl(calendarId)}${writeQuery(f)}`, token, eventBody(f), fetchFn, true));
 }
 
-export async function patchEvent(token: string, calendarId: string, eventId: string, f: Partial<EventFields>, fetchFn: FetchFn): Promise<EventView> {
-  return eventView(await sendJson<GEvent>("event update", "PATCH", `${calUrl(calendarId, `/${pathId("event", eventId)}`)}?sendUpdates=all`, token, eventBody(f), fetchFn, true));
+/** The fields of an update, plus the attendee changes `mergeAttendees` applies. */
+export type EventPatch = Partial<EventFields> & { addAttendees?: string[]; removeAttendees?: string[] };
+
+/** The event as Google stores it, or null when it is gone. */
+async function getRawEvent(token: string, calendarId: string, eventId: string, fetchFn: FetchFn): Promise<GEvent | null> {
+  const res = await fetchFn(calUrl(calendarId, `/${pathId("event", eventId)}`), { headers: bearer(token), signal: deadline() });
+  if (res.status === 404 || res.status === 410) return null;
+  if (!res.ok) throw await failure("event lookup", res);
+  const j = (await res.json()) as GEvent;
+  return j.status === "cancelled" ? null : j;
+}
+
+export async function patchEvent(token: string, calendarId: string, eventId: string, f: EventPatch, fetchFn: FetchFn): Promise<EventView> {
+  const { addAttendees, removeAttendees, attendees, ...rest } = f;
+  const body = eventBody(rest);
+  if (attendees !== undefined || addAttendees?.length || removeAttendees?.length) {
+    // The attendees as they are NOW (an answer may have come in since the
+    // card): a PATCH replaces the whole array, so it is rebuilt from them.
+    const cur = await getRawEvent(token, calendarId, eventId, fetchFn);
+    if (!cur) throw new GoogleInputError("That event no longer exists — nothing was changed.");
+    body.attendees = mergeAttendees(cur.attendees, { ...(attendees !== undefined ? { replace: attendees } : {}), add: addAttendees, remove: removeAttendees });
+  }
+  return eventView(await sendJson<GEvent>("event update", "PATCH", `${calUrl(calendarId, `/${pathId("event", eventId)}`)}${writeQuery(f)}`, token, body, fetchFn, true));
+}
+
+export const RSVP_RESPONSES = ["accepted", "declined", "tentative"] as const;
+export type RsvpResponse = (typeof RSVP_RESPONSES)[number];
+
+export function rsvpVerdict(v: unknown): RsvpResponse {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  const alias: Record<string, RsvpResponse> = { accept: "accepted", yes: "accepted", decline: "declined", no: "declined", maybe: "tentative" };
+  const r = (RSVP_RESPONSES as readonly string[]).includes(s) ? (s as RsvpResponse) : alias[s];
+  if (!r) throw new GoogleInputError("--response must be accepted, declined or tentative.");
+  return r;
+}
+
+/**
+ * Answer an invitation: the person's OWN attendee entry (`self`) gets the
+ * answer, every other attendee object is sent back untouched (a PATCH
+ * replaces the array). Read fresh, right before the write.
+ */
+export async function respondEvent(token: string, calendarId: string, eventId: string, response: RsvpResponse, fetchFn: FetchFn): Promise<EventView> {
+  const cur = await getRawEvent(token, calendarId, eventId, fetchFn);
+  if (!cur) throw new GoogleInputError("That event no longer exists — no answer was sent.");
+  const attendees = cur.attendees ?? [];
+  if (!attendees.some((a) => a.self)) throw new GoogleInputError("The person is not on that event's guest list, so there is no invitation to answer.");
+  const next = attendees.map((a) => (a.self ? { ...a, responseStatus: response } : a));
+  return eventView(await sendJson<GEvent>("invitation answer", "PATCH", `${calUrl(calendarId, `/${pathId("event", eventId)}`)}?sendUpdates=all`, token, { attendees: next }, fetchFn, true));
 }
 
 export async function deleteEvent(token: string, calendarId: string, eventId: string, fetchFn: FetchFn): Promise<void> {
@@ -1077,6 +1542,179 @@ export async function deleteEvent(token: string, calendarId: string, eventId: st
   if (!res.ok && res.status !== 404 && res.status !== 410) throw await failure("event deletion", res);
 }
 
+
+// ---- free time: the person's own busy blocks, free/busy of others, slots ----
+
+export interface Interval {
+  start: number;
+  end: number;
+}
+
+/** A free-time window is at most this long: the slot finder walks it day by day. */
+export const MAX_FREE_WINDOW_DAYS = 31;
+/** At most this many other calendars per query (Google's own cap is 50). */
+export const MAX_FREEBUSY_CALENDARS = 20;
+export const MAX_FREE_SLOTS = 50;
+
+/** The busy blocks of the person's OWN events: what `events.list` gives with
+ *  `calendar.events` — no free/busy scope needed. An event marked "free"
+ *  (`transparency: transparent`), one the person declined, and an all-day
+ *  event (a holiday, a reminder — Google's own default is "free") do not
+ *  block time. */
+export function busyFromEvents(items: readonly GEvent[]): Interval[] {
+  const out: Interval[] = [];
+  for (const e of items) {
+    if (e.status === "cancelled" || e.transparency === "transparent") continue;
+    if (!e.start?.dateTime || !e.end?.dateTime) continue;
+    if ((e.attendees ?? []).some((a) => a.self && a.responseStatus === "declined")) continue;
+    const start = Date.parse(e.start.dateTime);
+    const end = Date.parse(e.end.dateTime);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) out.push({ start, end });
+  }
+  return out;
+}
+
+/** The person's own events over a window, every page (bounded): their busy
+ *  blocks and the calendar's time zone. */
+export async function ownBusy(token: string, from: number, to: number, fetchFn: FetchFn): Promise<{ busy: Interval[]; timeZone?: string }> {
+  const items: GEvent[] = [];
+  let timeZone: string | undefined;
+  let page: string | undefined;
+  for (let i = 0; i < 10; i++) {
+    const q = new URLSearchParams({ singleEvents: "true", orderBy: "startTime", maxResults: "250", timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString() });
+    if (page) q.set("pageToken", page);
+    const j = await getJson<{ items?: GEvent[]; timeZone?: string; nextPageToken?: string }>("calendar listing", `${calUrl("primary")}?${q}`, token, fetchFn);
+    items.push(...(j.items ?? []));
+    timeZone ??= typeof j.timeZone === "string" && timeZoneOk(j.timeZone) ? j.timeZone : undefined;
+    page = j.nextPageToken;
+    if (!page) break;
+  }
+  return { busy: busyFromEvents(items), ...(timeZone ? { timeZone } : {}) };
+}
+
+/** Free/busy of other calendars (`freebusy.query`, the `calendar_freebusy`
+ *  area). Only start/end come back — never a title. A calendar Google cannot
+ *  answer for (not shared, unknown) is reported, not treated as free. */
+export async function freeBusyQuery(token: string, ids: readonly string[], from: number, to: number, fetchFn: FetchFn): Promise<{ id: string; busy: Interval[]; error?: string }[]> {
+  const body = { timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString(), items: ids.map((id) => ({ id })) };
+  const j = await sendJson<{ calendars?: Record<string, { busy?: { start?: string; end?: string }[]; errors?: { reason?: string }[] }> }>(
+    "free/busy lookup",
+    "POST",
+    "https://www.googleapis.com/calendar/v3/freeBusy",
+    token,
+    body,
+    fetchFn,
+  );
+  return ids.map((id) => {
+    const c = j.calendars?.[id];
+    const errs = (c?.errors ?? []).map((e) => e.reason ?? "unknown").filter(Boolean);
+    const busy = (c?.busy ?? []).map((b) => ({ start: Date.parse(b.start ?? ""), end: Date.parse(b.end ?? "") })).filter((b) => Number.isFinite(b.start) && Number.isFinite(b.end) && b.end > b.start);
+    return { id, busy, ...(!c ? { error: "notFound" } : errs.length ? { error: errs.join(",") } : {}) };
+  });
+}
+
+/** The calendars of a free-time query: addresses or calendar ids, checked. */
+export function freeBusyIdsVerdict(v: unknown): string[] {
+  const list = strings(v);
+  if (!list) throw new GoogleInputError("--with takes email addresses or calendar ids.");
+  if (list.length > MAX_FREEBUSY_CALENDARS) throw new GoogleInputError(`At most ${MAX_FREEBUSY_CALENDARS} calendars at a time.`);
+  for (const id of list) if (!id || CONTROL.test(id) || id.length > 256 || /\s/.test(id)) throw new GoogleInputError(`'${id.slice(0, 60)}' is not an email address or a calendar id.`);
+  return [...new Set(list)];
+}
+
+/** UTC offset of `tz` at instant `t`, in ms (what local wall-clock minus UTC is). */
+function zoneOffset(t: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(t));
+  const n = (k: string) => Number(parts.find((p) => p.type === k)?.value);
+  return Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second")) - Math.floor(t / 1000) * 1000;
+}
+
+/** The instant of a wall-clock time in `tz` (DST-safe: the offset is re-read
+ *  at the result). */
+export function zonedInstant(y: number, m: number, d: number, hh: number, mm: number, tz: string): number {
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  const first = guess - zoneOffset(guess, tz);
+  return guess - zoneOffset(first, tz);
+}
+
+/** `t` as a wall-clock `YYYY-MM-DDTHH:MM±HH:MM` of `tz` — what an agent can
+ *  hand straight back to `calendar create`. */
+export function zonedIso(t: number, tz: string): string {
+  const off = zoneOffset(t, tz);
+  const local = new Date(t + off).toISOString().slice(0, 16);
+  const a = Math.abs(off) / 60000;
+  return `${local}${off < 0 ? "-" : "+"}${String(Math.floor(a / 60)).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
+}
+
+export interface SlotOptions {
+  from: number;
+  to: number;
+  /** Shortest slot worth reporting, in minutes. */
+  minutes: number;
+  /** The working day, `HH:MM` in `timeZone`. */
+  dayStart: string;
+  dayEnd: string;
+  timeZone: string;
+  weekends: boolean;
+}
+
+/**
+ * The free slots of a window: inside the working hours of each day (in the
+ * person's zone, weekends left out unless asked), minus every busy block,
+ * kept when at least `minutes` long. Pure; slots are maximal (a free
+ * afternoon is one slot, not a row of half-hours).
+ */
+export function freeSlots(busy: readonly Interval[], o: SlotOptions): Interval[] {
+  const hm = (s: string) => s.split(":").map(Number) as [number, number];
+  const [sh, sm] = hm(o.dayStart);
+  const [eh, em] = hm(o.dayEnd);
+  const blocks = [...busy].sort((a, b) => a.start - b.start);
+  const out: Interval[] = [];
+  const first = new Date(o.from + zoneOffset(o.from, o.timeZone));
+  let y = first.getUTCFullYear(), m = first.getUTCMonth() + 1, d = first.getUTCDate();
+  for (let i = 0; i <= MAX_FREE_WINDOW_DAYS + 1 && out.length < MAX_FREE_SLOTS; i++) {
+    const day = new Date(Date.UTC(y, m - 1, d + i));
+    const [yy, mo, dd] = [day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate()];
+    const dow = day.getUTCDay();
+    const open = Math.max(zonedInstant(yy, mo, dd, sh, sm, o.timeZone), o.from);
+    const close = Math.min(zonedInstant(yy, mo, dd, eh, em, o.timeZone), o.to);
+    if (zonedInstant(yy, mo, dd, 0, 0, o.timeZone) >= o.to) break;
+    if ((!o.weekends && (dow === 0 || dow === 6)) || close <= open) continue;
+    let cursor = open;
+    for (const b of blocks) {
+      if (b.end <= cursor || b.start >= close) continue;
+      if (b.start - cursor >= o.minutes * 60_000) out.push({ start: cursor, end: b.start });
+      cursor = Math.max(cursor, b.end);
+      if (cursor >= close) break;
+    }
+    if (close - cursor >= o.minutes * 60_000) out.push({ start: cursor, end: close });
+  }
+  return out.slice(0, MAX_FREE_SLOTS);
+}
+
+/** The options of `calendar free`, checked — before any token is fetched. */
+export function freeOptionsVerdict(raw: { from?: unknown; to?: unknown; minutes?: unknown; dayStart?: unknown; dayEnd?: unknown; timeZone?: unknown; weekends?: unknown }, now: number): Omit<SlotOptions, "timeZone"> & { timeZone?: string } {
+  const from = raw.from === undefined || raw.from === null ? now : Date.parse(instant("--from", raw.from));
+  const to = raw.to === undefined || raw.to === null ? from + 7 * 24 * 3600_000 : Date.parse(instant("--to", raw.to));
+  if (to <= from) throw new GoogleInputError("--to must come after --from.");
+  if (to - from > MAX_FREE_WINDOW_DAYS * 24 * 3600_000) throw new GoogleInputError(`A free-time window is at most ${MAX_FREE_WINDOW_DAYS} days.`);
+  const minutes = raw.minutes === undefined || raw.minutes === null ? 30 : raw.minutes;
+  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 5 || minutes > 600) throw new GoogleInputError("--minutes must be a whole number from 5 to 600.");
+  const clock = (k: string, v: unknown, dflt: string) => {
+    if (v === undefined || v === null) return dflt;
+    if (typeof v !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) throw new GoogleInputError(`${k} must be a time HH:MM (e.g. 09:00).`);
+    return v;
+  };
+  const dayStart = clock("--day-start", raw.dayStart, "09:00");
+  const dayEnd = clock("--day-end", raw.dayEnd, "18:00");
+  if (dayEnd <= dayStart) throw new GoogleInputError("--day-end must come after --day-start.");
+  let timeZone: string | undefined;
+  if (raw.timeZone !== undefined && raw.timeZone !== null) {
+    if (typeof raw.timeZone !== "string" || !timeZoneOk(raw.timeZone)) throw new GoogleInputError(`'${String(raw.timeZone).slice(0, 60)}' is not a time zone (use an IANA name such as Europe/Paris).`);
+    timeZone = raw.timeZone;
+  }
+  return { from, to, minutes, dayStart, dayEnd, weekends: raw.weekends === true, ...(timeZone ? { timeZone } : {}) };
+}
 // ---- Drive, Docs, Sheets ---------------------------------------------------
 // With `drive.file` Google itself shows only the files the cockpit created.
 // With the whole-Drive scope (`drive_all`) every call below reaches ANY file,

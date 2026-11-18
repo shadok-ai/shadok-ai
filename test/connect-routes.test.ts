@@ -258,3 +258,11 @@ test("a connected GitHub account: login as label, numeric id as identity, 8 h ac
   assert.equal(lasting.expiresAt, Number.MAX_SAFE_INTEGER);
   assert.equal(lasting.refreshExpiresAt, undefined);
 });
+
+test("Triage Gmail and Others' free/busy: offered only by a broker that names them; an older one keeps the dialog without them", () => {
+  const older = ["calendar", "drive", "gmail", "gmail_read", "drive_all"];
+  const g = healthProviders({ providers: ["google"], googleAreas: older }).googleAreas as string[];
+  assert.equal(g.includes("gmail_modify") || g.includes("calendar_freebusy"), false);
+  assert.deepEqual(healthProviders({ providers: ["google"], googleAreas: [...older, "gmail_modify", "calendar_freebusy"] }).googleAreas, [...older, "gmail_modify", "calendar_freebusy"]);
+  assert.deepEqual(parseAreas(["calendar_freebusy", "gmail_modify", "calendar"]), ["calendar", "gmail_modify", "calendar_freebusy"]);
+});
