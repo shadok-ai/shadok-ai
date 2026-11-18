@@ -19,16 +19,16 @@ GOOGLE_ALT_HOSTS = "demo.shadok.ai"
 # The GitHub App's slug (github.com/apps/<slug>): /health advertises its
 # installation page, where a person picks the repositories it reaches.
 GITHUB_APP_SLUG = "shadok-ai"
-# The admin page (/admin) — see the README. Without both it does not exist.
-# ACCESS_TEAM_DOMAIN = "<team>.cloudflareaccess.com"
-# ADMIN_EMAILS = "you@example.com"
+# The admin page (/admin) — see the README. Without this and the ACCESS_AUD
+# secret it does not exist. The email allowlist is the ADMIN_EMAILS secret.
+ACCESS_TEAM_DOMAIN = "odd-butterfly-68df.cloudflareaccess.com"
 
 # The admin page's storage. Create it with `npx wrangler kv namespace create
 # CONFIG` and paste the id; without the binding the page is read-only and the
 # Worker secrets are used, as before.
-# [[kv_namespaces]]
-# binding = "CONFIG"
-# id = "<namespace id>"
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "365f49fdfca64a48ab81646f28f005fc"
 
 # Paths the broker does not own (/, /waitlist, ...) are forwarded to the site
 # Worker, deployed separately. Deploy that Worker first: a binding to a

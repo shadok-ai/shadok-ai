@@ -80,7 +80,8 @@ Setup, once:
    allowing your email. Copy its **Application Audience (AUD) tag**.
 4. `npx wrangler secret put ACCESS_AUD` (the tag), and set
    `ACCESS_TEAM_DOMAIN = "<team>.cloudflareaccess.com"` in `wrangler.toml`
-   `[vars]` (optionally `ADMIN_EMAILS`), then deploy.
+   `[vars]`, optionally `npx wrangler secret put ADMIN_EMAILS` (kept out of the
+   repository), then deploy.
 
 **GitHub** is a GitHub App, not an OAuth App: it takes no scopes, and what a
 token reaches is the app's permissions on the repositories the person
