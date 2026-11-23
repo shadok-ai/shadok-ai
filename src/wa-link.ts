@@ -77,7 +77,7 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
       return { phase: "unlinked" };
 
     case "halt":
-      // A process-level state (no library, refused deployment) outranks a
+      // A process-level state (a refused deployment) outranks a
       // failure inside it: the admin must see the reason that blocks everything.
       return s.phase === "unavailable" ? s : halted(s, e.cause, e.reason, now);
 

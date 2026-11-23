@@ -80,10 +80,14 @@ export function startWhatsApp(o: {
    *  every tick: an instance's group migration completes AFTER boot, and the
    *  feature must open then without a restart. */
   refusal: string | null | (() => string | null);
-  /** Rejects when the library is absent. Called lazily — only when there is a
-   *  stored session or someone asks to link — so an instance that never uses
+  /** Rejects when the library cannot load. Called lazily — only when there is
+   *  a stored session or someone asks to link — so an instance that never uses
    *  WhatsApp never loads it. */
   loadFactory: () => Promise<WaTransportFactory>;
+  /** The on-demand library (`wa-library.ts`). Absent = always ready (tests,
+   *  the fake). Installing is an ADMIN's act — a Link, a Retry — never a boot's:
+   *  a boot that finds a stored session without its library halts and says so. */
+  library?: { status(): "ready" | "absent" | "stale"; install(o?: { force?: boolean }): Promise<void> };
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => Timer;
   log?: (line: string) => void;
@@ -108,6 +112,33 @@ export function startWhatsApp(o: {
    *  opens nor closes (a socket gone silent mid-handshake) is abandoned after
    *  LIVENESS_MS, or "retrying" would be a lie told for ever. */
   let attemptStartedAt = 0;
+  /** Which install the state is waiting for: an Unlink, a refusal or a second
+   *  Link in between makes an earlier install's outcome irrelevant. */
+  let installSeq = 0;
+
+  const libReady = () => !o.library || o.library.status() === "ready";
+  const libReason = () =>
+    o.library?.status() === "stale"
+      ? "the installed WhatsApp library is out of date (this release pins another version) — Install to reconnect"
+      : "the WhatsApp library is not installed on this instance (the session was kept, the library was not) — Install to reconnect";
+
+  /** Install, then `cont` — unless something else happened meanwhile. */
+  function startInstall(then: "link" | "resume", force: boolean, cont: () => void) {
+    cancelRetry();
+    dispatch({ type: "install-requested", then });
+    if (s.phase !== "installing") return;
+    const mine = ++installSeq;
+    const current = () => !stopped && mine === installSeq && s.phase === "installing";
+    o.library!.install({ force }).then(
+      () => {
+        factory = null; // the next start loads the fresh copy
+        if (current()) cont();
+      },
+      (e) => {
+        if (current()) dispatch({ type: "halt", cause: "library", reason: `could not install the WhatsApp library: ${oneLine(e)}` });
+      },
+    );
+  }
 
   // ── the boot breaker ─────────────────────────────────────────────────────
   // The worker contains whatever the library THROWS; a native crash still
@@ -222,9 +253,12 @@ export function startWhatsApp(o: {
     try {
       f = await getFactory();
     } catch (e) {
-      // The library is absent or broken: say so, and leave the session on disk
-      // — installing the library must bring the link back, not a QR.
-      dispatch({ type: "unavailable", reason: oneLine(e) });
+      // The library will not load: say so, and leave the session on disk —
+      // reinstalling it (Retry) must bring the link back, not a QR. Not cached:
+      // the next attempt loads again.
+      factory = null;
+      cancelRetry();
+      dispatch({ type: "halt", cause: "library", reason: oneLine(e) });
       return;
     }
     if (!wantsTransport()) return;
@@ -333,13 +367,17 @@ export function startWhatsApp(o: {
     scheduleStart(0);
   }
 
+  /** A stored session whose library is missing or stale: said, not installed. */
+  function haltForLibrary(stored: { account: WaAccount; linkedAt: number }) {
+    dispatch({ type: "stored-session", ...stored });
+    dispatch({ type: "halt", cause: "library", reason: libReason() });
+  }
+
   function resume() {
     const stored = storedAccount(o.sessionDir);
-    if (stored) {
-      resumeStored(stored);
-    } else {
-      dispatch({ type: "unlinked" });
-    }
+    if (stored && !libReady()) haltForLibrary(stored);
+    else if (stored) resumeStored(stored);
+    else dispatch({ type: "unlinked" });
   }
 
   function tick() {
@@ -386,6 +424,8 @@ export function startWhatsApp(o: {
       // the start after.
       dispatch({ type: "stored-session", ...stored });
       dispatch({ type: "halt", cause: "crash", reason: CRASH_REASON });
+    } else if (stored && !libReady()) {
+      haltForLibrary(stored);
     } else if (stored) {
       resumeStored(stored);
     }
@@ -396,7 +436,15 @@ export function startWhatsApp(o: {
     const refusal = refusalNow();
     if (refusal) return { ok: false, error: refusal };
     if (s.phase === "unavailable") return { ok: false, error: s.reason };
-    if (s.phase === "linking" || s.phase === "connected" || s.phase === "reconnecting") return { ok: true };
+    if (s.phase === "linking" || s.phase === "connected" || s.phase === "reconnecting" || s.phase === "installing") return { ok: true };
+    // A library that installed but would not load is installed again.
+    const force = !!o.library && s.phase === "halted" && s.cause === "library" && libReady();
+    if (force || !libReady()) startInstall("link", force, linkNow);
+    else linkNow();
+    return { ok: true };
+  }
+
+  function linkNow() {
     cancelRetry();
     dispatch({ type: "link-requested" });
     void serial(async () => {
@@ -412,7 +460,6 @@ export function startWhatsApp(o: {
       }
       await startTransport();
     });
-    return { ok: true };
   }
 
   return {
@@ -427,7 +474,14 @@ export function startWhatsApp(o: {
       const stored = storedAccount(o.sessionDir);
       // Nothing stored to resume (a linking that failed): retrying is linking.
       if (!stored) return link();
-      resumeStored(stored);
+      const force = !!o.library && s.cause === "library" && libReady();
+      if (force || !libReady())
+        startInstall("resume", force, () => {
+          const again = storedAccount(o.sessionDir);
+          if (again) resumeStored(again);
+          else dispatch({ type: "unlinked" });
+        });
+      else resumeStored(stored);
       return { ok: true };
     },
 
@@ -483,7 +537,7 @@ export function startWhatsApp(o: {
           result = { ok: false, error: `could not delete the stored session: ${oneLine(e)}` };
           return;
         }
-        // Unavailable is about the process (no library, refused deployment) and
+        // Unavailable is about the process (a refused deployment) and
         // stays the truth after the wipe: only the credential is gone. Wiping
         // there matters MORE than anywhere — a refused instance may run agents
         // as the server's user, who could read it.
