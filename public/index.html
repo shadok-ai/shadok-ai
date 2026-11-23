@@ -4324,6 +4324,7 @@
         <p>Linking makes this instance a <b>linked device</b> of a WhatsApp account, the way WhatsApp Web is. You scan a code with the phone that holds the number; the phone keeps working as before.</p>
         <p class="check-hint">One number, one instance: do not link the same account to two instances — both would answer. Linking only, for now: messages are not handled yet.</p>
       </div>
+      <p class="wa-block check-hint" id="waDownload" data-wa-block="download" hidden></p>
       <details class="fold wa-block wa-warning" data-wa-block="warning" id="waWarning" hidden>
         <summary>Use a number you can afford to lose</summary>
         <p>This connection is not an official WhatsApp API: linking a device this way is outside WhatsApp's terms of use, and the number can be restricted or banned. Link a number dedicated to this instance, never your personal one.</p>
@@ -4341,8 +4342,10 @@
       <p class="wa-block sec-note warn" id="waLost" data-wa-block="lost" hidden></p>
       <p class="wa-block" id="waRemoved" data-wa-block="removed" hidden></p>
       <p class="wa-block" id="waReason" data-wa-block="reason" hidden></p>
+      <p class="wa-block" id="waInstalling" data-wa-block="installing" hidden></p>
       <div class="wa-actions">
         <button id="waLink" data-wa-action="link" hidden>Link a number</button>
+        <button id="waInstall" data-wa-action="install" hidden title="Download the pinned WhatsApp library with npm, then continue">Install the WhatsApp library</button>
         <button id="waRetry" data-wa-action="retry" hidden title="Try the stored session again">Retry</button>
         <button id="waRelink" data-wa-action="relink" hidden>Link again</button>
         <button id="waCancel" data-wa-action="cancel" hidden>Cancel</button>
@@ -18340,7 +18343,7 @@
     $("waStatus").replaceChildren(dot, m.status);
     for (const el of document.querySelectorAll("#waPanel [data-wa-block]")) el.hidden = !m.blocks.includes(el.dataset.waBlock);
     for (const el of document.querySelectorAll("#waPanel [data-wa-action]")) el.hidden = !m.actions.includes(el.dataset.waAction);
-    for (const [k, id] of [["identity", "waIdentity"], ["since", "waSince"], ["lost", "waLost"], ["removed", "waRemoved"], ["reason", "waReason"]])
+    for (const [k, id] of [["identity", "waIdentity"], ["since", "waSince"], ["lost", "waLost"], ["removed", "waRemoved"], ["reason", "waReason"], ["download", "waDownload"], ["installing", "waInstalling"]])
       $(id).textContent = m.text[k] || "";
     // The warning is open where it is the point (before linking), folded but
     // still reachable once a number is linked.
@@ -18392,6 +18395,8 @@
   $("waLink").addEventListener("click", () => waRequest("POST"));
   $("waRelink").addEventListener("click", () => waRequest("POST"));
   $("waRetry").addEventListener("click", () => waRequest("POST", "/whatsapp/retry"));
+  // From a halt for the library: install it, then resume the session (or link).
+  $("waInstall").addEventListener("click", () => waRequest("POST", "/whatsapp/retry"));
   $("waCancel").addEventListener("click", () => waRequest("DELETE"));
   $("waUnlink").addEventListener("click", () => {
     if (!confirm("Unlink this WhatsApp number?\n\nThe device is logged out on WhatsApp's side and the stored session is deleted from this instance. Linking again needs the phone.")) return;

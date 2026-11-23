@@ -108,3 +108,65 @@ test("linking with a code that cannot be drawn says why, instead of 'waiting for
   assert.match(m.text.reason, /qrcode/);
   assert.deepEqual(m.actions, ["cancel"]);
 });
+
+// ── the library, installed on demand ────────────────────────────────────────
+
+test("unlinked with the library not installed: Link is still THE action, and the panel says it downloads first", () => {
+  const m = waPanelModel({ phase: "unlinked", library: "absent" }, NOW);
+  assert.deepEqual(m.blocks, ["intro", "download", "warning"]);
+  assert.deepEqual(m.actions, ["link"]);
+  assert.match(m.text.download, /downloads the WhatsApp library/);
+  assert.match(m.text.download, /MB/);
+  assert.match(waPanelModel({ phase: "unlinked", library: "stale" }, NOW).text.download, /newer|another version/);
+  assert.deepEqual(waPanelModel({ phase: "unlinked", library: "ready" }, NOW).blocks, ["intro", "warning"]);
+});
+
+test("installing: wait, an honest 'it can take a minute', and no button that would start a second install", () => {
+  const m = waPanelModel({ phase: "installing", startedAt: NOW - 20_000, then: "link" }, NOW);
+  assert.equal(m.tone, "wait");
+  assert.match(m.status, /Installing/);
+  assert.deepEqual(m.blocks, ["installing"]);
+  assert.deepEqual(m.actions, []);
+  assert.match(m.text.installing, /minute/);
+  assert.match(m.text.installing, /QR code/);
+});
+
+test("installing to resume a stored session: whose, what follows, and Unlink still offered", () => {
+  const m = waPanelModel({ phase: "installing", startedAt: NOW, then: "resume", account: ACCOUNT, stored: true }, NOW);
+  assert.deepEqual(m.blocks, ["identity", "installing"]);
+  assert.match(m.text.installing, /reconnects/);
+  assert.deepEqual(m.actions, ["unlink"]);
+});
+
+test("halted for the library: the reason, and Install — Link again only when there is a session to relink", () => {
+  const withSession = waPanelModel({ phase: "halted", cause: "library", account: ACCOUNT, at: NOW, reason: "the WhatsApp library is not installed on this instance", stored: true }, NOW);
+  assert.equal(withSession.tone, "err");
+  assert.match(withSession.status, /library/i);
+  assert.deepEqual(withSession.actions, ["install", "relink", "unlink"]);
+  assert.match(withSession.text.reason, /not installed/);
+  const failedInstall = waPanelModel({ phase: "halted", cause: "library", at: NOW, reason: "could not install the WhatsApp library: the disk is full" }, NOW);
+  assert.deepEqual(failedInstall.actions, ["install"]);
+  assert.match(failedInstall.text.reason, /disk is full/);
+});
+
+test("every block and button the model can name exists in the page", async () => {
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const views = [
+    { phase: "unlinked", library: "absent" },
+    { phase: "installing", startedAt: NOW, then: "resume", account: ACCOUNT, stored: true },
+    { phase: "linking", startedAt: NOW, qrSvg: "<svg/>" },
+    { phase: "linking", startedAt: NOW, qrError: "x" },
+    { phase: "connected", account: ACCOUNT, linkedAt: NOW, connectedAt: NOW, lastSeenAt: NOW },
+    { phase: "reconnecting", account: ACCOUNT, linkedAt: NOW, lostAt: NOW, attempt: 1 },
+    { phase: "logged-out", account: ACCOUNT, at: NOW, detail: "d" },
+    { phase: "halted", cause: "permanent", account: ACCOUNT, at: NOW, reason: "r", stored: true },
+    { phase: "halted", cause: "library", account: ACCOUNT, at: NOW, reason: "r" },
+    { phase: "unavailable", reason: "r" },
+  ];
+  for (const v of views) {
+    const m = waPanelModel(v, NOW);
+    for (const b of m.blocks) assert.ok(html.includes(`data-wa-block="${b}"`), `block ${b}`);
+    for (const a of m.actions) assert.ok(html.includes(`data-wa-action="${a}"`), `action ${a}`);
+  }
+});

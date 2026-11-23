@@ -50,10 +50,44 @@ export function waPanelModel(view, now) {
   return m;
 }
 
+/** Measured: a cold `npm ci` of the pinned tree, on disk. Said before the
+ *  first Link, so a person knows what that click fetches. */
+const LIB_SIZE = "about 35 MB";
+
 function phaseModel(v, now) {
   switch (v.phase) {
-    case "unlinked":
+    case "unlinked": {
+      // The library is installed on demand: the first Link fetches it first.
+      if (v.library === "absent" || v.library === "stale")
+        return {
+          tone: "off",
+          status: "Not linked",
+          blocks: ["intro", "download", "warning"],
+          actions: ["link"],
+          text: {
+            download:
+              v.library === "stale"
+                ? `This release pins another version of the WhatsApp library: Link downloads it first (${LIB_SIZE}) — it can take a minute.`
+                : `The first Link downloads the WhatsApp library (${LIB_SIZE}, pinned by this release) — it can take a minute.`,
+          },
+        };
       return { tone: "off", status: "Not linked", blocks: ["intro", "warning"], actions: ["link"], text: {} };
+    }
+
+    case "installing":
+      // No action: a click here could only start the same install again.
+      return {
+        tone: "wait",
+        status: "Installing the WhatsApp library…",
+        blocks: v.account ? ["identity", "installing"] : ["installing"],
+        actions: [],
+        text: {
+          ...(v.account ? { identity: who(v.account) } : {}),
+          installing: `Downloading the pinned WhatsApp library with npm (started ${agoText(v.startedAt, now)}) — it can take a minute. ${
+            v.then === "resume" ? "The stored session reconnects once it is done." : "The QR code follows once it is done."
+          }`,
+        },
+      };
 
     case "linking": {
       const left = typeof v.expiresAt === "number" ? ` · expires in ${inText(v.expiresAt - now)}` : "";
@@ -108,6 +142,17 @@ function phaseModel(v, now) {
       };
 
     case "halted":
+      if (v.cause === "library")
+        return {
+          tone: "err",
+          status: "WhatsApp library needed",
+          blocks: v.account ? ["identity", "reason"] : ["reason"],
+          actions: v.account ? ["install", "relink"] : ["install"],
+          text: {
+            ...(v.account ? { identity: who(v.account) } : {}),
+            reason: `${typeof v.reason === "string" && v.reason ? v.reason : "the WhatsApp library is not available"} (${agoText(v.at, now)}).`,
+          },
+        };
       return {
         tone: "err",
         status: v.cause === "crash" ? "Stopped after a crash" : v.cause === "error" ? "Stopped — something failed" : "Stopped",
