@@ -20,20 +20,27 @@ export interface WaAccount {
 export type WaLinkState =
   | { phase: "unavailable"; reason: string }
   | { phase: "unlinked" }
+  /** The WhatsApp library is being fetched (it is installed on demand, at the
+   *  first Link): `then` is what follows a success — a fresh link, or resuming
+   *  the stored session whose account it keeps. */
+  | { phase: "installing"; startedAt: number; then: "link" | "resume"; account?: WaAccount; linkedAt?: number }
   | { phase: "linking"; startedAt: number; qr?: string; qrExpiresAt?: number }
   | { phase: "connected"; account: WaAccount; linkedAt: number; connectedAt: number; lastSeenAt: number }
   | { phase: "reconnecting"; account: WaAccount; linkedAt: number; lostAt: number; attempt: number }
   | { phase: "logged-out"; account?: WaAccount; at: number; detail: string }
   /** Stopped, the session kept, waiting for the admin: a permanent refusal from
-   *  WhatsApp (`permanent`), a local failure that has to be said (`error`), or a
-   *  previous start that took the server down while resuming (`crash`). Nothing
+   *  WhatsApp (`permanent`), a local failure that has to be said (`error`), a
+   *  previous start that took the server down while resuming (`crash`), or a
+   *  library that is missing, out of date, failed to install or to load
+   *  (`library` — the panel offers Install). Nothing
    *  retries from here on its own — that is the point of the phase. */
   | { phase: "halted"; cause: WaHaltCause; account?: WaAccount; linkedAt?: number; at: number; reason: string };
 
-export type WaHaltCause = "permanent" | "error" | "crash";
+export type WaHaltCause = "permanent" | "error" | "crash" | "library";
 
 export type WaLinkEvent =
   | { type: "link-requested" }
+  | { type: "install-requested"; then: "link" | "resume" }
   | { type: "cancel" }
   | { type: "unlinked" }
   | { type: "qr"; payload: string; ttlMs: number }
@@ -75,14 +82,32 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
       return s.phase === "unavailable" ? s : halted(s, e.cause, e.reason, now);
 
     case "cancel":
-      // Unavailable is about the process (no library, refused deployment):
-      // nothing a click can cancel out of.
-      return s.phase === "unavailable" ? s : { phase: "unlinked" };
+      // Unavailable is about the process (a refused deployment): nothing a
+      // click can cancel out of. An install is not cancelled either — it ends
+      // by itself (bounded), and Unlink stays available beside it.
+      return s.phase === "unavailable" || s.phase === "installing" ? s : { phase: "unlinked" };
+
+    case "install-requested": {
+      // Same doors as link-requested, and idempotent the same way: a second
+      // click while installing is the same install.
+      if (s.phase !== "unlinked" && s.phase !== "logged-out" && s.phase !== "halted") return s;
+      const account = e.then === "resume" && "account" in s ? s.account : undefined;
+      const linkedAt = e.then === "resume" && "linkedAt" in s ? s.linkedAt : undefined;
+      return {
+        phase: "installing",
+        startedAt: now,
+        then: e.then,
+        ...(account ? { account } : {}),
+        ...(linkedAt !== undefined ? { linkedAt } : {}),
+      };
+    }
 
     case "link-requested":
       // Idempotent while a link exists or is being made: a double click must
       // never start a second linking.
-      return s.phase === "unlinked" || s.phase === "logged-out" || s.phase === "halted" ? { phase: "linking", startedAt: now } : s;
+      return s.phase === "unlinked" || s.phase === "logged-out" || s.phase === "halted" || s.phase === "installing"
+        ? { phase: "linking", startedAt: now }
+        : s;
 
     case "qr":
       return s.phase === "linking" ? { ...s, qr: e.payload, qrExpiresAt: now + e.ttlMs } : s;
@@ -99,6 +124,8 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
       return s.phase === "connected" ? { ...s, lastSeenAt: now } : s;
 
     case "close": {
+      // No transport runs while installing: a close can only be a stale one.
+      if (s.phase === "installing") return s;
       if (e.reason === "logged-out")
         return {
           phase: "logged-out",
@@ -172,6 +199,8 @@ export function linkView(s: WaLinkState, now: number, forPerson: boolean): Recor
       return { phase: s.phase, reason: s.reason, now };
     case "unlinked":
       return { phase: s.phase, now };
+    case "installing":
+      return { phase: s.phase, startedAt: s.startedAt, then: s.then, ...(s.account ? { account: acct(s.account) } : {}), now };
     case "linking": {
       const v: Record<string, unknown> = { phase: s.phase, startedAt: s.startedAt, expiresAt: s.startedAt + LINK_TIMEOUT_MS, now };
       // An expired payload would only make the phone say "invalid code".

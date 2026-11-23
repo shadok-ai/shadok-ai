@@ -202,3 +202,44 @@ test("linkView of halted names cause and reason", () => {
   assert.equal(v.reason, "r");
   assert.equal(v.account.phone, "336…00");
 });
+
+// ── installing: the library is fetched on demand ────────────────────────────
+
+test("install-requested enters installing from unlinked, logged-out and halted — keeping the account on a resume", () => {
+  assert.deepEqual(linkReduce({ phase: "unlinked" }, { type: "install-requested", then: "link" }, T), { phase: "installing", startedAt: T, then: "link" });
+  const h: WaLinkState = { phase: "halted", cause: "library", account: ADA, linkedAt: 5, at: T - 1, reason: "r" };
+  assert.deepEqual(linkReduce(h, { type: "install-requested", then: "resume" }, T), { phase: "installing", startedAt: T, then: "resume", account: ADA, linkedAt: 5 });
+  const lo: WaLinkState = { phase: "logged-out", account: ADA, at: T - 1, detail: "d" };
+  assert.equal(linkReduce(lo, { type: "install-requested", then: "link" }, T).phase, "installing");
+});
+
+test("install-requested is ignored while a link exists, while installing, and while unavailable", () => {
+  const inst: WaLinkState = { phase: "installing", startedAt: T - 5, then: "link" };
+  for (const s of [connected(), reconnecting(), { phase: "linking", startedAt: T - 5 } as WaLinkState, inst, { phase: "unavailable", reason: "x" } as WaLinkState])
+    assert.deepEqual(linkReduce(s, { type: "install-requested", then: "link" }, T), s);
+});
+
+test("installing leaves by the install's outcome or an admin's act, never by a transport event or a tick", () => {
+  const inst: WaLinkState = { phase: "installing", startedAt: T - 5, then: "resume", account: ADA, linkedAt: 5 };
+  assert.equal(linkReduce(inst, { type: "link-requested" }, T).phase, "linking");
+  assert.equal(linkReduce(inst, { type: "stored-session", account: ADA, linkedAt: 5 }, T).phase, "reconnecting");
+  assert.deepEqual(linkReduce(inst, { type: "halt", cause: "library", reason: "no network" }, T), {
+    phase: "halted",
+    cause: "library",
+    account: ADA,
+    linkedAt: 5,
+    at: T,
+    reason: "no network",
+  });
+  assert.equal(linkReduce(inst, { type: "unlinked" }, T).phase, "unlinked");
+  for (const e of [{ type: "tick" }, { type: "alive" }, { type: "cancel" }, { type: "close", reason: "lost" }, { type: "close", reason: "fatal" }, { type: "qr", payload: "q", ttlMs: 1 }, { type: "open", account: ADA }] as const)
+    assert.deepEqual(linkReduce(inst, e, T + 10 * LINK_TIMEOUT_MS), inst);
+});
+
+test("linkView of installing says since when and what follows, the number masked", () => {
+  const v = linkView({ phase: "installing", startedAt: T - 5, then: "resume", account: ADA, linkedAt: 5 }, T, false) as Record<string, any>;
+  assert.equal(v.phase, "installing");
+  assert.equal(v.startedAt, T - 5);
+  assert.equal(v.then, "resume");
+  assert.equal(v.account.phone, "336…00");
+});
