@@ -2568,3 +2568,13 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     optional dependency of `typescript`, and `tsc` then cannot run at all.
     `test/wa-baileys.test.ts` scans `src/` for the quoted package name (a scan
     for `import("baileys")` alone would miss the variable specifier).
+    **And it never runs in the server's thread.** Lazy and optional covers a
+    library that is ABSENT; it does nothing for one that is present and throws
+    from its own async code — an unhandled rejection in its socket handling is
+    outside every try we own, and it exits the process, with the boot resume
+    turning that into a crash loop for a feature that handled no message. The
+    transport therefore runs in a worker thread (`src/wa-worker-host.ts`), which
+    contains it by construction, rather than behind a process-level handler,
+    which would change the fate of every OTHER error and could only guess an
+    error's origin from its stack. What a worker cannot contain — a native
+    crash — is what the boot breaker in `src/whatsapp.ts` is for.

@@ -945,7 +945,11 @@ from the phone's *Linked devices* list too.
 - The panel always shows the link's true state, one at a time: *Not linked*,
   *Linking*, *Connected*, *Reconnecting* (a link that stops answering leaves
   *Connected* within about two minutes, even with no disconnect event),
-  *Unlinked remotely* (removed from the phone), or *Unavailable* with the reason.
+  *Unlinked remotely* (removed from the phone), *Stopped* with the reason (WhatsApp
+  refused the number, the same number was connected elsewhere, a local failure, or
+  a previous start that went down while resuming — nothing is retried on its own;
+  **Retry** or **Link again** is your call), or *Unavailable* with the reason.
+  **Unlink** is offered whenever a session is stored, in every state.
 - **Multi-tenant, migrated instances only.** The stored session IS the account,
   so it must be out of every agent's reach: it lives in
   `~/.shadok-ai/whatsapp/<instance>/` (mode 0700, on the data volume, so a

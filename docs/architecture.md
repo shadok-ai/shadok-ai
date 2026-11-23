@@ -687,10 +687,22 @@ unlink it. No message is handled yet.
   scans `src/` for any other file naming it. The fake (`src/wa-fake.ts`) models
   what a throwaway spike observed of the real thing and is how every rule below is
   tested — and, with `SHADOK_WA_FAKE=1`, how the panel is checked in a browser.
-- **The state is a pure reducer** (`src/wa-link.ts`). Six phases, one at a time:
+- **The library runs in a worker thread** (`src/wa-worker.ts`, `src/wa-worker-host.ts`).
+  Its socket code runs async work outside every try of ours, and an unhandled
+  rejection there would exit the whole server — with the boot resuming the stored
+  session, on every start. Each transport therefore lives in a worker of its own:
+  whatever the library throws ends that thread, and the host reports exactly ONE
+  `close{error}`, which the handle retries like any other. Even checking that the
+  library loads happens in a throwaway worker. No `process.on` handler is installed
+  (a test locks that), so errors from anywhere else behave exactly as before.
+  A worker does not contain a NATIVE crash; the boot breaker below does.
+- **The state is a pure reducer** (`src/wa-link.ts`). Seven phases, one at a time:
   `unavailable` (no library, or the capability gate refuses) · `unlinked` ·
   `linking` (the QR, rotated by the library: 60 s for the first, 20 s after) ·
-  `connected` · `reconnecting` · `logged-out` (removed from the phone). Three
+  `connected` · `reconnecting` · `logged-out` (removed from the phone) ·
+  `halted` (stopped, session kept, nothing retries: a permanent refusal from
+  WhatsApp — 403 refused/banned, 440 connection replaced, 411, 500 —, a local
+  failure that has to be said, or a `crash`, see the breaker). Three
   rules carry the review focus: the **"restart required" close right after a scan
   stays in `linking`** (it is how linking ends, never a failure); **a QR nobody
   scans** expires back to `unlinked` after `LINK_TIMEOUT_MS`; and **a socket that
@@ -704,11 +716,42 @@ unlink it. No message is handled yet.
   closes is abandoned after `LIVENESS_MS`, or "retrying" would be a lie told for
   ever (found in the browser check, not by reasoning). A QR arriving on a RESUME
   means the stored session is dead: it lands on `logged-out` instead of rotating
-  codes for nobody. **Unlink** logs out (bounded, errors logged), stops, and wipes
-  the session directory whatever the logout did; the library's own `logged-out`
-  close during that logout is dropped. The library is loaded **lazily** — only
+  codes for nobody. **Unlink** works in EVERY phase — `unavailable` included, where
+  it matters most, since a refused instance may run agents as the server's user:
+  it logs out when a socket is open (bounded, errors logged), stops, and wipes the
+  session directory whatever the logout did; the library's own `logged-out` close
+  during that logout is dropped. It answers 409 when nothing was stored, and GET
+  `/whatsapp` reports `stored` so the panel offers Unlink whenever there is
+  something to delete. The library is loaded **lazily** — only
   with a stored session or on Link — so an instance that never uses WhatsApp never
   loads it; a load failure is `unavailable` and leaves the session on disk.
+- **Permanent refusals stop.** `closeReasonOf` covers the library's whole
+  `DisconnectReason`: 403/440/411/500 are `fatal` → `halted{permanent}` with a
+  worded reason, never "Reconnecting". 440 matters most: the same number connected
+  elsewhere, and two instances would evict each other every minute for ever. One
+  caveat read from the library: an unrecognised stream error is also reported as
+  500, which is why `halted` offers **Retry** (`POST /whatsapp/retry`) besides
+  Link again.
+- **A step that throws ends in a state that says so** (`halted{error}`): a session
+  directory that cannot be used on a resume or a link, a wipe that fails on
+  Unlink or Cancel (and Unlink then answers 500, never "ok"). The serial chain's
+  catch halts too, as a net for anything else that leaves a transport phase with
+  no transport behind it.
+- **The boot breaker.** A marker (`.resume-in-progress`, in the session directory)
+  is written before any resume of the stored session and removed once the link
+  has held `connected` for `RESUME_SETTLE_MS` (60 s), when the resume ends any
+  other way, on a clean stop, or on a deliberate exit (0, update, reload — the
+  server's `exit` hook). Found at boot, it means the last resume died with the
+  server: the link halts (`crash`) instead of resuming into the same crash, and
+  stays halted across further boots until the admin retries, relinks or unlinks.
+  A SIGTERM bypasses `exit` handlers, so a container stopped mid-resume halts the
+  link once — a false positive that costs one click.
+- **No write after stop.** Both of the library's write paths — `saveCreds` on
+  `creds.update`, and `keys.set`, which it calls by itself for signal keys — go
+  through one gate that only `stop()` clears (not the socket's close: a pairing's
+  final creds are saved around the restart-required close), every write is
+  tracked, and `stop()` resolves only once those under way have landed. That is
+  the contract an Unlink relies on: after it, the directory is empty and stays so.
 - **The gate** is `migratedIsolationRefusal` (`src/capability.ts`): the existing
   `isolationRefusal` plus the groups having been migrated, since before that
   commons agents run as the server's user and could read the session. It is
@@ -716,7 +759,8 @@ unlink it. No message is handled yet.
 - **Storage**: `~/.shadok-ai/whatsapp/<instanceKey>/`, 0700 re-asserted, a
   symlink in its place refused; the handle's own `account.json` (0600) says whose
   session it is, the library's files are the library's business, and the wipe
-  never follows a symlink out of the directory.
+  never follows a symlink out of the directory — and refuses a session directory
+  that is itself a symlink, which `readdirSync` would otherwise follow.
 - **What leaves the server.** `GET /whatsapp` is admin-only; the QR is drawn
   server-side as SVG (`qrcode`; the page's CSP allows no external image) and
   returned only to a cookie-authenticated person — never to a caller presenting an
@@ -3196,7 +3240,8 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/wa-link.ts` | The WhatsApp link's state as a pure reducer (`linkReduce`), the backoff (`reconnectDelayMs`), the panel's view (`linkView` — the QR and the full number for a person only, the raw device id never) and `maskPhone`. `LINK_TIMEOUT_MS` ends a QR nobody scans; `LIVENESS_MS` takes a silent socket out of `connected`. See "The WhatsApp link". |
 | `src/wa-transport.ts` | The seam (`WaTransport`, `WaTransportFactory`) and the session directory: `waSessionDir`, `ensureSessionDir` (0700 re-asserted, symlink refused), `rememberAccount` / `storedAccount` (its own `account.json`, never the library's files), `wipeSession` (never follows a symlink out). |
 | `src/wa-fake.ts` | The scripted fake transport: QR rotation, restart-required after `scan`, silent resume, `removeFromPhone`, `goSilent` (one socket) and `offline`/`online` (every socket), a logout that can fail. Unit tests, and `SHADOK_WA_FAKE=1` on a side instance. |
-| `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, link / cancel / unlink. Invariant 75. |
+| `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, the boot breaker (`RESUME_MARK`), link / retry / cancel / unlink (every phase). Invariant 75. |
+| `src/wa-worker-host.ts` / `src/wa-worker.ts` | Runs a transport in a worker thread so an error raised inside the library ends the worker, never the server: `workerTransportFactory` (one worker per transport, exactly one `close{error}` when it dies, `stop()` lets the adapter drain its writes) and `probeInWorker` (does the library load?). |
 | `src/wa-baileys.ts` | The ONLY file that names the WhatsApp library (`baileys`, an optionalDependency pinned exactly, dynamic import from a variable): `loadBaileysFactory`, `closeReasonOf`, `accountOf`, and `qrSvg` (server-side QR drawing). QR pairing only — pairing by code is broken upstream. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
