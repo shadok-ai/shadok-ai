@@ -64,3 +64,70 @@ test("the library is an OPTIONAL dependency, the version pinned exactly", () => 
   assert.equal(pkg.dependencies?.baileys, undefined);
   assert.equal(pkg.dependencies?.qrcode, undefined);
 });
+
+// ── no write after stop ─────────────────────────────────────────────────────
+import os from "node:os";
+import { EventEmitter } from "node:events";
+import { makeBaileysTransport } from "../src/wa-baileys.js";
+import { ensureSessionDir, wipeSession } from "../src/wa-transport.js";
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A stand-in for the library whose credential writes land LATE, through both
+ *  of its write paths: `saveCreds` (on creds.update) and `keys.set` (signal
+ *  keys, written by the library itself whenever it likes). */
+function lateWritingLib() {
+  let auth: { keys: { set(d: unknown): Promise<void> } } | null = null;
+  const ev = new EventEmitter();
+  const lib = {
+    async useMultiFileAuthState(dir: string) {
+      return {
+        state: {
+          creds: {},
+          keys: {
+            get: async () => ({}),
+            set: async () => { await delay(40); fs.writeFileSync(path.join(dir, `key-${Date.now()}-${Math.random()}.json`), "k"); },
+          },
+        },
+        saveCreds: async () => { await delay(40); fs.writeFileSync(path.join(dir, "creds.json"), "c"); },
+      };
+    },
+    default: (cfg: { auth: typeof auth }) => {
+      auth = cfg.auth;
+      return { ev, ws: new EventEmitter(), user: undefined, logout: async () => {}, end: () => {} };
+    },
+    Browsers: { ubuntu: () => ["Ubuntu", "Chrome", "1"] },
+  };
+  return { lib, ev, keys: () => auth!.keys };
+}
+
+test("after stop, the adapter writes nothing: in-flight writes are awaited, later ones dropped", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wa-late-")), "s");
+  ensureSessionDir(dir);
+  const { lib, ev, keys } = lateWritingLib();
+  const t = makeBaileysTransport(lib as never, dir);
+  await t.start(() => {});
+  // Two writes in flight when the unlink begins.
+  ev.emit("creds.update", {});
+  void keys().set({ "pre-key": { 1: {} } });
+  await t.stop(); // must not resolve before those two have landed
+  wipeSession(dir);
+  assert.deepEqual(fs.readdirSync(dir), []);
+  // The library is still holding references and keeps trying to write.
+  ev.emit("creds.update", {});
+  await keys().set({ "pre-key": { 2: {} } });
+  await delay(120);
+  assert.deepEqual(fs.readdirSync(dir), [], "a late write recreated credentials after the wipe");
+});
+
+test("writes keep landing across a restart-required close (the creds that finish a pairing)", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wa-late-")), "s");
+  ensureSessionDir(dir);
+  const { lib, ev } = lateWritingLib();
+  const t = makeBaileysTransport(lib as never, dir);
+  await t.start(() => {});
+  ev.emit("creds.update", {});
+  ev.emit("connection.update", { connection: "close", lastDisconnect: { error: { output: { statusCode: 515 } } } });
+  await t.stop();
+  assert.ok(fs.existsSync(path.join(dir, "creds.json")), "the pairing's creds must be saved, not dropped by the close");
+});

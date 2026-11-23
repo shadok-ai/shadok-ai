@@ -28,6 +28,8 @@ export interface WaTransport {
   start(on: (e: WaTransportEvent) => void): Promise<void>;
   /** Log this device out on WhatsApp's side. May reject; the caller wipes the session either way. */
   logout(): Promise<void>;
+  /** Resolves only once nothing more can be written to the session directory:
+   *  an unlink wipes right after it, and the directory must STAY empty. */
   stop(): Promise<void>;
 }
 

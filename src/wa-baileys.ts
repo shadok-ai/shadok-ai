@@ -101,15 +101,46 @@ interface LibSocket {
   logout(msg?: string): Promise<void>;
   end(err: Error | undefined): void;
 }
+interface LibAuthState {
+  creds: unknown;
+  keys: { get(type: string, ids: string[]): Promise<unknown>; set(data: unknown): Promise<void> };
+}
 interface Lib {
   default: (cfg: Record<string, unknown>) => LibSocket;
-  useMultiFileAuthState(dir: string): Promise<{ state: unknown; saveCreds: () => Promise<void> }>;
+  useMultiFileAuthState(dir: string): Promise<{ state: LibAuthState; saveCreds: () => Promise<void> }>;
   Browsers: { ubuntu(b: string): unknown };
 }
 
-function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport {
+/** How long `stop()` waits for credential writes already under way. */
+const DRAIN_MS = 5_000;
+
+/**
+ * The transport over the library. Exported for its tests only.
+ *
+ * Two flags, on purpose: `live` gates EVENTS (a closed socket must not move
+ * the state), `writable` gates the session DIRECTORY and only `stop()` clears
+ * it — a pairing's final credentials are saved around the restart-required
+ * close, and must not be dropped by it. Both of the library's write paths go
+ * through the gate (`saveCreds` on creds.update, and `keys.set`, which the
+ * library calls by itself for signal keys), every write is tracked, and
+ * `stop()` resolves only once those under way have landed. That is the
+ * contract an unlink relies on: after `stop()` + wipe the directory is empty
+ * and STAYS empty, however long the library keeps a reference.
+ */
+export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport {
   let sock: LibSocket | null = null;
   let live = false;
+  let writable = true;
+  const pending = new Set<Promise<unknown>>();
+  const track = (p: Promise<unknown>): Promise<void> => {
+    const q = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    pending.add(q);
+    void q.finally(() => pending.delete(q));
+    return q;
+  };
   return {
     async start(on) {
       live = true;
@@ -117,15 +148,24 @@ function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport {
         if (live) on(e);
       };
       const { state, saveCreds } = await lib.useMultiFileAuthState(sessionDir);
+      const auth: LibAuthState = {
+        creds: state.creds,
+        keys: {
+          get: (type, ids) => state.keys.get(type, ids),
+          set: (data) => (writable ? track(state.keys.set(data)) : Promise.resolve()),
+        },
+      };
       const s = lib.default({
-        auth: state,
+        auth,
         logger: SILENT_LOGGER,
         browser: lib.Browsers.ubuntu("Chrome"),
         syncFullHistory: false,
         markOnlineOnConnect: false,
       });
       sock = s;
-      s.ev.on("creds.update", () => void saveCreds().catch(() => {}));
+      s.ev.on("creds.update", () => {
+        if (writable) void track(saveCreds());
+      });
       // Every decoded frame is a sign of life, and the library pings every
       // ~30 s, so a healthy socket always has some. This is what feeds the
       // liveness watchdog that catches a socket that dies without a close.
@@ -158,12 +198,25 @@ function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport {
     },
     async stop() {
       live = false;
+      writable = false;
       const s = sock;
       sock = null;
       try {
         s?.end(undefined);
       } catch {
         /* already closed */
+      }
+      // Let the writes already under way land BEFORE the caller wipes; a write
+      // that never settles is not allowed to hold an unlink for ever.
+      if (pending.size) {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          Promise.allSettled([...pending]),
+          new Promise((r) => {
+            timer = setTimeout(r, DRAIN_MS);
+          }),
+        ]);
+        clearTimeout(timer);
       }
     },
   };
