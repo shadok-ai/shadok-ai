@@ -4,6 +4,7 @@ import {
   accountsEnabled,
   deploymentMode,
   isolationRefusal,
+  migratedIsolationRefusal,
   probeCanProvision,
 } from "../src/capability.js";
 
@@ -75,4 +76,11 @@ test("requireCapable: mono-tenant answers 400 + honest message and returns false
   calls.length = 0;
   assert.equal(requireCapable("multi-tenant", res), true);
   assert.equal(calls.length, 0);
+});
+
+test("migratedIsolationRefusal: mono-tenant first, then the migrated half", () => {
+  assert.equal(migratedIsolationRefusal("mono-tenant", true), isolationRefusal("mono-tenant"));
+  assert.equal(migratedIsolationRefusal("mono-tenant", false), isolationRefusal("mono-tenant"));
+  assert.equal(migratedIsolationRefusal("multi-tenant", false), "the instance's groups are not migrated yet");
+  assert.equal(migratedIsolationRefusal("multi-tenant", true), null);
 });

@@ -159,3 +159,21 @@ test("fake: drop → close{lost}; a stopped transport emits nothing", async () =
   fake.script.drop();
   assert.equal(seen.length, n);
 });
+
+test("fake: offline survives a restart until online", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t } = await started(d);
+  fake.script.scan(ADA);
+  await t.stop();
+  fake.script.offline();
+  const seen: WaTransportEvent[] = [];
+  const t2 = await fake.factory({ sessionDir: d });
+  await t2.start((e) => seen.push(e));
+  assert.deepEqual(seen, []);
+  await t2.stop();
+  fake.script.online();
+  const t3 = await fake.factory({ sessionDir: d });
+  await t3.start((e) => seen.push(e));
+  assert.deepEqual(seen, [{ type: "open", account: ADA }]);
+});

@@ -32,6 +32,12 @@ export interface FakeScript {
   ping(): void;
   /** The next `logout()` rejects, as a network failure would. */
   failNextLogout(): void;
+  /** The network is down: the current socket goes silent AND every later
+   *  start stays silent, until `online()`. `goSilent` only kills one socket,
+   *  which the next start replaces at once — too brief to watch a panel say
+   *  "reconnecting". */
+  offline(): void;
+  online(): void;
 }
 
 const CREDS = "fake-creds.json";
@@ -50,6 +56,7 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
   let stops = 0;
   let qrSeq = 0;
   let failLogout = false;
+  let offline = false;
   // Only the most recently started, not yet stopped transport is scriptable:
   // a stopped one must never emit again, exactly like a closed socket.
   let current: { dir: string; emit: (e: WaTransportEvent) => void; silent: boolean; qrs: number } | null = null;
@@ -69,7 +76,7 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     const t: WaTransport = {
       async start(on) {
         starts++;
-        mine = { dir: sessionDir, emit: on, silent: false, qrs: 0 };
+        mine = { dir: sessionDir, emit: on, silent: offline, qrs: 0 };
         current = mine;
         const creds = readCreds(sessionDir);
         if (creds) emit({ type: "open", account: creds });
@@ -116,6 +123,13 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     },
     failNextLogout() {
       failLogout = true;
+    },
+    offline() {
+      offline = true;
+      if (current) current.silent = true;
+    },
+    online() {
+      offline = false;
     },
   };
 

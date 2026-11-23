@@ -71,6 +71,18 @@ export function isolationRefusal(mode: DeploymentMode): string | null {
 }
 
 /**
+ * `isolationRefusal`, plus the groups having been MIGRATED. Multi-tenant is
+ * not enough for a feature whose stored state must be out of every agent's
+ * reach (the WhatsApp session IS the account): until migration completes,
+ * commons agents still run as the server's own user and could read it.
+ * Composed from `isolationRefusal`, never a fork of it, so the two can only
+ * ever disagree on the migrated half.
+ */
+export function migratedIsolationRefusal(mode: DeploymentMode, migrated: boolean): string | null {
+  return isolationRefusal(mode) ?? (migrated ? null : "the instance's groups are not migrated yet");
+}
+
+/**
  * The ONE gate for every isolation affordance (private/restricted group
  * provision, secrets-by-group, ...). Mono-tenant cannot pose a wall, so the
  * route answers 400 with the honest reason and the caller must stop — never a
