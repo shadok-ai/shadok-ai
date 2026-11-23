@@ -35,7 +35,9 @@ export interface WhatsAppHandle {
   /** From `halted`: resume the stored session (or start linking when there is none). */
   retry(): { ok: true } | { ok: false; error: string };
   cancel(): Promise<void>;
-  unlink(): Promise<void>;
+  /** Wipe the stored session (logging out on WhatsApp's side when a socket can).
+   *  Not ok when nothing was there to remove, or when the wipe itself failed. */
+  unlink(): Promise<{ ok: true } | { ok: false; error: string; nothing?: true }>;
   stop(): Promise<void>;
 }
 
@@ -94,9 +96,20 @@ export function startWhatsApp(o: {
   let attemptStartedAt = 0;
 
   const serial = (fn: () => Promise<void>): Promise<void> => {
-    chain = chain.then(fn).catch((e) => log(`whatsapp: ${oneLine(e)}`));
+    chain = chain.then(fn).catch((e) => {
+      log(`whatsapp: ${oneLine(e)}`);
+      // Safety net: whatever threw, a phase that promises a transport with no
+      // transport behind it is a lie — say what failed instead.
+      if (wantsTransport() && !transport) fail("an unexpected error stopped the link", e);
+    });
     return chain;
   };
+
+  /** A local failure the admin must see: halt (nothing retries) with the reason. */
+  function fail(what: string, err: unknown) {
+    cancelRetry();
+    dispatch({ type: "halt", cause: "error", reason: `${what}: ${oneLine(err)}` });
+  }
 
   function describe(st: WaLinkState): string {
     switch (st.phase) {
@@ -155,7 +168,12 @@ export function startWhatsApp(o: {
       return;
     }
     if (!wantsTransport()) return;
-    ensureSessionDir(o.sessionDir);
+    try {
+      ensureSessionDir(o.sessionDir);
+    } catch (e) {
+      fail("the session directory cannot be used", e);
+      return;
+    }
     const g = ++gen;
     let t: WaTransport;
     try {
@@ -305,8 +323,13 @@ export function startWhatsApp(o: {
       await stopTransport();
       // A fresh link never reuses half a session (a logged-out one, or the
       // keys a previous unscanned QR left behind).
-      ensureSessionDir(o.sessionDir);
-      wipeSession(o.sessionDir);
+      try {
+        ensureSessionDir(o.sessionDir);
+        wipeSession(o.sessionDir);
+      } catch (e) {
+        fail("the session directory cannot be prepared", e);
+        return;
+      }
       await startTransport();
     });
     return { ok: true };
@@ -336,13 +359,17 @@ export function startWhatsApp(o: {
       dispatch({ type: "cancel" });
       return serial(async () => {
         await stopTransport();
-        wipeSession(o.sessionDir);
+        try {
+          wipeSession(o.sessionDir);
+        } catch (e) {
+          fail("could not delete the half-made session", e);
+        }
       });
     },
 
     unlink() {
-      if (s.phase === "unavailable") return chain;
       cancelRetry();
+      let result: { ok: true } | { ok: false; error: string; nothing?: true } = { ok: true };
       return serial(async () => {
         const t = transport;
         // From here on that transport's events are noise: the library's own
@@ -366,9 +393,15 @@ export function startWhatsApp(o: {
           }
         }
         await stopTransport();
-        wipeSession(o.sessionDir);
+        try {
+          wipeSession(o.sessionDir);
+        } catch (e) {
+          fail("could not delete the stored session", e);
+          result = { ok: false, error: `could not delete the stored session: ${oneLine(e)}` };
+          return;
+        }
         dispatch({ type: "unlinked" });
-      });
+      }).then(() => result);
     },
 
     stop() {

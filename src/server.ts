@@ -7848,8 +7848,15 @@ app.delete("/whatsapp/link", async (req, res) => {
   if (!wa) return res.status(503).json({ error: "starting" });
   // Cancel while linking (nothing to log out of yet); otherwise log the device
   // out on WhatsApp's side and wipe the stored session — even if the logout fails.
-  if (wa.state().phase === "linking") await wa.cancel();
-  else await wa.unlink();
+  if (wa.state().phase === "linking") {
+    await wa.cancel();
+    if (wa.state().phase === "halted") return res.status(500).json({ error: String((wa.state() as { reason?: string }).reason ?? "cancel failed") });
+    return res.json({ ok: true });
+  }
+  const r = await wa.unlink();
+  // Never "ok" for an unlink that removed nothing or failed to remove: the
+  // credential would still be on disk while the admin believes it gone.
+  if (!r.ok) return res.status(r.nothing ? 409 : 500).json({ error: r.error });
   res.json({ ok: true });
 });
 const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal"] as const;

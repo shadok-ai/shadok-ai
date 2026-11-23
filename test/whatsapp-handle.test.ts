@@ -364,3 +364,62 @@ test("a permanent close (e.g. connection replaced) halts for good, keeps the ses
   await flush();
   assert.equal(h.state().phase, "connected");
 });
+
+// ── a step that throws must end in a state that says what failed ───────────
+
+test("resume: a session directory that cannot be used ends halted{error}, not a silent 'reconnecting'", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wa-handle-"));
+  const real = path.join(root, "real");
+  ensureSessionDir(real);
+  rememberAccount(real, ADA, 5);
+  const dir = path.join(root, "s");
+  fs.symlinkSync(real, dir); // storedAccount reads through it; ensureSessionDir refuses it
+  const { h, c } = setup({ dir });
+  await flush();
+  const st = h.state() as { phase: string; cause?: string; reason?: string };
+  assert.equal(st.phase, "halted");
+  assert.equal(st.cause, "error");
+  assert.match(st.reason ?? "", /session directory/);
+  await c.advance(10 * 60_000);
+  assert.equal(h.state().phase, "halted");
+});
+
+test("link: a session directory that cannot be created ends halted{error} at once, not three minutes of 'waiting for a code'", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wa-handle-"));
+  fs.writeFileSync(path.join(root, "file"), "x");
+  const { h, fake } = setup({ dir: path.join(root, "file", "s") });
+  assert.deepEqual(h.link(), { ok: true });
+  await flush();
+  const st = h.state() as { phase: string; cause?: string; reason?: string };
+  assert.equal(st.phase, "halted");
+  assert.equal(st.cause, "error");
+  assert.match(st.reason ?? "", /session directory/);
+  assert.equal(fake.starts, 0);
+});
+
+test("unlink: a wipe that fails says so — not ok, halted{error}, and nothing reconnects on the unwiped session", async () => {
+  const { h, fake, c, dir } = setup();
+  await linkAndScan(h, fake);
+  fs.renameSync(dir, `${dir}-real`);
+  fs.symlinkSync(`${dir}-real`, dir); // the wipe refuses a symlinked directory
+  const r = await h.unlink();
+  assert.equal(r.ok, false);
+  assert.match((r as { error: string }).error, /could not delete/);
+  const st = h.state() as { phase: string; cause?: string; reason?: string };
+  assert.equal(st.phase, "halted");
+  assert.equal(st.cause, "error");
+  const starts = fake.starts;
+  await c.advance(10 * 60_000);
+  assert.equal(fake.starts, starts, "no reconnect on a session we failed to delete");
+});
+
+test("cancel: a wipe that fails ends halted{error}", async () => {
+  const { h, fake, dir } = setup();
+  h.link();
+  await flush();
+  fs.renameSync(dir, `${dir}-real`);
+  fs.symlinkSync(`${dir}-real`, dir);
+  await h.cancel();
+  assert.equal(h.state().phase, "halted");
+  assert.equal(fake.stops, 1);
+});

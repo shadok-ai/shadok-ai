@@ -24,6 +24,8 @@ test("DELETE /whatsapp/link is an admin write from a browser: cancel while linki
   assert.match(r, /accountAdmin\(req, res, true,/);
   assert.match(r, /\.cancel\(\)/);
   assert.match(r, /\.unlink\(\)/);
+  // A failed or empty unlink is never answered "ok".
+  assert.match(r, /if \(!r\.ok\) return res\.status\(r\.nothing \? 409 : 500\)/);
 });
 
 test("GET /whatsapp: admin read; the QR only for a cookie-authenticated person", () => {
