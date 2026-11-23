@@ -19,7 +19,9 @@ export type WaTransportEvent =
   | { type: "qr"; payload: string; ttlMs: number }
   | { type: "open"; account: WaAccount }
   | { type: "alive" }
-  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error"; detail?: string };
+  /** `fatal`: WhatsApp refused for good (banned, replaced, bad session) — retrying
+   *  changes nothing, so the handle stops and the panel says `detail`. */
+  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error" | "fatal"; detail?: string };
 
 export interface WaTransport {
   /** Connect (or resume the stored session). Events until `stop`. */

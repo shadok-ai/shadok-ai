@@ -23,7 +23,14 @@ export type WaLinkState =
   | { phase: "linking"; startedAt: number; qr?: string; qrExpiresAt?: number }
   | { phase: "connected"; account: WaAccount; linkedAt: number; connectedAt: number; lastSeenAt: number }
   | { phase: "reconnecting"; account: WaAccount; linkedAt: number; lostAt: number; attempt: number }
-  | { phase: "logged-out"; account?: WaAccount; at: number; detail: string };
+  | { phase: "logged-out"; account?: WaAccount; at: number; detail: string }
+  /** Stopped, the session kept, waiting for the admin: a permanent refusal from
+   *  WhatsApp (`permanent`), a local failure that has to be said (`error`), or a
+   *  previous start that took the server down while resuming (`crash`). Nothing
+   *  retries from here on its own — that is the point of the phase. */
+  | { phase: "halted"; cause: WaHaltCause; account?: WaAccount; linkedAt?: number; at: number; reason: string };
+
+export type WaHaltCause = "permanent" | "error" | "crash";
 
 export type WaLinkEvent =
   | { type: "link-requested" }
@@ -32,7 +39,8 @@ export type WaLinkEvent =
   | { type: "qr"; payload: string; ttlMs: number }
   | { type: "open"; account: WaAccount }
   | { type: "alive" }
-  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error"; detail?: string }
+  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error" | "fatal"; detail?: string }
+  | { type: "halt"; cause: WaHaltCause; reason: string }
   | { type: "stored-session"; account: WaAccount; linkedAt: number }
   | { type: "tick" }
   | { type: "unavailable"; reason: string };
@@ -61,6 +69,11 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
     case "unlinked":
       return { phase: "unlinked" };
 
+    case "halt":
+      // A process-level state (no library, refused deployment) outranks a
+      // failure inside it: the admin must see the reason that blocks everything.
+      return s.phase === "unavailable" ? s : halted(s, e.cause, e.reason, now);
+
     case "cancel":
       // Unavailable is about the process (no library, refused deployment):
       // nothing a click can cancel out of.
@@ -69,7 +82,7 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
     case "link-requested":
       // Idempotent while a link exists or is being made: a double click must
       // never start a second linking.
-      return s.phase === "unlinked" || s.phase === "logged-out" ? { phase: "linking", startedAt: now } : s;
+      return s.phase === "unlinked" || s.phase === "logged-out" || s.phase === "halted" ? { phase: "linking", startedAt: now } : s;
 
     case "qr":
       return s.phase === "linking" ? { ...s, qr: e.payload, qrExpiresAt: now + e.ttlMs } : s;
@@ -93,6 +106,8 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
           at: now,
           detail: e.detail ?? DEFAULT_LOGOUT_DETAIL,
         };
+      if (e.reason === "fatal")
+        return s.phase === "unavailable" || s.phase === "unlinked" ? s : halted(s, "permanent", e.detail ?? "WhatsApp refused the connection", now);
       if (s.phase === "linking") {
         // The "restart required" after a scan is the normal end of linking, and
         // a lost socket mid-linking is retried: either way we stay in linking
@@ -112,6 +127,19 @@ export function linkReduce(s: WaLinkState, e: WaLinkEvent, now: number): WaLinkS
         return { phase: "reconnecting", account: s.account, linkedAt: s.linkedAt, lostAt: now, attempt: 1 };
       return s;
   }
+}
+
+function halted(s: WaLinkState, cause: WaHaltCause, reason: string, now: number): WaLinkState {
+  const account = "account" in s ? s.account : undefined;
+  const linkedAt = "linkedAt" in s ? s.linkedAt : undefined;
+  return {
+    phase: "halted",
+    cause,
+    ...(account ? { account } : {}),
+    ...(linkedAt !== undefined ? { linkedAt } : {}),
+    at: now,
+    reason,
+  };
 }
 
 /** Delay before reconnect attempt n (1-based): 2s, 4s, 8s … capped at 60s.
@@ -159,5 +187,7 @@ export function linkView(s: WaLinkState, now: number, forPerson: boolean): Recor
       return { phase: s.phase, account: acct(s.account), linkedAt: s.linkedAt, lostAt: s.lostAt, attempt: s.attempt, now };
     case "logged-out":
       return { phase: s.phase, ...(s.account ? { account: acct(s.account) } : {}), at: s.at, detail: s.detail, now };
+    case "halted":
+      return { phase: s.phase, cause: s.cause, ...(s.account ? { account: acct(s.account) } : {}), at: s.at, reason: s.reason, now };
   }
 }

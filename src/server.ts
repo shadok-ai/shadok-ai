@@ -7832,6 +7832,16 @@ app.post("/whatsapp/link", (req, res) => {
   if (!r.ok) return res.status(409).json({ error: r.error });
   res.json({ ok: true });
 });
+// From a halted link (a permanent refusal, a local failure, a crash while
+// resuming): try the stored session again. Never automatic — that is the point.
+app.post("/whatsapp/retry", (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
+  const wa = waHandle();
+  if (!wa) return res.status(503).json({ error: "starting" });
+  const r = wa.retry();
+  if (!r.ok) return res.status(409).json({ error: r.error });
+  res.json({ ok: true });
+});
 app.delete("/whatsapp/link", async (req, res) => {
   if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
   const wa = waHandle();
@@ -7842,7 +7852,7 @@ app.delete("/whatsapp/link", async (req, res) => {
   else await wa.unlink();
   res.json({ ok: true });
 });
-const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online"] as const;
+const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal"] as const;
 app.post("/whatsapp/fake/:action", (req, res) => {
   if (!waFake) return res.status(404).json({ error: "not found" });
   if (!accountAdmin(req, res, true, "drive the fake WhatsApp transport")) return;

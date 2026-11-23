@@ -344,3 +344,23 @@ test("a reconnect attempt that neither opens nor closes is abandoned and retried
   await c.advance(5 * 60_000);
   assert.equal(h.state().phase, "connected");
 });
+
+test("a permanent close (e.g. connection replaced) halts for good, keeps the session, and says why", async () => {
+  const fake = makeFakeTransport();
+  const { h, c, dir } = setup({ fake });
+  await linkAndScan(h, fake);
+  fake.script.fatal("connection replaced: this number was linked again elsewhere");
+  await flush();
+  const st = h.state() as { phase: string; cause?: string; reason?: string };
+  assert.equal(st.phase, "halted");
+  assert.equal(st.cause, "permanent");
+  assert.match(st.reason ?? "", /linked again elsewhere/);
+  const starts = fake.starts;
+  await c.advance(30 * 60_000);
+  assert.equal(fake.starts, starts, "nothing retries a permanent stop");
+  assert.ok(storedAccount(dir));
+  // Retry is the admin's call, and resumes the stored session.
+  assert.deepEqual(h.retry(), { ok: true });
+  await flush();
+  assert.equal(h.state().phase, "connected");
+});

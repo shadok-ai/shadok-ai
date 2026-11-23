@@ -94,6 +94,18 @@ export function waPanelModel(view, now) {
         },
       };
 
+    case "halted":
+      return {
+        tone: "err",
+        status: v.cause === "crash" ? "Stopped after a crash" : v.cause === "error" ? "Stopped — something failed" : "Stopped",
+        blocks: v.account ? ["identity", "reason"] : ["reason"],
+        actions: ["retry", "relink"],
+        text: {
+          ...(v.account ? { identity: who(v.account) } : {}),
+          reason: `${typeof v.reason === "string" && v.reason ? v.reason : "the link stopped"} (${agoText(v.at, now)}). Nothing is retried on its own.`,
+        },
+      };
+
     case "unavailable":
     default:
       return {

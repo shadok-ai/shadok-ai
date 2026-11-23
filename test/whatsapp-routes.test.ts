@@ -55,3 +55,10 @@ test("the handle receives the capability refusal, migrated half included, re-rea
 test("server.ts never names the library", () => {
   assert.doesNotMatch(SRC, /["'`]baileys["'`]/);
 });
+
+test("POST /whatsapp/retry is an admin write from a browser, refused with the reason", () => {
+  const r = route('app.post("/whatsapp/retry",');
+  assert.match(r, /accountAdmin\(req, res, true,/);
+  assert.match(r, /\.retry\(\)/);
+  assert.match(r, /status\(409\)/);
+});

@@ -32,6 +32,8 @@ export interface FakeScript {
   ping(): void;
   /** The next `logout()` rejects, as a network failure would. */
   failNextLogout(): void;
+  /** WhatsApp refuses for good (banned, connection replaced, bad session). */
+  fatal(detail?: string): void;
   /** The network is down: the current socket goes silent AND every later
    *  start stays silent, until `online()`. `goSilent` only kills one socket,
    *  which the next start replaces at once — too brief to watch a panel say
@@ -123,6 +125,9 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     },
     failNextLogout() {
       failLogout = true;
+    },
+    fatal(detail = "connection replaced: this number was connected again elsewhere") {
+      emit({ type: "close", reason: "fatal", detail });
     },
     offline() {
       offline = true;

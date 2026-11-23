@@ -4343,6 +4343,7 @@
       <p class="wa-block" id="waReason" data-wa-block="reason" hidden></p>
       <div class="wa-actions">
         <button id="waLink" data-wa-action="link" hidden>Link a number</button>
+        <button id="waRetry" data-wa-action="retry" hidden title="Try the stored session again">Retry</button>
         <button id="waRelink" data-wa-action="relink" hidden>Link again</button>
         <button id="waCancel" data-wa-action="cancel" hidden>Cancel</button>
         <button id="waUnlink" data-wa-action="unlink" hidden title="Log this device out on WhatsApp's side and delete the stored session">Unlink</button>
@@ -18380,8 +18381,8 @@
     clearInterval(waPoll);
     waPoll = null;
   }
-  async function waRequest(method) {
-    const r = await fetch("/whatsapp/link", { method });
+  async function waRequest(method, url = "/whatsapp/link") {
+    const r = await fetch(url, { method });
     if (!r.ok) alert((await r.json().catch(() => ({}))).error || "the request failed");
     refreshWhatsApp();
   }
@@ -18390,6 +18391,7 @@
   $("whatsappOverlay").addEventListener("click", (e) => { if (e.target === $("whatsappOverlay")) closeWhatsApp(); });
   $("waLink").addEventListener("click", () => waRequest("POST"));
   $("waRelink").addEventListener("click", () => waRequest("POST"));
+  $("waRetry").addEventListener("click", () => waRequest("POST", "/whatsapp/retry"));
   $("waCancel").addEventListener("click", () => waRequest("DELETE"));
   $("waUnlink").addEventListener("click", () => {
     if (!confirm("Unlink this WhatsApp number?\n\nThe device is logged out on WhatsApp's side and the stored session is deleted from this instance. Linking again needs the phone.")) return;

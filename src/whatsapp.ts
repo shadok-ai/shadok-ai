@@ -32,6 +32,8 @@ import {
 export interface WhatsAppHandle {
   state(): WaLinkState;
   link(): { ok: true } | { ok: false; error: string };
+  /** From `halted`: resume the stored session (or start linking when there is none). */
+  retry(): { ok: true } | { ok: false; error: string };
   cancel(): Promise<void>;
   unlink(): Promise<void>;
   stop(): Promise<void>;
@@ -106,6 +108,8 @@ export function startWhatsApp(o: {
         return `reconnecting (attempt ${st.attempt})`;
       case "logged-out":
         return `logged-out (${st.detail})`;
+      case "halted":
+        return `halted, ${st.cause} (${st.reason})`;
       default:
         return st.phase;
     }
@@ -220,7 +224,7 @@ export function startWhatsApp(o: {
         return;
       case "close":
         dispatch(e);
-        if (e.reason === "logged-out") {
+        if (e.reason === "logged-out" || e.reason === "fatal") {
           // For good: the admin decides what comes next (link again or unlink).
           cancelRetry();
           void serial(stopTransport);
@@ -290,24 +294,39 @@ export function startWhatsApp(o: {
   }
   tickTimer = setTimer(tick, TICK_MS);
 
+  function link(): { ok: true } | { ok: false; error: string } {
+    const refusal = refusalNow();
+    if (refusal) return { ok: false, error: refusal };
+    if (s.phase === "unavailable") return { ok: false, error: s.reason };
+    if (s.phase === "linking" || s.phase === "connected" || s.phase === "reconnecting") return { ok: true };
+    cancelRetry();
+    dispatch({ type: "link-requested" });
+    void serial(async () => {
+      await stopTransport();
+      // A fresh link never reuses half a session (a logged-out one, or the
+      // keys a previous unscanned QR left behind).
+      ensureSessionDir(o.sessionDir);
+      wipeSession(o.sessionDir);
+      await startTransport();
+    });
+    return { ok: true };
+  }
+
   return {
     state: () => s,
 
-    link() {
+    link,
+
+    retry() {
       const refusal = refusalNow();
       if (refusal) return { ok: false, error: refusal };
-      if (s.phase === "unavailable") return { ok: false, error: s.reason };
-      if (s.phase === "linking" || s.phase === "connected" || s.phase === "reconnecting") return { ok: true };
+      if (s.phase !== "halted") return { ok: false, error: `nothing to retry (the link is ${s.phase})` };
+      const stored = storedAccount(o.sessionDir);
+      // Nothing stored to resume (a linking that failed): retrying is linking.
+      if (!stored) return link();
       cancelRetry();
-      dispatch({ type: "link-requested" });
-      void serial(async () => {
-        await stopTransport();
-        // A fresh link never reuses half a session (a logged-out one, or the
-        // keys a previous unscanned QR left behind).
-        ensureSessionDir(o.sessionDir);
-        wipeSession(o.sessionDir);
-        await startTransport();
-      });
+      dispatch({ type: "stored-session", ...stored });
+      scheduleStart(0);
       return { ok: true };
     },
 

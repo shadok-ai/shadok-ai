@@ -164,3 +164,41 @@ test("maskPhone keeps three leading and two trailing digits", () => {
   assert.equal(maskPhone(undefined), undefined);
   assert.equal(maskPhone("1234"), "…");
 });
+
+// ── halted: a stop the panel names, with the session kept ───────────────────
+
+test("close{fatal} from connected or reconnecting → halted{permanent}, keeping account and linkedAt", () => {
+  for (const s of [connected(), reconnecting()]) {
+    const n = linkReduce(s, { type: "close", reason: "fatal", detail: "connection replaced" }, T);
+    assert.deepEqual(n, { phase: "halted", cause: "permanent", account: ADA, linkedAt: T - 50_000, at: T, reason: "connection replaced" });
+  }
+});
+
+test("close{fatal} while linking → halted without an account", () => {
+  const n = linkReduce({ phase: "linking", startedAt: 1 }, { type: "close", reason: "fatal", detail: "forbidden" }, T);
+  assert.deepEqual(n, { phase: "halted", cause: "permanent", at: T, reason: "forbidden" });
+});
+
+test("halt sets the cause and the reason from anywhere but unavailable", () => {
+  const n = linkReduce(connected(), { type: "halt", cause: "error", reason: "disk full" }, T);
+  assert.deepEqual(n, { phase: "halted", cause: "error", account: ADA, linkedAt: T - 50_000, at: T, reason: "disk full" });
+  const u: WaLinkState = { phase: "unavailable", reason: "x" };
+  assert.deepEqual(linkReduce(u, { type: "halt", cause: "error", reason: "y" }, T), u);
+});
+
+test("halted leaves only by an admin's act: link-requested, stored-session, unlinked", () => {
+  const h: WaLinkState = { phase: "halted", cause: "permanent", account: ADA, linkedAt: 5, at: T - 1, reason: "r" };
+  assert.equal(linkReduce(h, { type: "link-requested" }, T).phase, "linking");
+  assert.equal(linkReduce(h, { type: "stored-session", account: ADA, linkedAt: 5 }, T).phase, "reconnecting");
+  assert.equal(linkReduce(h, { type: "unlinked" }, T).phase, "unlinked");
+  for (const e of [{ type: "tick" }, { type: "alive" }, { type: "close", reason: "lost" }, { type: "qr", payload: "q", ttlMs: 1 }] as const)
+    assert.deepEqual(linkReduce(h, e, T), h);
+});
+
+test("linkView of halted names cause and reason", () => {
+  const h: WaLinkState = { phase: "halted", cause: "crash", account: ADA, linkedAt: 5, at: T, reason: "r" };
+  const v = linkView(h, T, false) as { phase: string; cause: string; reason: string; account: { phone: string } };
+  assert.equal(v.cause, "crash");
+  assert.equal(v.reason, "r");
+  assert.equal(v.account.phone, "336…00");
+});

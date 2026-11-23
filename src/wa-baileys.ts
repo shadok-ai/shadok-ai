@@ -20,8 +20,20 @@ import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-tra
 const LIB = "baileys";
 const QR_LIB = "qrcode";
 
-/** 515 → restart, 401 → logged-out, 408/428/503 → lost, anything else → error. */
-export function closeReasonOf(statusCode: number | undefined): "restart" | "lost" | "logged-out" | "error" {
+/**
+ * The library's `DisconnectReason`, all of it: 515 → restart, 401 → logged-out,
+ * 408/428/503 → lost (retried with backoff), 403/440/411/500 → fatal (stopped
+ * and said), anything else → error (retried).
+ *
+ * Fatal because retrying them every minute changes nothing or makes it worse:
+ * 403 is WhatsApp refusing the account, 440 means the same number connected
+ * elsewhere — two instances on one number would evict each other for ever —
+ * and 411/500 are a session that must be linked again. One caveat, read from
+ * the library: an unrecognised stream error is ALSO reported as 500, so a 500
+ * is not always a damaged session — which is why the halted state offers
+ * Retry, not only Link again.
+ */
+export function closeReasonOf(statusCode: number | undefined): "restart" | "lost" | "logged-out" | "error" | "fatal" {
   switch (statusCode) {
     case 515:
       return "restart";
@@ -31,8 +43,31 @@ export function closeReasonOf(statusCode: number | undefined): "restart" | "lost
     case 428:
     case 503:
       return "lost";
+    case 403:
+    case 440:
+    case 411:
+    case 500:
+      return "fatal";
     default:
       return "error";
+  }
+}
+
+/** What the panel says for a close it shows. */
+export function closeDetailOf(statusCode: number | undefined): string | undefined {
+  switch (statusCode) {
+    case 401:
+      return "the device was removed from the phone, or WhatsApp closed the session";
+    case 403:
+      return "WhatsApp refused this account (403) — the number may be restricted or banned";
+    case 440:
+      return "connection replaced (440): this number was connected again elsewhere — another instance or another linked device; two instances on one number evict each other";
+    case 411:
+      return "WhatsApp reports a multi-device mismatch (411) — link the number again";
+    case 500:
+      return "WhatsApp reported a bad session or a stream error (500) — retry once, and link the number again if it comes back";
+    default:
+      return statusCode ? `status ${statusCode}` : undefined;
   }
 }
 
@@ -111,11 +146,8 @@ function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport {
           const err = u.lastDisconnect?.error;
           const code: number | undefined = err?.output?.statusCode;
           const reason = closeReasonOf(code);
-          emit({
-            type: "close",
-            reason,
-            ...(reason === "logged-out" ? { detail: "the device was removed from the phone, or WhatsApp closed the session" } : code ? { detail: `status ${code}` } : {}),
-          });
+          const detail = closeDetailOf(code);
+          emit({ type: "close", reason, ...(detail ? { detail } : {}) });
           live = false;
         }
       });

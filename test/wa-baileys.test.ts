@@ -3,15 +3,26 @@ import test from "node:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountOf, closeReasonOf } from "../src/wa-baileys.js";
+import { accountOf, closeDetailOf, closeReasonOf } from "../src/wa-baileys.js";
 
 const SRC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
-test("closeReasonOf maps the library's status codes", () => {
+test("closeReasonOf maps the library's status codes (its whole DisconnectReason list)", () => {
   assert.equal(closeReasonOf(515), "restart");
   assert.equal(closeReasonOf(401), "logged-out");
   for (const c of [408, 428, 503]) assert.equal(closeReasonOf(c), "lost");
-  for (const c of [undefined, 500, 403, 440, 411]) assert.equal(closeReasonOf(c), "error");
+  // Permanent: retrying them every minute changes nothing, or makes it worse
+  // (440: two instances on one number evict each other for ever).
+  for (const c of [403, 440, 411, 500]) assert.equal(closeReasonOf(c), "fatal");
+  for (const c of [undefined, 400, 999]) assert.equal(closeReasonOf(c), "error");
+});
+
+test("closeDetailOf names each permanent stop so the panel can say it", () => {
+  assert.match(closeDetailOf(403)!, /refused|banned|restricted/i);
+  assert.match(closeDetailOf(440)!, /replaced|elsewhere/i);
+  assert.match(closeDetailOf(411)!, /link .*again/i);
+  assert.match(closeDetailOf(500)!, /session/i);
+  assert.match(closeDetailOf(401)!, /removed|logged out|closed/i);
 });
 
 test("accountOf takes the digits before ':' or '@' as the phone", () => {

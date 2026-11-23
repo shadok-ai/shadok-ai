@@ -82,3 +82,12 @@ test("agoText words durations from now", () => {
   assert.equal(agoText(NOW - 5 * 3600_000, NOW), "5 h ago");
   assert.equal(agoText(NOW - 3 * 86400_000, NOW), "3 days ago");
 });
+
+test("halted: err, the reason, Retry and Link again — never Reconnecting", () => {
+  const m = waPanelModel({ phase: "halted", cause: "permanent", account: ACCOUNT, at: NOW - 60_000, reason: "connection replaced: this number was linked again elsewhere" }, NOW);
+  assert.equal(m.tone, "err");
+  assert.equal(m.status, "Stopped");
+  assert.deepEqual(m.blocks, ["identity", "reason"]);
+  assert.deepEqual(m.actions, ["retry", "relink"]);
+  assert.match(m.text.reason, /linked again elsewhere/);
+});
