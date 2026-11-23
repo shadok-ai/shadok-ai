@@ -291,3 +291,38 @@ test("a pre-existing account.json with a session the library no longer accepts l
   await c.advance(5 * 60_000);
   assert.equal(fake.starts, starts);
 });
+
+test("a transport whose start throws is retried with backoff, not left hanging", async () => {
+  const fake = makeFakeTransport();
+  let fail = 1;
+  const factory: WaTransportFactory = async (x) => {
+    const t = await fake.factory(x);
+    return { ...t, start: async (on) => { if (fail-- > 0) throw new Error("boom"); return t.start(on); } };
+  };
+  const first = setup({ fake });
+  await linkAndScan(first.h, fake);
+  await first.h.stop();
+  const second = setup({ dir: first.dir, fake, loadFactory: async () => factory });
+  await flush();
+  assert.equal(second.h.state().phase, "reconnecting");
+  await second.c.advance(2_000);
+  assert.equal(second.h.state().phase, "connected");
+});
+
+test("the library's own logged-out close during Unlink never surfaces", async () => {
+  const fake = makeFakeTransport();
+  const factory: WaTransportFactory = async (x) => {
+    const t = await fake.factory(x);
+    let emit: ((e: import("../src/wa-transport.js").WaTransportEvent) => void) | null = null;
+    return {
+      start: async (on) => { emit = on; return t.start(on); },
+      logout: async () => { await t.logout(); emit?.({ type: "close", reason: "logged-out" }); },
+      stop: () => t.stop(),
+    };
+  };
+  const { h, lines } = setup({ fake, loadFactory: async () => factory });
+  await linkAndScan(h, fake);
+  await h.unlink();
+  assert.equal(h.state().phase, "unlinked");
+  assert.ok(!lines.some((l) => /→ logged-out/.test(l)), lines.join("\n"));
+});

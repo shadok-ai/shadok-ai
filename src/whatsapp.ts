@@ -149,13 +149,26 @@ export function startWhatsApp(o: {
     if (!wantsTransport()) return;
     ensureSessionDir(o.sessionDir);
     const g = ++gen;
-    const t = await f({ sessionDir: o.sessionDir });
+    let t: WaTransport;
+    try {
+      t = await f({ sessionDir: o.sessionDir });
+    } catch (e) {
+      onTransportEvent(g, { type: "close", reason: "error", detail: oneLine(e) });
+      return;
+    }
     if (g !== gen || !wantsTransport()) {
       await t.stop().catch(() => {});
       return;
     }
     transport = t;
-    await t.start((e) => onTransportEvent(g, e));
+    try {
+      await t.start((e) => onTransportEvent(g, e));
+    } catch (e) {
+      // A start that throws (an unreadable session file, a socket that cannot
+      // open) is a failed attempt like any other: it must schedule the next
+      // one, not leave the state on "reconnecting" with nothing behind it.
+      onTransportEvent(g, { type: "close", reason: "error", detail: oneLine(e) });
+    }
   }
 
   function scheduleStart(ms: number) {
@@ -305,6 +318,10 @@ export function startWhatsApp(o: {
       cancelRetry();
       return serial(async () => {
         const t = transport;
+        // From here on that transport's events are noise: the library's own
+        // logout closes the socket with "logged out", which must not flash a
+        // "Unlinked remotely" on the way to "Not linked".
+        gen++;
         if (t) {
           // Logging out tells WhatsApp to forget this device. It may fail (no
           // network, a dead socket): the local session is wiped regardless, so
