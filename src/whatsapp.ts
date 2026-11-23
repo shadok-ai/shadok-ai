@@ -1,4 +1,4 @@
-import { linkReduce, maskPhone, reconnectDelayMs, type WaLinkEvent, type WaLinkState } from "./wa-link.js";
+import { LIVENESS_MS, linkReduce, maskPhone, reconnectDelayMs, type WaLinkEvent, type WaLinkState } from "./wa-link.js";
 import {
   ensureSessionDir,
   rememberAccount,
@@ -86,6 +86,10 @@ export function startWhatsApp(o: {
    *  as opposed to the library (lasts as long as the process). */
   let refused = false;
   let chain: Promise<void> = Promise.resolve();
+  /** When the current transport was started: a reconnect attempt that neither
+   *  opens nor closes (a socket gone silent mid-handshake) is abandoned after
+   *  LIVENESS_MS, or "retrying" would be a lie told for ever. */
+  let attemptStartedAt = 0;
 
   const serial = (fn: () => Promise<void>): Promise<void> => {
     chain = chain.then(fn).catch((e) => log(`whatsapp: ${oneLine(e)}`));
@@ -161,6 +165,7 @@ export function startWhatsApp(o: {
       return;
     }
     transport = t;
+    attemptStartedAt = now();
     try {
       await t.start((e) => onTransportEvent(g, e));
     } catch (e) {
@@ -262,6 +267,9 @@ export function startWhatsApp(o: {
         // Silent too long: the socket is dead even though it never said so.
         void serial(stopTransport);
         scheduleStart(reconnectDelayMs(1));
+      } else if (s.phase === "reconnecting" && transport && now() - attemptStartedAt > LIVENESS_MS) {
+        // An attempt that never opened and never closed: count it as lost.
+        onTransportEvent(gen, { type: "close", reason: "lost", detail: "the connection attempt never completed" });
       }
     }
     tickTimer = setTimer(tick, TICK_MS);

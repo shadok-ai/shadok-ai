@@ -145,7 +145,10 @@ export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
     lib = (await import(LIB)) as Lib;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`the WhatsApp library is not installed or failed to load: ${msg.split("\n")[0]}`);
+    // The resolver's message names the server's own install path: not the
+    // panel's business, so it stops at the package name.
+    const first = msg.split("\n")[0].replace(/ imported from .*$/, "");
+    throw new Error(`the WhatsApp library is not installed or failed to load: ${first}`);
   }
   if (typeof lib.default !== "function" || typeof lib.useMultiFileAuthState !== "function")
     throw new Error("the WhatsApp library loaded, but not in the expected shape");

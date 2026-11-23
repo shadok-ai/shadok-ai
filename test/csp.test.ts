@@ -161,9 +161,17 @@ test("agent Markdown is sanitised with the shared config at EVERY call site", ()
   // The only DOMPurify.sanitize call in the page is the shared helper's, and it
   // passes AGENT_MD_PURIFY. A bare sanitize() elsewhere would use the defaults,
   // which allow <form>, <input> and style= (the phishing overlay).
+  // The one other call is the WhatsApp QR (an SVG the server drew), with its
+  // own named config — never the defaults either.
   const calls = [...html.matchAll(/DOMPurify\.sanitize\(([^;\n]*)/g)].map((m) => m[1]);
-  assert.equal(calls.length, 1, `expected one sanitize call, got: ${calls.join(" | ")}`);
-  assert.match(calls[0], /,\s*AGENT_MD_PURIFY\)/);
+  assert.equal(calls.length, 2, `expected two sanitize calls, got: ${calls.join(" | ")}`);
+  assert.equal(calls.filter((c) => /,\s*AGENT_MD_PURIFY\)/.test(c)).length, 1);
+  assert.equal(calls.filter((c) => /^svg,\s*QR_SVG_PURIFY\)/.test(c)).length, 1);
+  const qr = html.match(/const QR_SVG_PURIFY = Object\.freeze\(\{([\s\S]*?)\}\);/);
+  assert.ok(qr, "QR_SVG_PURIFY not found");
+  assert.match(qr[1], /USE_PROFILES:\s*\{\s*svg:\s*true\s*\}/);
+  assert.match(qr[1], /FORBID_ATTR:\s*\["style"\]/);
+  for (const tag of ["style", "foreignObject", "script"]) assert.match(qr[1], new RegExp(`"${tag}"`), `${tag} not forbidden in the QR`);
   assert.doesNotMatch(html, /innerHTML\s*=\s*marked\.parse/);
   const cfg = html.match(/const AGENT_MD_PURIFY = Object\.freeze\(\{([\s\S]*?)\}\);/);
   assert.ok(cfg, "AGENT_MD_PURIFY not found");

@@ -326,3 +326,21 @@ test("the library's own logged-out close during Unlink never surfaces", async ()
   assert.equal(h.state().phase, "unlinked");
   assert.ok(!lines.some((l) => /→ logged-out/.test(l)), lines.join("\n"));
 });
+
+test("a reconnect attempt that neither opens nor closes is abandoned and retried", async () => {
+  const { h, fake, c } = setup();
+  await linkAndScan(h, fake);
+  fake.script.offline(); // every socket from now on is silent: no open, no close
+  await c.advance(LIVENESS_MS + 15_000);
+  assert.equal(h.state().phase, "reconnecting");
+  const s0 = fake.starts;
+  // Without a watchdog the silent attempt would hold "reconnecting, retrying" for ever.
+  await c.advance(LIVENESS_MS + 2 * 15_000 + 60_000);
+  assert.ok(fake.starts > s0 + 1, `starts ${fake.starts} vs ${s0}`);
+  const st = h.state() as { phase: string; attempt?: number };
+  assert.equal(st.phase, "reconnecting");
+  assert.ok((st.attempt ?? 0) >= 2);
+  fake.script.online();
+  await c.advance(5 * 60_000);
+  assert.equal(h.state().phase, "connected");
+});
