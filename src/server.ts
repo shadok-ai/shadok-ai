@@ -7829,7 +7829,11 @@ app.get("/whatsapp", async (req, res) => {
   const forPerson = cookieAccount(req)?.role === "admin";
   const view = linkView(wa.state(), Date.now(), forPerson);
   const out: Record<string, unknown> = { ...view };
-  if (forPerson && typeof view.qr === "string") out.qrSvg = await qrSvg(view.qr);
+  if (forPerson && typeof view.qr === "string") {
+    const drawn = await qrSvg(view.qr);
+    if ("svg" in drawn) out.qrSvg = drawn.svg;
+    else out.qrError = drawn.error;
+  }
   delete out.qr;
   out.stored = wa.hasStoredSession();
   if (waFake) out.fake = true;

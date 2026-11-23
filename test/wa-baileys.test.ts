@@ -131,3 +131,13 @@ test("writes keep landing across a restart-required close (the creds that finish
   await t.stop();
   assert.ok(fs.existsSync(path.join(dir, "creds.json")), "the pairing's creds must be saved, not dropped by the close");
 });
+
+import { qrSvg } from "../src/wa-baileys.js";
+
+test("qrSvg draws an SVG, and names the reason when the encoder is missing", async () => {
+  const ok = await qrSvg("payload");
+  assert.ok("svg" in ok && ok.svg.startsWith("<svg"));
+  const missing = await qrSvg("payload", async () => { throw new Error("Cannot find package 'qrcode'"); });
+  assert.ok("error" in missing);
+  assert.match(missing.error, /qrcode/);
+});

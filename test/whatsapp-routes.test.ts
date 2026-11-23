@@ -73,3 +73,8 @@ test("GET /whatsapp says whether a session is stored, so the panel can offer Unl
 test("a deliberate exit releases the WhatsApp resume breaker; a crash does not", () => {
   assert.match(SRC, /process\.on\("exit", \(code\) => \{\n\s+if \(code === 0 \|\| code === UPDATE_EXIT_CODE \|\| code === RELOAD_EXIT_CODE\) waHandleRef\?\.releaseResumeGuard\(\);/);
 });
+
+test("GET /whatsapp passes on why a QR could not be drawn", () => {
+  const r = route('app.get("/whatsapp",');
+  assert.match(r, /out\.qrError = drawn\.error/);
+});

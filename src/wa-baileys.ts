@@ -257,13 +257,23 @@ export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
 
 /** The QR code as an SVG string, drawn server-side: the page's CSP allows no
  *  external image and no inline script, and the payload never needs to reach
- *  a third party. Null when the encoder is absent. */
-export async function qrSvg(payload: string): Promise<string | null> {
+ *  a third party. When the encoder is absent, the REASON — otherwise the panel
+ *  would sit on "waiting for a code" until linking expired. */
+export async function qrSvg(
+  payload: string,
+  load: () => Promise<unknown> = () => import(QR_LIB),
+): Promise<{ svg: string } | { error: string }> {
+  let mod: { default?: { toString: Function }; toString?: Function };
   try {
-    const mod = (await import(QR_LIB)) as { default?: { toString: Function }; toString: Function };
+    mod = (await load()) as typeof mod;
+  } catch (e) {
+    const msg = (e instanceof Error ? e.message : String(e)).split("\n")[0].replace(/ imported from .*$/, "");
+    return { error: `the QR code cannot be drawn: the QR encoder (qrcode) is not installed or failed to load (${msg})` };
+  }
+  try {
     const toString = (mod.default?.toString ?? mod.toString) as (t: string, o: Record<string, unknown>) => Promise<string>;
-    return await toString(payload, { type: "svg", margin: 2, errorCorrectionLevel: "M" });
-  } catch {
-    return null;
+    return { svg: await toString(payload, { type: "svg", margin: 2, errorCorrectionLevel: "M" }) };
+  } catch (e) {
+    return { error: `the QR code cannot be drawn: ${(e instanceof Error ? e.message : String(e)).split("\n")[0]}` };
   }
 }

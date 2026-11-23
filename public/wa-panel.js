@@ -57,6 +57,9 @@ function phaseModel(v, now) {
 
     case "linking": {
       const left = typeof v.expiresAt === "number" ? ` · expires in ${inText(v.expiresAt - now)}` : "";
+      if (typeof v.qrError === "string" && v.qrError)
+        // A code exists but cannot be drawn: say so now, not after three minutes.
+        return { tone: "err", status: "A code is ready but cannot be shown" + left, blocks: ["reason"], actions: ["cancel"], text: { reason: v.qrError } };
       const hasQr = typeof v.qrSvg === "string" && v.qrSvg !== "";
       return {
         tone: "wait",

@@ -99,3 +99,12 @@ test("a stored session can always be unlinked — unavailable included, linking 
   assert.deepEqual(waPanelModel({ phase: "halted", cause: "permanent", at: NOW, reason: "r", stored: true }, NOW).actions, ["retry", "relink", "unlink"]);
   assert.deepEqual(waPanelModel({ phase: "linking", startedAt: NOW, stored: true }, NOW).actions, ["cancel"]);
 });
+
+test("linking with a code that cannot be drawn says why, instead of 'waiting for a code'", () => {
+  const m = waPanelModel({ phase: "linking", startedAt: NOW, expiresAt: NOW + 60_000, qrError: "the QR encoder (qrcode) is not installed" }, NOW);
+  assert.equal(m.tone, "err");
+  assert.doesNotMatch(m.status, /waiting for a code/);
+  assert.deepEqual(m.blocks, ["reason"]);
+  assert.match(m.text.reason, /qrcode/);
+  assert.deepEqual(m.actions, ["cancel"]);
+});
