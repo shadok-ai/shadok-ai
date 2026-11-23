@@ -83,12 +83,19 @@ export function rememberAccount(dir: string, account: WaAccount, linkedAt: numbe
 /** Remove the directory's content (the directory itself stays, 0700). Never
  *  follows a symlink out of it: a link is unlinked, not its target. */
 export function wipeSession(dir: string): void {
-  let entries: string[];
+  // `readdirSync` FOLLOWS a symlinked directory, so without this the wipe would
+  // empty whatever the link points at. Checked here and not only in
+  // `ensureSessionDir`: the wipe must be safe on its own, whoever calls it.
+  let st: fs.Stats;
   try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return;
+    st = fs.lstatSync(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw e;
   }
+  if (st.isSymbolicLink()) throw new Error(`refusing to wipe a symlinked WhatsApp session directory: ${dir}`);
+  if (!st.isDirectory()) throw new Error(`the WhatsApp session path is not a directory: ${dir}`);
+  const entries = fs.readdirSync(dir);
   for (const name of entries) {
     const p = path.join(dir, name);
     const st = fs.lstatSync(p);

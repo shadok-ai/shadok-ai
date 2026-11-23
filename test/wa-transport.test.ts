@@ -177,3 +177,13 @@ test("fake: offline survives a restart until online", async () => {
   await t3.start((e) => seen.push(e));
   assert.deepEqual(seen, [{ type: "open", account: ADA }]);
 });
+
+test("wipeSession refuses a session directory that is itself a symlink, and touches nothing behind it", () => {
+  const root = tmp();
+  const target = path.join(root, "elsewhere");
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(target, "precious.txt"), "keep me");
+  fs.symlinkSync(target, path.join(root, "s"));
+  assert.throws(() => wipeSession(path.join(root, "s")), /symlink/);
+  assert.equal(fs.readFileSync(path.join(target, "precious.txt"), "utf8"), "keep me");
+});
