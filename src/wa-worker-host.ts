@@ -31,9 +31,11 @@ export interface WorkerSpec {
 }
 
 const HERE = fileURLToPath(import.meta.url);
-// The worker is a sibling file with OUR extension: `.js` in a build, `.ts`
-// under the test loader (which the worker inherits through execArgv).
-const WORKER_URL = new URL(`./wa-worker${path.extname(HERE)}`, import.meta.url);
+// The worker is a sibling file: `wa-worker.js` in a build. Running from source
+// (tests), a bootstrap registers the TypeScript loader inside the worker first
+// — Node 20 does not pass `--import tsx` on to a worker (wa-worker-tsx.mjs).
+const WORKER_URL =
+  path.extname(HERE) === ".ts" ? new URL("./wa-worker-tsx.mjs", import.meta.url) : new URL("./wa-worker.js", import.meta.url);
 
 /** Must exceed the adapter's own write drain (5 s), so `stop()` lets it finish. */
 const STOP_GRACE_MS = 7_000;
