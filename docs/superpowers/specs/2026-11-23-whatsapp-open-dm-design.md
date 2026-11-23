@@ -1,7 +1,7 @@
 # WhatsApp: anyone who writes to the instance's number gets their own agent
 
 Design, drafted 2026-11-23 and checked once against the code by a reader in
-the builder's seat. Status: awaiting approval, not implemented.
+the builder's seat. Approved 2026-11-23. Status: not implemented.
 
 ## Intent
 
