@@ -522,7 +522,7 @@ import { latestVersion, update } from "./updater.js";
 import { resolveAutoUpdate, resolveChannel, type UpdateChannel } from "./update-channel.js";
 import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
-import { RELOAD_EXIT_CODE } from "./supervisor.js";
+import { RELOAD_EXIT_CODE, UPDATE_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin, isLocalCaller, hostHeaderAllowed, hostRefusal, parseAllowedHosts,
@@ -7807,6 +7807,16 @@ function startWhatsAppHandle(): void {
     loadFactory: waFake ? async () => waFake.factory : loadBaileysFactory,
   });
 }
+
+// The boot breaker (src/whatsapp.ts) reads a resume cut short by the process
+// dying as a crash. A DELIBERATE exit — an auto-update, a reload, a clean
+// shutdown — is not one, so it releases the guard on the way out. Anything
+// else (a crash, exit 1) leaves it armed, which is the point. A SIGTERM
+// bypasses 'exit' handlers: a container stopped mid-resume halts the link once,
+// and the panel offers Retry.
+process.on("exit", (code) => {
+  if (code === 0 || code === UPDATE_EXIT_CODE || code === RELOAD_EXIT_CODE) waHandleRef?.releaseResumeGuard();
+});
 
 // Admin-only, like the Telegram config: one number for the whole instance.
 // The GET is browserOnly:false (a same-origin read sends no Origin); the QR is

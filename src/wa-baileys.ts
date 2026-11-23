@@ -1,5 +1,6 @@
 import type { WaAccount } from "./wa-link.js";
 import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-transport.js";
+import { probeInWorker, workerTransportFactory } from "./wa-worker-host.js";
 
 /**
  * The WhatsApp library adapter — the ONLY file that names the library.
@@ -222,9 +223,9 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
   };
 }
 
-/** Rejects (with the library's own message) when the library is absent or
- *  fails to load; the handle turns that into the `unavailable` state. */
-export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
+/** The in-process loader. Runs INSIDE the worker (`wa-worker.ts`), never in
+ *  the server's thread: see `loadBaileysFactory`. */
+export const loadBaileysInProcess = async (): Promise<WaTransportFactory> => {
   let lib: Lib;
   try {
     lib = (await import(LIB)) as Lib;
@@ -238,6 +239,20 @@ export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
   if (typeof lib.default !== "function" || typeof lib.useMultiFileAuthState !== "function")
     throw new Error("the WhatsApp library loaded, but not in the expected shape");
   return async ({ sessionDir }) => makeBaileysTransport(lib, sessionDir);
+};
+
+/**
+ * What the server uses. Rejects (with the library's own message) when the
+ * library is absent or fails to load — checked in a throwaway worker, so even
+ * loading it never happens in the server's thread — and the handle turns that
+ * into the `unavailable` state. Otherwise every transport runs in a worker of
+ * its own (`wa-worker-host.ts`): an error raised inside the library's code
+ * ends that worker and becomes a `close{error}`, never a process exit.
+ */
+export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
+  const spec = { modulePath: import.meta.url, exportName: "loadBaileysInProcess" };
+  await probeInWorker(spec);
+  return workerTransportFactory(spec);
 };
 
 /** The QR code as an SVG string, drawn server-side: the page's CSP allows no

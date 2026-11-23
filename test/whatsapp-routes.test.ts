@@ -69,3 +69,7 @@ test("GET /whatsapp says whether a session is stored, so the panel can offer Unl
   const r = route('app.get("/whatsapp",');
   assert.match(r, /out\.stored = wa\.hasStoredSession\(\)/);
 });
+
+test("a deliberate exit releases the WhatsApp resume breaker; a crash does not", () => {
+  assert.match(SRC, /process\.on\("exit", \(code\) => \{\n\s+if \(code === 0 \|\| code === UPDATE_EXIT_CODE \|\| code === RELOAD_EXIT_CODE\) waHandleRef\?\.releaseResumeGuard\(\);/);
+});

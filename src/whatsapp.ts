@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { LIVENESS_MS, linkReduce, maskPhone, reconnectDelayMs, type WaLinkEvent, type WaLinkState } from "./wa-link.js";
+import path from "node:path";
+import { LIVENESS_MS, linkReduce, maskPhone, reconnectDelayMs, type WaAccount, type WaLinkEvent, type WaLinkState } from "./wa-link.js";
 import {
   ensureSessionDir,
   rememberAccount,
@@ -42,10 +43,19 @@ export interface WhatsAppHandle {
   /** Is anything stored in the session directory? The panel offers Unlink
    *  whenever it is — in EVERY phase, unavailable included. */
   hasStoredSession(): boolean;
+  /** Synchronous, for a DELIBERATE process exit (auto-update, reload): a resume
+   *  cut short by one is not a crash, and must not trip the breaker. */
+  releaseResumeGuard(): void;
   stop(): Promise<void>;
 }
 
 export const TICK_MS = 15_000;
+/** The boot breaker's marker, inside the session directory (so a wipe takes it). */
+export const RESUME_MARK = ".resume-in-progress";
+/** A resume counts as settled once the link has held `connected` this long. */
+export const RESUME_SETTLE_MS = 60_000;
+const CRASH_REASON =
+  "the server stopped while this WhatsApp session was being resumed, so it was not resumed again automatically — Retry to try once more, or Link again";
 /** A logout on a dead socket may never answer: the wipe must not wait for it. */
 const LOGOUT_TIMEOUT_MS = 5_000;
 
@@ -99,6 +109,51 @@ export function startWhatsApp(o: {
    *  LIVENESS_MS, or "retrying" would be a lie told for ever. */
   let attemptStartedAt = 0;
 
+  // ── the boot breaker ─────────────────────────────────────────────────────
+  // The worker contains whatever the library THROWS; a native crash still
+  // takes the process. If that happens while the stored session is being
+  // resumed, the next boot would resume it again — and crash again, on every
+  // start. So a marker is written before any resume and removed once the link
+  // has held `connected` for RESUME_SETTLE_MS, when the resume ends any other
+  // way, or on a clean stop. Found at boot, it means "the last resume died with
+  // the server": the link halts instead, and resuming is the admin's call.
+  const markPath = path.join(o.sessionDir, RESUME_MARK);
+  let armed = false;
+  let settleTimer: Timer | null = null;
+  function arm() {
+    try {
+      fs.writeFileSync(markPath, String(now()), { mode: 0o600 });
+      armed = true;
+    } catch (e) {
+      log(`whatsapp: could not arm the resume breaker: ${oneLine(e)}`);
+    }
+  }
+  function disarm() {
+    settleTimer?.cancel();
+    settleTimer = null;
+    if (!armed) return;
+    armed = false;
+    try {
+      fs.rmSync(markPath, { force: true });
+    } catch {
+      /* the wipe or the next arm will deal with it */
+    }
+  }
+  function watchBreaker(prev: WaLinkState) {
+    if (!armed) return;
+    if (s.phase === "connected") {
+      if (prev.phase !== "connected") {
+        settleTimer?.cancel();
+        settleTimer = setTimer(() => {
+          settleTimer = null;
+          if (s.phase === "connected") disarm();
+        }, RESUME_SETTLE_MS);
+      }
+    } else if (s.phase !== "reconnecting") {
+      disarm();
+    }
+  }
+
   const serial = (fn: () => Promise<void>): Promise<void> => {
     chain = chain.then(fn).catch((e) => {
       log(`whatsapp: ${oneLine(e)}`);
@@ -137,6 +192,7 @@ export function startWhatsApp(o: {
     s = linkReduce(s, e, now());
     // One line per PHASE change: never the QR, never a full number.
     if (prev.phase !== s.phase) log(`whatsapp: ${prev.phase} → ${describe(s)}`);
+    watchBreaker(prev);
     return prev;
   }
 
@@ -270,11 +326,17 @@ export function startWhatsApp(o: {
   }
 
   /** The state a fresh look at the disk gives, once allowed. */
+  function resumeStored(stored: { account: WaAccount; linkedAt: number }) {
+    cancelRetry();
+    arm();
+    dispatch({ type: "stored-session", ...stored });
+    scheduleStart(0);
+  }
+
   function resume() {
     const stored = storedAccount(o.sessionDir);
     if (stored) {
-      dispatch({ type: "stored-session", ...stored });
-      scheduleStart(0);
+      resumeStored(stored);
     } else {
       dispatch({ type: "unlinked" });
     }
@@ -318,9 +380,14 @@ export function startWhatsApp(o: {
     log(`whatsapp: ${describe(s)}`);
   } else {
     const stored = storedAccount(o.sessionDir);
-    if (stored) {
+    if (stored && fs.existsSync(markPath)) {
+      // The marker stays until the admin acts (Retry re-arms it, Unlink and
+      // Link again wipe it): a halted boot must not become a resuming one at
+      // the start after.
       dispatch({ type: "stored-session", ...stored });
-      scheduleStart(0);
+      dispatch({ type: "halt", cause: "crash", reason: CRASH_REASON });
+    } else if (stored) {
+      resumeStored(stored);
     }
   }
   tickTimer = setTimer(tick, TICK_MS);
@@ -360,9 +427,7 @@ export function startWhatsApp(o: {
       const stored = storedAccount(o.sessionDir);
       // Nothing stored to resume (a linking that failed): retrying is linking.
       if (!stored) return link();
-      cancelRetry();
-      dispatch({ type: "stored-session", ...stored });
-      scheduleStart(0);
+      resumeStored(stored);
       return { ok: true };
     },
 
@@ -429,7 +494,10 @@ export function startWhatsApp(o: {
 
     hasStoredSession,
 
+    releaseResumeGuard: disarm,
+
     stop() {
+      disarm();
       stopped = true;
       cancelRetry();
       tickTimer?.cancel();

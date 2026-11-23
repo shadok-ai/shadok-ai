@@ -475,3 +475,57 @@ test("unlink from halted wipes and goes back to unlinked", async () => {
   assert.equal(h.state().phase, "unlinked");
   assert.deepEqual(fs.readdirSync(dir), []);
 });
+
+// ── the breaker: a resume that took the server down is not repeated at boot ──
+
+test("a boot that died while resuming: the next boot does not resume, and says why", async () => {
+  const first = setup();
+  await linkAndScan(first.h, first.fake);
+  await first.h.stop();
+  // Boot 2 starts resuming… and the process dies before the resume settled.
+  const second = setup({ dir: first.dir, fake: first.fake });
+  assert.equal(second.h.state().phase, "reconnecting");
+  // (no stop(): that is what a crash looks like)
+  const third = setup({ dir: first.dir, fake: first.fake });
+  await flush();
+  const st = third.h.state() as { phase: string; cause?: string; reason?: string; account?: WaAccount };
+  assert.equal(st.phase, "halted");
+  assert.equal(st.cause, "crash");
+  assert.match(st.reason ?? "", /not resumed again automatically/);
+  assert.equal(st.account?.name, "Ada's shop");
+  const starts = first.fake.starts;
+  await third.c.advance(10 * 60_000);
+  assert.equal(first.fake.starts, starts);
+  // Retry is the admin's call.
+  assert.deepEqual(third.h.retry(), { ok: true });
+  await flush();
+  assert.equal(third.h.state().phase, "connected");
+});
+
+test("a resume that settles (connected long enough) disarms the breaker", async () => {
+  const first = setup();
+  await linkAndScan(first.h, first.fake);
+  await first.h.stop();
+  const second = setup({ dir: first.dir, fake: first.fake });
+  await flush();
+  assert.equal(second.h.state().phase, "connected");
+  for (let i = 0; i < 5; i++) {
+    await second.c.advance(15_000);
+    first.fake.script.ping();
+  }
+  // crash now — after the resume settled
+  const third = setup({ dir: first.dir, fake: first.fake });
+  await flush();
+  assert.equal(third.h.state().phase, "connected");
+});
+
+test("a clean stop disarms the breaker even mid-resume", async () => {
+  const first = setup();
+  await linkAndScan(first.h, first.fake);
+  await first.h.stop();
+  const second = setup({ dir: first.dir, fake: first.fake });
+  await second.h.stop();
+  const third = setup({ dir: first.dir, fake: first.fake });
+  await flush();
+  assert.equal(third.h.state().phase, "connected");
+});
