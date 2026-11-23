@@ -94,8 +94,9 @@ import { accountsEnabled, deploymentMode, migratedIsolationRefusal, probeCanProv
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp.js";
 import { waSessionDir } from "./wa-transport.js";
 import { linkView } from "./wa-link.js";
-import { loadBaileysFactory, qrSvg } from "./wa-baileys.js";
-import { makeFakeTransport, type FakeScript } from "./wa-fake.js";
+import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "./wa-baileys.js";
+import { makeWaLibrary, waLibRoot, type WaLibrary } from "./wa-library.js";
+import { fakeInstallRunner, fakeQrEncoder, makeFakeTransport, type FakeScript } from "./wa-fake.js";
 import {
   migrationPlan,
   runMigration,
@@ -7796,15 +7797,32 @@ async function telegramState(viewer: Viewer | null = null) {
 const waFake = process.env.SHADOK_WA_FAKE === "1" ? makeFakeTransport() : null;
 let waHandleRef: WhatsAppHandle | null = null;
 const waHandle = (): WhatsAppHandle | null => waHandleRef;
+let waLibRef: WaLibrary | null = null;
+const waLib = (): WaLibrary | null => waLibRef;
+let waQrLoad: () => Promise<unknown> = async () => {
+  throw new Error("the WhatsApp library is not ready");
+};
 
 function startWhatsAppHandle(): void {
   const dir = waSessionDir(os.homedir(), instanceKey());
+  // The library is installed on demand, at an admin's first Link, into the
+  // DATA directory (on the volume: it survives an auto-update and a recreate)
+  // — never into the app's node_modules, which the updater rewrites. With the
+  // fake, a fake npm in a directory of its own (SHADOK_WA_FAKE_INSTALL=fail
+  // makes it fail like an offline machine).
+  const lib = makeWaLibrary({
+    root: waFake ? `${waLibRoot(os.homedir())}-fake` : waLibRoot(os.homedir()),
+    ...(waFake ? { run: fakeInstallRunner(process.env.SHADOK_WA_FAKE_INSTALL) } : {}),
+  });
+  waLibRef = lib;
+  waQrLoad = waFake ? fakeQrEncoder : qrLoaderFrom(() => lib.entryUrl());
   waHandleRef = startWhatsApp({
     sessionDir: waFake ? `${dir}-fake` : dir,
     // Re-read on every tick: the group migration completes AFTER boot, and the
     // feature opens then without a restart.
     refusal: () => migratedIsolationRefusal(DEPLOYMENT_MODE, groupsMigrated),
-    loadFactory: waFake ? async () => waFake.factory : loadBaileysFactory,
+    loadFactory: waFake ? async () => waFake.factory : async () => loadBaileysFactory(lib.entryUrl()),
+    library: lib,
   });
 }
 
@@ -7830,12 +7848,14 @@ app.get("/whatsapp", async (req, res) => {
   const view = linkView(wa.state(), Date.now(), forPerson);
   const out: Record<string, unknown> = { ...view };
   if (forPerson && typeof view.qr === "string") {
-    const drawn = await qrSvg(view.qr);
+    const drawn = await qrSvg(view.qr, waQrLoad);
     if ("svg" in drawn) out.qrSvg = drawn.svg;
     else out.qrError = drawn.error;
   }
   delete out.qr;
   out.stored = wa.hasStoredSession();
+  // Before the first Link: the panel says that Link downloads the library.
+  out.library = waLib()?.status();
   if (waFake) out.fake = true;
   res.json(out);
 });

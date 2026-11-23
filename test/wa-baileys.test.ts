@@ -57,12 +57,12 @@ test("the adapter loads the library lazily, never with a static import", () => {
   assert.doesNotMatch(src, /requestPairingCode\(/);
 });
 
-test("the library is an OPTIONAL dependency, the version pinned exactly", () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(SRC_DIR, "..", "package.json"), "utf8"));
-  assert.equal(pkg.optionalDependencies?.baileys, "7.0.0-rc14");
-  assert.ok(pkg.optionalDependencies?.qrcode);
-  assert.equal(pkg.dependencies?.baileys, undefined);
-  assert.equal(pkg.dependencies?.qrcode, undefined);
+test("the adapter never imports the packages by bare name: only through the data directory's loader", () => {
+  // A bare import would resolve from the APP's node_modules, which no longer
+  // carries the library (it is installed on demand, src/wa-library.ts) — and
+  // would silently use a stray copy where one happens to be.
+  const src = fs.readFileSync(path.join(SRC_DIR, "wa-baileys.ts"), "utf8");
+  assert.doesNotMatch(src, /import\(\s*(LIB|QR_LIB)\s*\)/);
 });
 
 // ── no write after stop ─────────────────────────────────────────────────────
@@ -132,12 +132,64 @@ test("writes keep landing across a restart-required close (the creds that finish
   assert.ok(fs.existsSync(path.join(dir, "creds.json")), "the pairing's creds must be saved, not dropped by the close");
 });
 
-import { qrSvg } from "../src/wa-baileys.js";
+import { pathToFileURL } from "node:url";
+import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "../src/wa-baileys.js";
+import type { WaTransportEvent } from "../src/wa-transport.js";
 
-test("qrSvg draws an SVG, and names the reason when the encoder is missing", async () => {
-  const ok = await qrSvg("payload");
-  assert.ok("svg" in ok && ok.svg.startsWith("<svg"));
-  const missing = await qrSvg("payload", async () => { throw new Error("Cannot find package 'qrcode'"); });
+const SHIP_LOAD = path.join(SRC_DIR, "..", "context", "whatsapp-lib", "load.mjs");
+
+/** A library directory as the installer leaves it — the shipped loader beside
+ *  a node_modules — holding STUBS whose output names where they came from. */
+function stubLibDir(withPackages = true): string {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "wa-libdir-"));
+  fs.copyFileSync(SHIP_LOAD, path.join(d, "load.mjs"));
+  if (!withPackages) return d;
+  const pkg = (name: string, type: string, main: string, code: string) => {
+    fs.mkdirSync(path.join(d, "node_modules", name), { recursive: true });
+    fs.writeFileSync(path.join(d, "node_modules", name, "package.json"), JSON.stringify({ name, version: "0.0.0-stub", type, main }));
+    fs.writeFileSync(path.join(d, "node_modules", name, main), code);
+  };
+  pkg(
+    "baileys",
+    "module",
+    "index.js",
+    `import { EventEmitter } from "node:events";
+export default function makeSocket() {
+  const ev = new EventEmitter();
+  setTimeout(() => ev.emit("connection.update", { qr: "stub-qr-from-the-data-dir" }), 10);
+  return { ev, ws: new EventEmitter(), logout: async () => {}, end() {} };
+}
+export async function useMultiFileAuthState() {
+  return { state: { creds: {}, keys: { get: async () => ({}), set: async () => {} } }, saveCreds: async () => {} };
+}
+export const Browsers = { ubuntu: () => ["Ubuntu", "Chrome", "1"] };
+`,
+  );
+  pkg("qrcode", "commonjs", "index.js", `exports.toString = async (t) => "<svg>stub:" + t + "</svg>";\n`);
+  return d;
+}
+const entryOf = (d: string) => pathToFileURL(path.join(d, "load.mjs")).href;
+
+test("the library is loaded from the DATA directory, inside the worker", async () => {
+  const t = await (await loadBaileysFactory(entryOf(stubLibDir())))({ sessionDir: fs.mkdtempSync(path.join(os.tmpdir(), "wa-s-")) });
+  const seen: WaTransportEvent[] = [];
+  await t.start((e) => seen.push(e));
+  for (let i = 0; i < 100 && !seen.some((e) => e.type === "qr"); i++) await delay(20);
+  await t.stop();
+  assert.ok(seen.some((e) => e.type === "qr" && e.payload === "stub-qr-from-the-data-dir"), JSON.stringify(seen));
+});
+
+test("a data directory without the packages: the load is refused with a reason, and no path leaks", async () => {
+  const d = stubLibDir(false);
+  await assert.rejects(loadBaileysFactory(entryOf(d)), (e: Error) => /not installed or failed to load/.test(e.message) && !e.message.includes(d));
+});
+
+test("qrSvg draws through the data directory's encoder, and names the reason when it is missing", async () => {
+  const ok = await qrSvg("payload", qrLoaderFrom(() => entryOf(stubLibDir())));
+  assert.deepEqual(ok, { svg: "<svg>stub:payload</svg>" });
+  const missing = await qrSvg("payload", qrLoaderFrom(() => entryOf(stubLibDir(false))));
   assert.ok("error" in missing);
   assert.match(missing.error, /qrcode/);
+  const notInstalled = await qrSvg("payload", qrLoaderFrom(() => { throw new Error("the WhatsApp library is not installed on this instance"); }));
+  assert.ok("error" in notInstalled);
 });

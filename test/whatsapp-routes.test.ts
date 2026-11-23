@@ -51,7 +51,21 @@ test("the handle receives the capability refusal, migrated half included, re-rea
   assert.ok(i >= 0);
   const call = SRC.slice(i, SRC.indexOf("\n  });", i));
   assert.match(call, /refusal: \(\) => migratedIsolationRefusal\(DEPLOYMENT_MODE, groupsMigrated\)/);
-  assert.match(call, /loadFactory: waFake \? async \(\) => waFake\.factory : loadBaileysFactory/);
+  // The real library is loaded from the installed copy in the data directory.
+  assert.match(call, /loadFactory: waFake \? async \(\) => waFake\.factory : async \(\) => loadBaileysFactory\(lib\.entryUrl\(\)\)/);
+  assert.match(call, /library: lib,/);
+});
+
+test("the library is installed into the DATA directory — never the app's node_modules — and faked only behind SHADOK_WA_FAKE=1", () => {
+  const i = SRC.indexOf("function startWhatsAppHandle");
+  const body = SRC.slice(i, SRC.indexOf("\n}\n", i));
+  assert.match(body, /root: waFake \? `\$\{waLibRoot\(os\.homedir\(\)\)\}-fake` : waLibRoot\(os\.homedir\(\)\)/);
+  assert.match(body, /\.\.\.\(waFake \? \{ run: fakeInstallRunner\(/);
+});
+
+test("GET /whatsapp says whether the library is installed, so the panel can warn before the first Link", () => {
+  const r = route('app.get("/whatsapp",');
+  assert.match(r, /out\.library = waLib\(\)\?\.status\(\)/);
 });
 
 test("server.ts never names the library", () => {

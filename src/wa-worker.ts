@@ -15,6 +15,7 @@ import type { WaTransport, WaTransportFactory } from "./wa-transport.js";
 interface Spec {
   modulePath: string;
   exportName: string;
+  arg?: string;
   sessionDir?: string;
   probe?: boolean;
 }
@@ -22,8 +23,8 @@ type Cmd = { id: number; cmd: "start" | "logout" | "stop" };
 
 const port = parentPort!;
 const spec = workerData as Spec;
-const mod = (await import(spec.modulePath)) as Record<string, () => Promise<WaTransportFactory>>;
-const factory = await mod[spec.exportName]();
+const mod = (await import(spec.modulePath)) as Record<string, (arg?: string) => Promise<WaTransportFactory>>;
+const factory = await mod[spec.exportName](spec.arg);
 
 if (spec.probe) {
   port.postMessage({ ready: true });

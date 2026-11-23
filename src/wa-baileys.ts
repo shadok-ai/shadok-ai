@@ -5,12 +5,13 @@ import { probeInWorker, workerTransportFactory } from "./wa-worker-host.js";
 /**
  * The WhatsApp library adapter — the ONLY file that names the library.
  *
- * The library is an optionalDependency and is loaded by a dynamic `import()`
- * whose specifier is a variable: a literal would make `tsc` resolve it, and an
- * install made with `--omit=optional` must still build, boot and serve the
- * cockpit (the panel then says "unavailable" with the reason). For the same
- * reason the few library types used here are declared locally instead of
- * imported.
+ * The library is NOT a dependency of the app: it is installed on demand into
+ * the data directory (`wa-library.ts`), and loaded through the loader shipped
+ * there (`context/whatsapp-lib/load.mjs`), whose own `import()` resolves from
+ * that directory's node_modules. Never a bare `import("baileys")` here — that
+ * would resolve from the app's node_modules, and silently use any stray copy.
+ * The app must build and boot without the library, so the few library types
+ * used here are declared locally instead of imported.
  *
  * The options come from a throwaway spike that linked a test number by QR:
  * full history sync off, presence off (so the phone keeps its notifications),
@@ -223,17 +224,25 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
   };
 }
 
+type LibLoader = { load(name: string): Promise<unknown> };
+
+/** The packages, through the loader of the installed copy. */
+async function fromDataDir(entryUrl: string, name: string): Promise<unknown> {
+  const loader = (await import(entryUrl)) as LibLoader;
+  return loader.load(name);
+}
+
 /** The in-process loader. Runs INSIDE the worker (`wa-worker.ts`), never in
  *  the server's thread: see `loadBaileysFactory`. */
-export const loadBaileysInProcess = async (): Promise<WaTransportFactory> => {
+export const loadBaileysInProcess = async (entryUrl: string): Promise<WaTransportFactory> => {
   let lib: Lib;
   try {
-    lib = (await import(LIB)) as Lib;
+    lib = (await fromDataDir(entryUrl, LIB)) as Lib;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // The resolver's message names the server's own install path: not the
-    // panel's business, so it stops at the package name.
-    const first = msg.split("\n")[0].replace(/ imported from .*$/, "");
+    // The resolver's message names the server's own paths: not the panel's
+    // business, so it stops at the package name.
+    const first = msg.split("\n")[0].replace(/ imported from .*$/, "").replace(/ from \S+$/, "");
     throw new Error(`the WhatsApp library is not installed or failed to load: ${first}`);
   }
   if (typeof lib.default !== "function" || typeof lib.useMultiFileAuthState !== "function")
@@ -249,20 +258,23 @@ export const loadBaileysInProcess = async (): Promise<WaTransportFactory> => {
  * its own (`wa-worker-host.ts`): an error raised inside the library's code
  * ends that worker and becomes a `close{error}`, never a process exit.
  */
-export const loadBaileysFactory = async (): Promise<WaTransportFactory> => {
-  const spec = { modulePath: import.meta.url, exportName: "loadBaileysInProcess" };
+export const loadBaileysFactory = async (entryUrl: string): Promise<WaTransportFactory> => {
+  const spec = { modulePath: import.meta.url, exportName: "loadBaileysInProcess", arg: entryUrl };
   await probeInWorker(spec);
   return workerTransportFactory(spec);
 };
+
+/** The QR encoder, from the installed copy. Plain JS, so it is loaded in the
+ *  server's thread (drawing a code is not the library's socket code). */
+export function qrLoaderFrom(entryUrl: () => string): () => Promise<unknown> {
+  return async () => fromDataDir(entryUrl(), QR_LIB);
+}
 
 /** The QR code as an SVG string, drawn server-side: the page's CSP allows no
  *  external image and no inline script, and the payload never needs to reach
  *  a third party. When the encoder is absent, the REASON — otherwise the panel
  *  would sit on "waiting for a code" until linking expired. */
-export async function qrSvg(
-  payload: string,
-  load: () => Promise<unknown> = () => import(QR_LIB),
-): Promise<{ svg: string } | { error: string }> {
+export async function qrSvg(payload: string, load: () => Promise<unknown>): Promise<{ svg: string } | { error: string }> {
   let mod: { default?: { toString: Function }; toString?: Function };
   try {
     mod = (await load()) as typeof mod;

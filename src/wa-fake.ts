@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { WaAccount } from "./wa-link.js";
 import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-transport.js";
+import type { RunCommand } from "./wa-library.js";
 
 /**
  * A WhatsApp transport with no WhatsApp behind it, driven by a script.
@@ -146,6 +147,41 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     },
     get stops() {
       return stops;
+    },
+  };
+}
+
+/**
+ * The installer's fake, for `SHADOK_WA_FAKE=1` only: waits like npm would, then
+ * writes the pinned packages' manifests (enough for the installer's version
+ * check) — or fails the way a machine with no network does (`mode: "fail"`).
+ * The real `wa-library.ts` runs around it: staging, verify, marker, rename.
+ */
+export function fakeInstallRunner(mode: string | undefined, ms = 3_000): RunCommand {
+  return async (_cmd, _args, { cwd }) => {
+    await new Promise((r) => setTimeout(r, ms));
+    if (mode === "fail")
+      throw Object.assign(new Error("npm ci exited with code 1"), {
+        stderr: "npm error code ENOTFOUND\nnpm error network request to the registry failed (fake installer)",
+      });
+    const deps = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).dependencies as Record<string, string>;
+    for (const [name, version] of Object.entries(deps)) {
+      fs.mkdirSync(path.join(cwd, "node_modules", name), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "node_modules", name, "package.json"), JSON.stringify({ name, version }));
+    }
+  };
+}
+
+/** A QR encoder's stand-in for the fake: a grid drawn from the payload, so a
+ *  rotation visibly changes it. Not scannable, and not meant to be. */
+export async function fakeQrEncoder(): Promise<{ toString(t: string): Promise<string> }> {
+  return {
+    async toString(t: string) {
+      const n = 21;
+      let d = "";
+      for (let y = 0; y < n; y++)
+        for (let x = 0; x < n; x++) if ((t.charCodeAt((x * 7 + y * 13) % t.length) + x * y) % 3 === 0) d += `M${x} ${y}h1v1h-1z`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}"><path fill="#000" d="${d}"/></svg>`;
     },
   };
 }

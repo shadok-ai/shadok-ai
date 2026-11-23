@@ -26,8 +26,10 @@ import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-tra
 export interface WorkerSpec {
   /** A module URL, set by server code only — never from a request. */
   modulePath: string;
-  /** Its loader export: `() => Promise<WaTransportFactory>`. */
+  /** Its loader export: `(arg) => Promise<WaTransportFactory>`. */
   exportName: string;
+  /** Handed to the loader: where the installed library lives. Server code only. */
+  arg?: string;
 }
 
 const HERE = fileURLToPath(import.meta.url);

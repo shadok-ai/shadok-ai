@@ -197,3 +197,10 @@ test("sharp (a native image library) is left out of the tree: text, QR and media
   assert.deepEqual(names.filter((k) => /(^|\/)(sharp|@img\/[^/]+)$/.test(k)), []);
 });
 
+test("the app itself depends on no WhatsApp package: an instance that never links installs nothing", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(WA_LIB_SHIP_DIR, "..", "..", "package.json"), "utf8"));
+  for (const field of ["dependencies", "optionalDependencies", "devDependencies", "peerDependencies"])
+    for (const name of Object.keys(SHIP_PKG.dependencies)) assert.equal(pkg[field]?.[name], undefined, `${name} in ${field}`);
+  const lock = JSON.parse(fs.readFileSync(path.join(WA_LIB_SHIP_DIR, "..", "..", "package-lock.json"), "utf8"));
+  assert.equal(lock.packages["node_modules/baileys"], undefined);
+});

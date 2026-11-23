@@ -63,9 +63,5 @@
   "bin": {
     "shadok-ai": "dist/main.js",
     "shadok-ai-run": "dist/cli.js"
-  },
-  "optionalDependencies": {
-    "baileys": "7.0.0-rc14",
-    "qrcode": "^1.5.4"
   }
 }
