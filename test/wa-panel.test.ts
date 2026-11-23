@@ -91,3 +91,11 @@ test("halted: err, the reason, Retry and Link again — never Reconnecting", () 
   assert.deepEqual(m.actions, ["retry", "relink"]);
   assert.match(m.text.reason, /linked again elsewhere/);
 });
+
+test("a stored session can always be unlinked — unavailable included, linking excepted", () => {
+  assert.deepEqual(waPanelModel({ phase: "unavailable", reason: "x", stored: true }, NOW).actions, ["unlink"]);
+  assert.deepEqual(waPanelModel({ phase: "unavailable", reason: "x", stored: false }, NOW).actions, []);
+  assert.deepEqual(waPanelModel({ phase: "unlinked", stored: true }, NOW).actions, ["link", "unlink"]);
+  assert.deepEqual(waPanelModel({ phase: "halted", cause: "permanent", at: NOW, reason: "r", stored: true }, NOW).actions, ["retry", "relink", "unlink"]);
+  assert.deepEqual(waPanelModel({ phase: "linking", startedAt: NOW, stored: true }, NOW).actions, ["cancel"]);
+});

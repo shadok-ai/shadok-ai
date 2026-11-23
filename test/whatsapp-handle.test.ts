@@ -423,3 +423,55 @@ test("cancel: a wipe that fails ends halted{error}", async () => {
   assert.equal(h.state().phase, "halted");
   assert.equal(fake.stops, 1);
 });
+
+// ── unlink wipes in every phase ─────────────────────────────────────────────
+
+async function linkedThenRestarted(o: Parameters<typeof setup>[0]) {
+  const first = setup();
+  await linkAndScan(first.h, first.fake);
+  await first.h.stop();
+  return setup({ ...o, dir: first.dir });
+}
+
+test("unlink while unavailable (library gone) wipes the stored session and keeps saying why it is unavailable", async () => {
+  const { h, dir } = await linkedThenRestarted({ loadFactory: async () => { throw new Error("Cannot find package 'baileys'"); } });
+  await flush();
+  assert.equal(h.state().phase, "unavailable");
+  assert.equal(h.hasStoredSession(), true);
+  assert.deepEqual(await h.unlink(), { ok: true });
+  assert.deepEqual(fs.readdirSync(dir), []);
+  assert.equal(h.hasStoredSession(), false);
+  assert.deepEqual(h.state(), { phase: "unavailable", reason: "Cannot find package 'baileys'" });
+});
+
+test("unlink while refused (not migrated) wipes the session; when the refusal lifts there is nothing to resume", async () => {
+  let refusal: string | null = "the instance's groups are not migrated yet";
+  const { h, dir, c } = await linkedThenRestarted({ refusal: () => refusal });
+  await flush();
+  assert.equal(h.state().phase, "unavailable");
+  assert.deepEqual(await h.unlink(), { ok: true });
+  assert.deepEqual(fs.readdirSync(dir), []);
+  assert.deepEqual(h.state(), { phase: "unavailable", reason: "the instance's groups are not migrated yet" });
+  refusal = null;
+  await c.advance(15_000);
+  assert.equal(h.state().phase, "unlinked");
+});
+
+test("unlink with nothing stored and nothing running is not ok", async () => {
+  const { h } = setup();
+  const r = await h.unlink();
+  assert.equal(r.ok, false);
+  assert.equal((r as { nothing?: true }).nothing, true);
+});
+
+test("unlink from halted wipes and goes back to unlinked", async () => {
+  const fake = makeFakeTransport();
+  const { h, dir } = setup({ fake });
+  await linkAndScan(h, fake);
+  fake.script.fatal();
+  await flush();
+  assert.equal(h.state().phase, "halted");
+  assert.deepEqual(await h.unlink(), { ok: true });
+  assert.equal(h.state().phase, "unlinked");
+  assert.deepEqual(fs.readdirSync(dir), []);
+});

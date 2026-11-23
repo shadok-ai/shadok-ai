@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { LIVENESS_MS, linkReduce, maskPhone, reconnectDelayMs, type WaLinkEvent, type WaLinkState } from "./wa-link.js";
 import {
   ensureSessionDir,
@@ -38,6 +39,9 @@ export interface WhatsAppHandle {
   /** Wipe the stored session (logging out on WhatsApp's side when a socket can).
    *  Not ok when nothing was there to remove, or when the wipe itself failed. */
   unlink(): Promise<{ ok: true } | { ok: false; error: string; nothing?: true }>;
+  /** Is anything stored in the session directory? The panel offers Unlink
+   *  whenever it is — in EVERY phase, unavailable included. */
+  hasStoredSession(): boolean;
   stop(): Promise<void>;
 }
 
@@ -256,6 +260,15 @@ export function startWhatsApp(o: {
     }
   }
 
+  function hasStoredSession(): boolean {
+    try {
+      const st = fs.lstatSync(o.sessionDir);
+      return st.isSymbolicLink() || (st.isDirectory() && fs.readdirSync(o.sessionDir).length > 0);
+    } catch {
+      return false;
+    }
+  }
+
   /** The state a fresh look at the disk gives, once allowed. */
   function resume() {
     const stored = storedAccount(o.sessionDir);
@@ -393,6 +406,11 @@ export function startWhatsApp(o: {
           }
         }
         await stopTransport();
+        const had = hasStoredSession();
+        if (!had && !t && (s.phase === "unlinked" || s.phase === "unavailable")) {
+          result = { ok: false, error: "no WhatsApp session is stored on this instance", nothing: true };
+          return;
+        }
         try {
           wipeSession(o.sessionDir);
         } catch (e) {
@@ -400,9 +418,16 @@ export function startWhatsApp(o: {
           result = { ok: false, error: `could not delete the stored session: ${oneLine(e)}` };
           return;
         }
-        dispatch({ type: "unlinked" });
+        // Unavailable is about the process (no library, refused deployment) and
+        // stays the truth after the wipe: only the credential is gone. Wiping
+        // there matters MORE than anywhere — a refused instance may run agents
+        // as the server's user, who could read it.
+        if (s.phase !== "unavailable") dispatch({ type: "unlinked" });
+        else log("whatsapp: stored session wiped while unavailable");
       }).then(() => result);
     },
+
+    hasStoredSession,
 
     stop() {
       stopped = true;

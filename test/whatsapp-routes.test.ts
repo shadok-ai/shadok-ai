@@ -64,3 +64,8 @@ test("POST /whatsapp/retry is an admin write from a browser, refused with the re
   assert.match(r, /\.retry\(\)/);
   assert.match(r, /status\(409\)/);
 });
+
+test("GET /whatsapp says whether a session is stored, so the panel can offer Unlink in every phase", () => {
+  const r = route('app.get("/whatsapp",');
+  assert.match(r, /out\.stored = wa\.hasStoredSession\(\)/);
+});

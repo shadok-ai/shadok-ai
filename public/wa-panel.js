@@ -41,6 +41,16 @@ function who(account) {
  */
 export function waPanelModel(view, now) {
   const v = view && typeof view === "object" ? view : {};
+  const m = phaseModel(v, now);
+  // A stored session is the account's credential: whatever the phase says —
+  // unavailable included, where agents may run as the server's own user — the
+  // admin must be able to delete it. Linking is the one exception (Cancel
+  // already removes what it made).
+  if (v.stored === true && v.phase !== "linking" && !m.actions.includes("unlink")) m.actions.push("unlink");
+  return m;
+}
+
+function phaseModel(v, now) {
   switch (v.phase) {
     case "unlinked":
       return { tone: "off", status: "Not linked", blocks: ["intro", "warning"], actions: ["link"], text: {} };

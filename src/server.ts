@@ -7821,6 +7821,7 @@ app.get("/whatsapp", async (req, res) => {
   const out: Record<string, unknown> = { ...view };
   if (forPerson && typeof view.qr === "string") out.qrSvg = await qrSvg(view.qr);
   delete out.qr;
+  out.stored = wa.hasStoredSession();
   if (waFake) out.fake = true;
   res.json(out);
 });
