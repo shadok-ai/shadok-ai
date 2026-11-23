@@ -2546,3 +2546,25 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     for "a box that will not clear" is therefore tried FIRST on a scrolled box
     instead of after forty presses have spent sixteen seconds of the message's
     own path getting nowhere.
+
+<a id="inv-79"></a>
+
+75. **Only the adapter imports the WhatsApp library; a missing library is a
+    panel state, never a boot failure.** The library is an optionalDependency
+    for two reasons that are both properties of the product, not preferences: it
+    is not chosen for good (the design keeps a Go alternative behind the same
+    seam), and it is a heavy, release-candidate dependency most instances will
+    never use. So `src/wa-baileys.ts` is the one file that names it, it loads it
+    with a dynamic `import()` from a VARIABLE specifier — a literal makes `tsc`
+    resolve the module, and a build without it must pass — and it declares the
+    few library types it touches locally instead of importing them. The load is
+    lazy (only with a stored session, or on Link), and its failure becomes the
+    `unavailable` phase with the reason, leaving any stored session on disk so
+    installing the library brings the link back without a QR. Verified by
+    building and running the whole suite with `node_modules/baileys` and
+    `node_modules/qrcode` removed, and in a browser on a side instance in the
+    same state. Note that `npm ci --omit=optional` is NOT the way to check it in
+    this repo: it also strips TypeScript's own native binary, which is an
+    optional dependency of `typescript`, and `tsc` then cannot run at all.
+    `test/wa-baileys.test.ts` scans `src/` for the quoted package name (a scan
+    for `import("baileys")` alone would miss the variable specifier).

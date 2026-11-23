@@ -381,6 +381,7 @@ a Node test — which is why the client has a test suite at all:
 | `public/shadok-soul.js` | `pumpLine`, `gabuzomeu`, `pickMaxim`, `mascotSay` | `test/shadok-soul.test.ts` |
 | `public/spawn-steps.js` (+ `src/spawn-steps.ts`) | `spawnStepStates`, `spawnLoaderTitle`, `SPAWN_HINT`; server `SPAWN_STEP_KEYS`, `isSpawnStep` | `test/spawn-loader.test.ts` |
 | `public/notify.js` | `notifyState(channels, view)` | `test/notify.test.ts` |
+| `public/wa-panel.js` | `waPanelModel(view, now)` | `test/wa-panel.test.ts` |
 | `public/profile-card.js` | `profileBlurb`, `profileBadges` | `test/profile-card.test.ts` |
 
 `notifyState` decides the favicon colour, the title badge and whether to blink,
@@ -670,6 +671,65 @@ group already bound before this change stays bound.
   is shared, and each auto-update replays the serial-restart herd.
 - `/secret NAME value` deletes the user's message after storing, so the value
   doesn't linger in chat history (needs *Delete messages* admin rights).
+
+## The WhatsApp link (`src/whatsapp.ts`, `src/wa-*.ts`)
+
+Step 1 of the WhatsApp bridge (design:
+`docs/superpowers/specs/2026-11-23-whatsapp-open-dm-design.md`): an admin links
+ONE number to the instance, always sees the true state of that link, and can
+unlink it. No message is handled yet.
+
+- **The seam.** Everything that knows a WhatsApp library sits behind
+  `WaTransport` (`src/wa-transport.ts`: `start(on)`, `logout()`, `stop()`, and the
+  `qr` / `open` / `alive` / `close` events). Only `src/wa-baileys.ts` names the
+  library, loaded by a dynamic `import()` from a variable specifier — a literal
+  would make `tsc` resolve it, and the library is an **optionalDependency**. A test
+  scans `src/` for any other file naming it. The fake (`src/wa-fake.ts`) models
+  what a throwaway spike observed of the real thing and is how every rule below is
+  tested — and, with `SHADOK_WA_FAKE=1`, how the panel is checked in a browser.
+- **The state is a pure reducer** (`src/wa-link.ts`). Six phases, one at a time:
+  `unavailable` (no library, or the capability gate refuses) · `unlinked` ·
+  `linking` (the QR, rotated by the library: 60 s for the first, 20 s after) ·
+  `connected` · `reconnecting` · `logged-out` (removed from the phone). Three
+  rules carry the review focus: the **"restart required" close right after a scan
+  stays in `linking`** (it is how linking ends, never a failure); **a QR nobody
+  scans** expires back to `unlinked` after `LINK_TIMEOUT_MS`; and **a socket that
+  dies without a close** leaves `connected` after `LIVENESS_MS` of silence — every
+  decoded frame is an `alive`, and the library pings every ~30 s.
+- **The handle** (`startWhatsApp`) owns the side effects: one transport at most
+  (every start goes through one promise chain and is preceded by the previous
+  `stop()`; every transport carries a generation, and a stale one's events are
+  dropped), the backoff (`reconnectDelayMs`: 2 s doubling to 60 s), a 15 s tick
+  for the timeouts, and an attempt watchdog — a reconnect that neither opens nor
+  closes is abandoned after `LIVENESS_MS`, or "retrying" would be a lie told for
+  ever (found in the browser check, not by reasoning). A QR arriving on a RESUME
+  means the stored session is dead: it lands on `logged-out` instead of rotating
+  codes for nobody. **Unlink** logs out (bounded, errors logged), stops, and wipes
+  the session directory whatever the logout did; the library's own `logged-out`
+  close during that logout is dropped. The library is loaded **lazily** — only
+  with a stored session or on Link — so an instance that never uses WhatsApp never
+  loads it; a load failure is `unavailable` and leaves the session on disk.
+- **The gate** is `migratedIsolationRefusal` (`src/capability.ts`): the existing
+  `isolationRefusal` plus the groups having been migrated, since before that
+  commons agents run as the server's user and could read the session. It is
+  re-read on every tick, because the migration completes AFTER boot.
+- **Storage**: `~/.shadok-ai/whatsapp/<instanceKey>/`, 0700 re-asserted, a
+  symlink in its place refused; the handle's own `account.json` (0600) says whose
+  session it is, the library's files are the library's business, and the wipe
+  never follows a symlink out of the directory.
+- **What leaves the server.** `GET /whatsapp` is admin-only; the QR is drawn
+  server-side as SVG (`qrcode`; the page's CSP allows no external image) and
+  returned only to a cookie-authenticated person — never to a caller presenting an
+  agent's session key, which passes some admin GETs — and the raw payload is
+  never sent at all. The number is masked for anything but a person, and in every
+  log line (`336…00`). The writes are admin AND browser-only, like `PUT /telegram`.
+- **The panel** (`public/wa-panel.js`, `waPanelModel`) is the whole display
+  decision, pure and bridged; `index.html` only toggles elements named by
+  `data-wa-block` / `data-wa-action`. It polls through `pollFetch` every 2 s while
+  open, words durations from the server's `now`, and inserts the SVG through
+  DOMPurify with its own strict config (`QR_SVG_PURIFY`: SVG profile only, no
+  `style`, no `foreignObject`) — the second and only other sanitize call the CSP
+  test allows.
 
 ## Profiles & secrets
 
@@ -3133,6 +3193,11 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | File | Responsibility |
 |---|---|
 | `src/rooms.ts` | Rooms — channels with no agent. Own registry + append-only JSONL messages + per-account read marks (`RoomStore`); pure rules `visibleRooms`, `canSeeRoom`, `roomGroupFor`, `postRefusal`, `patchRoomIn`, `parseMessages`, `pageMessages`, `unreadCount`, `roomForTopic`, `telegramLine`. Tested in `test/rooms.test.ts`; the no-agent seams in `test/rooms-boundary.test.ts`. |
+| `src/wa-link.ts` | The WhatsApp link's state as a pure reducer (`linkReduce`), the backoff (`reconnectDelayMs`), the panel's view (`linkView` — the QR and the full number for a person only, the raw device id never) and `maskPhone`. `LINK_TIMEOUT_MS` ends a QR nobody scans; `LIVENESS_MS` takes a silent socket out of `connected`. See "The WhatsApp link". |
+| `src/wa-transport.ts` | The seam (`WaTransport`, `WaTransportFactory`) and the session directory: `waSessionDir`, `ensureSessionDir` (0700 re-asserted, symlink refused), `rememberAccount` / `storedAccount` (its own `account.json`, never the library's files), `wipeSession` (never follows a symlink out). |
+| `src/wa-fake.ts` | The scripted fake transport: QR rotation, restart-required after `scan`, silent resume, `removeFromPhone`, `goSilent` (one socket) and `offline`/`online` (every socket), a logout that can fail. Unit tests, and `SHADOK_WA_FAKE=1` on a side instance. |
+| `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, link / cancel / unlink. Invariant 75. |
+| `src/wa-baileys.ts` | The ONLY file that names the WhatsApp library (`baileys`, an optionalDependency pinned exactly, dynamic import from a variable): `loadBaileysFactory`, `closeReasonOf`, `accountOf`, and `qrSvg` (server-side QR drawing). QR pairing only — pairing by code is broken upstream. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`.; per provider: `brokerStartUrl` (Google sends `areas`), `healthProviders`, `connectedGoogle`. |
@@ -3266,6 +3331,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. `pickChannelSource` makes a fulfilled `/channels` (even `[]`) AUTHORITATIVE, so only a FAILED fetch consults the origin-scoped localStorage cache; `dirKey` namespaces that cache key by launch dir. Together they close the cross-dir channel leak (invariant 34). `serverSwapped(pageKey, serverKey)` — did the instance answering this origin change under the tab (a port taken over after a stop)? — drives the "cockpit replaced, reload" banner (invariant 35). ESM: loaded by the browser (bridged, with boot-critical stubs that mirror the real logic — see invariant 10) AND imported by `test/channel-store.test.ts`. |
 | `public/shadok-soul.js` | The Shadok's voice, pure: `MAXIMS` (original lines in the Shadoks' spirit, English like the UI), `PUMP_LINES` + `pumpLine(elapsedMs)` (the thinking indicator opens on the classic "Shadok is pumping" and rotates every `PUMP_LINE_MS`; text, not motion, so it runs under reduced motion too), `gabuzomeu(n)` (base 4: GA BU ZO MEU), `pickMaxim(rand, prev)` (never the same twice in a row) and `mascotSay(count, rand, prev)` (the header mark's click: a maxim, or one draw in five a head count of the agents in Shadok numerals). `index.html` wires it through the ESM bridge (read at click / tick / empty-state time, never at parse — invariant 10) and draws the big empty-state Shadoks with `shadokInner`. ESM: loaded by the browser AND imported by `test/shadok-soul.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — the favicon/title/blink decision. The badge only blinks when the browser tab is hidden AND an **unmuted** channel is waiting for an answer; both phases stay visible (a browser-throttled timer must never make the page look calm). The instance-wide mute (`cockpitMuted`, from `GET /mute`) needs no change here: `attentionInput` in `index.html` folds it into every channel's `muted`, so a fully-muted instance resolves to the idle state — favicon frozen, no badge, no blink — and `ding` honours it too. ESM: loaded by the browser AND imported by `test/notify.test.ts`. |
+| `public/wa-panel.js` | Pure `waPanelModel(view, now)` → `{tone, status, blocks, actions, text}` — the WhatsApp panel's whole display decision for ONE link state (an unknown view is `unavailable`, never linkable), and `agoText`. ESM: loaded by the browser (bridged, with a stub) AND imported by `test/wa-panel.test.ts`. |
 | `public/auth-expiry.js` | Pure `fmtExpiry(ts, now)` (a deadline as "in 22 days" / "in 6 h" / "expired") and `expiryWarning(auth, now)` — the re-login reminder decision over a `/auth` payload: nag only when the account is KNOWN signed in (never `unknown`, never `signed-out` — the sign-in card owns that), only with a numeric `tokenExpiresAt` (the refresh-token deadline, see `src/claude-creds.ts`), within **48h INCLUDING already past it** (a tab left open across the deadline must still nag). Drives both the version-menu Token row and the top reminder banner; the client only does DOM, the threshold and wording are here so the edge cases are tested (`test/auth-expiry.test.ts`). The **re-login** action itself reuses the existing sign-in card (`openAuthCard` → `POST /auth/login`), not a new path. `agentCredentialRows(auth, isAdmin)` replaces those rows on a MIGRATED multi-tenant instance (`connect.user` set): the agents run on the long-lived token or their space's login, so the server's own sign-in is irrelevant there and usually absent — describing it read "signed out" and its early return hid both "Re-login" and "Replace subscription token". The rows now show the agents' credential (`connect.state` / `agentAuth` / `expiresAt`) and the button opens the card on that flow (`connectCardPlan` with `force`). ESM: bridged onto `window` (invariant 10) AND imported by the test. |
 | `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`), and `isManagedProfile` — the server-owned roles (`Shadok-Tweak`) that must never appear in a list where one PICKS a profile, since their prompt is rewritten at every boot. ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
 | `public/tour-steps.js` | Pure `TOUR_STEPS` / `visibleSteps` / `unionRect` / `bubblePlacement` — the guided tour's step data and geometry. The steps are CLAIMS about the page, and the page outran them once (six steps while groups, rooms, the Skill Factory, webhooks, the composer buttons, accounts and the settings menu all shipped unmentioned): a landmark added to the header or to an agent's bar is added to a step in the same change, and `test/tour-steps.test.ts` fails a button no spotlight frames. A role-dependent control gets a step of its OWN (`people`), so it is dropped for those who lack it rather than named to them. With NO agent on screen — every first visit, since the tour runs before the sign-in — the page stages a **demo scene** (`TOUR_DEMO`, `tourNeedsDemo`; `tourDemoOn` / `tourDemoOff` in `index.html`): example rows, the real agent bar and composer over an example conversation, example groups. It bends "dropped, never faked" on purpose, and stays honest by SAYING it is an example on every surface. It is built with `textContent` outside `createTab`, in its own container, so it cannot be persisted (`persistChannels` keeps only rows with a `_tab` and a session id), and it is struck by `endTour` and by `refreshChrome` when a real agent takes the screen. `tourDemo` is declared beside `tabs`, not beside its functions: `applyView` reads it at the first paint. Visibility is asked again at EVERY step (`tourStanding`), never once at start: on a first visit the tour starts while the page is still loading, so a list filtered up front dropped every step about an agent, the composer and the people buttons before their targets existed — eleven stops played as five. `maybeStartTour` also holds the first count for the boot restore and `/me` (`bootSettled`, `meReady`, 4s at most). `bubblePlacement` goes BESIDE a full-height column — below and above both fail there, and the clamp used to settle the bubble on top of the column it described. A step whose target is not on screen is **dropped, never faked** (an empty cockpit has no agent menu), so the counter reads over the RETAINED steps. **An empty rect is not a point at the origin**: `unionRect` DROPS `{0,0,0,0}` members and returns null only when none survive. Without that, `reflowHeaderTools` parking five tool buttons in the closed ⋯ menu below 640px pinned the union's `Math.min` to zero and stretched the toolbar spotlight from the viewport's corner across the header — measured `top -6px, left -6px, 367x51` — framing the brand and the gauges while the body described buttons that were not on screen. Same family as `.hdr-tools`, which is `display: contents` on desktop and has **no box at all**; that one dropped its step honestly, this one kept it and lied. Dropping empties is also what lets one step carry BOTH layouts' selectors (`["#tabbar", "#chanSelect"]`), which is how the phone stopped losing every step that mentions agents — it used to get 3 of 6. Two copy rules the tests hold, both learned from real drift: **never promise an order** ("left to right" put the ledger's name on the profiles icon the day the ledger was inserted) and **never name a position** ("at the bottom" describes the column, and the phone's `<select>` has no bottom and no *Tweak Shadok-AI*). ESM: loaded by the browser AND imported by `test/tour-steps.test.ts`. |
@@ -3398,7 +3464,7 @@ sign-in, and registering a device with an enrollment code);
 `/2fa/confirm/options` (POST, browser-only, a signed-in PERSON — see invariant
 42); `/vendor/simplewebauthn.js` (before the gate, the login page needs it);
 `/backend` (GET — the model backend in use, without its key, plus the onboarding presets; PUT — save one or `{clear:true}`, **admin + browser only**), `/backend/test` and `/backend/models` (POST, admin + browser only — one real request to a candidate backend, and the models it serves; src/backend.ts),
-`/models` (GET — the families, the versions discovered in the binary, and the machine-wide default; POST `/models/default` — pin it, **browser-only** like `PUT /profiles`, since it writes a key every agent on the machine reads), `/telegram` (GET/PUT — bot config from the GUI, **admin only** via `accountAdmin`: the bot/board is one instance-wide integration, so a `member` may neither read nor change it — the GUI also hides the ✈️ button for them), `/version`,
+`/models` (GET — the families, the versions discovered in the binary, and the machine-wide default; POST `/models/default` — pin it, **browser-only** like `PUT /profiles`, since it writes a key every agent on the machine reads), `/telegram` (GET/PUT — bot config from the GUI, **admin only** via `accountAdmin`: the bot/board is one instance-wide integration, so a `member` may neither read nor change it — the GUI also hides the ✈️ button for them), `/whatsapp` (GET — the link's state, **admin only**; the QR as SVG only for a cookie-authenticated person, never the raw payload), `/whatsapp/link` (POST link / DELETE cancel-or-unlink, **admin and browser-only**), `/whatsapp/fake/:action` (only with `SHADOK_WA_FAKE=1`), `/version`,
 `/autoupdate`, `/permission-mode`, `/reload` (POST — an agent respawns ITSELF,
 scoped by `SHADOK_SESSION_KEY` like `/profiles/prompt`, used by the
 `shadok-reload` skill), `/ledger` (GET — the table for the read-only viewer;

@@ -1,7 +1,8 @@
 # WhatsApp: anyone who writes to the instance's number gets their own agent
 
 Design, drafted 2026-11-23 and checked once against the code by a reader in
-the builder's seat. Approved 2026-11-23. Status: not implemented.
+the builder's seat. Approved 2026-11-23. Status: step 1 (the seam, linking and
+the panel) implemented; steps 2 and 3 not yet.
 
 ## Intent
 
