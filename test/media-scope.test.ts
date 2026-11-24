@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   mediaGroupKey,
   mediaDirForGroup,
@@ -10,6 +11,7 @@ import {
   mediaDirSpec,
   mediaDirTrusted,
   mediaServable,
+  mediaAddDirArgs,
   MEDIA_GROUP_DIR_RE,
 } from "../src/media-scope.js";
 
@@ -115,4 +117,24 @@ test("purgeMedia: old files at the root and in group dirs, links removed not fol
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
   }
+});
+
+test("attachments: the media directory is granted to the agent with --add-dir", () => {
+  assert.deepEqual(mediaAddDirArgs("/srv/media/g-main"), ["--add-dir", "/srv/media/g-main"]);
+  // No directory → no flag: --add-dir refuses a missing path, and that must
+  // never cost the spawn.
+  assert.deepEqual(mediaAddDirArgs(null), []);
+  assert.deepEqual(mediaAddDirArgs(""), []);
+  // Wired into the agent's argv, early (the flag is variadic: what follows it
+  // must be another flag) and best-effort (a vanished group never fails a spawn).
+  const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const at = src.indexOf("...mediaAddDirArgs(mediaDirArg),");
+  assert.ok(at > 0, "makePilot passes the media dir");
+  assert.ok(at < src.indexOf("...permissionModeArgs(permissionMode),", at), "before the other flags");
+  // ...and PRE-TRUSTED, for both the server's HOME and a dropped agent's: an
+  // untrusted --add-dir dir blocks the spawn on a trust screen whose default is
+  // "No, exit" (verified on a real interactive claude 2.1.331).
+  assert.match(src, /if \(mediaDirArg\) ensureProjectTrusted\(mediaDirArg\);/);
+  assert.match(src, /seedGroupAgentHome\(user, home, cwd, mediaDirArg \? \[mediaDirArg\] : \[\]\)/);
+  assert.match(src, /try \{\n    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" \? mediaDirForGroupId\(group \?\? null\) : mediaDirForSession\(null\);\n  \} catch/);
 });

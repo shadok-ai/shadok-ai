@@ -260,6 +260,7 @@ import {
   mediaDirSpec,
   mediaDirTrusted,
   mediaServable,
+  mediaAddDirArgs,
 } from "./media-scope.js";
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
 import { HOME_SKILLS_BASE, missingHomeSkillLinks, rewriteSkillsBase } from "./skill-paths.js";
@@ -9946,8 +9947,8 @@ function ensureTierStateDir(user: string, home: string): void {
   }
 }
 
-function seedGroupAgentHome(user: string, home: string, cwd: string): void {
-  const cwds = new Set<string>([cwd]);
+function seedGroupAgentHome(user: string, home: string, cwd: string, extraTrusted: readonly string[] = []): void {
+  const cwds = new Set<string>([cwd, ...extraTrusted]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
@@ -10114,6 +10115,24 @@ function makePilot(
   // and only for a dropped agent, so a mono-tenant/root spawn stays byte-for-byte
   // as before. See `resolveSpawnModel`.
   const resolvedProfile = effectiveProfile(profile);
+  // The directory this agent's attachments are written to (its group's in
+  // multi-tenant, invariant 60), granted as an extra working directory so
+  // reading a file the person just pasted asks for no permission. Best-effort:
+  // a group that vanished keeps the old behaviour (a prompt), never a failed spawn.
+  let mediaDirArg: string | null = null;
+  try {
+    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" ? mediaDirForGroupId(group ?? null) : mediaDirForSession(null);
+  } catch (e) {
+    console.warn(`media: no --add-dir for ${id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)})`);
+  }
+  // An `--add-dir` directory Claude Code has never seen opens a BLOCKING
+  // "Adding a new directory … do you trust it?" screen at spawn, with "No, exit"
+  // preselected — every agent stopped there, and one Enter ended it (the first
+  // version of this shipped without the seed and was reverted). It reads the
+  // same `projects[<dir>].hasTrustDialogAccepted` a worktree's trust does, so
+  // seed it the same way: here for an agent running as the server user, and in
+  // `seedGroupAgentHome` below for a dropped one, which reads its own HOME.
+  if (mediaDirArg) ensureProjectTrusted(mediaDirArg);
   const spawnModel = resolveSpawnModel({
     requested: model,
     profileModel: resolvedProfile?.model,
@@ -10124,6 +10143,9 @@ function makePilot(
   // (src/prompt-args.ts), which silently dropped the role and the pilot prompt.
   const fullArgs = mergeAppendedPrompts([
     ...args,
+    // A flag+value pair placed early: `--add-dir` is variadic, so it must be
+    // followed by another flag, never by a bare word it would swallow.
+    ...mediaAddDirArgs(mediaDirArg),
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
     // after `--mcp-config`'s variadic JSON as a bare word.
@@ -10167,7 +10189,7 @@ function makePilot(
   // the per-HOME onboarding/trust state needs seeding into the group user's HOME.
   // The group also gets its OWN SSH identity (one key per group).
   if (user && home) {
-    seedGroupAgentHome(user, home, cwd);
+    seedGroupAgentHome(user, home, cwd, mediaDirArg ? [mediaDirArg] : []);
     ensureAgentSshKey(user, home);
   }
   // Isolated groups share the subscription token, injected in the forced-last
