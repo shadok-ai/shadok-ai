@@ -21,7 +21,10 @@ import {
   agentInvitePrompt,
   peerScope,
   setPeerScope,
+  peerGroupCandidates,
+  principalClashRefusal,
 } from "../src/peers.js";
+import { canSeeGroup, canWriteSecretGroup, canAdministerGroup, type Group } from "../src/groups.js";
 
 const secret = randomBytes(32);
 
@@ -212,8 +215,8 @@ test("newPeer / addPeer store the scope; default restricted", () => {
 test("agentInvitePrompt: member says full member, restricted says own-agents-only", () => {
   const m = agentInvitePrompt({ url: "http://h", ticket: "t", scope: "member" });
   assert.match(m, /full member of that cockpit/);
-  assert.match(m, /EVERY agent/);
-  assert.match(m, /cannot manage its accounts or its peers/);
+  assert.match(m, /every agent in the groups you belong to/);
+  assert.match(m, /cannot manage its accounts, its peers or who belongs to a group/);
   const r = agentInvitePrompt({ url: "http://h", ticket: "t", scope: "restricted" });
   assert.match(r, /only see and drive the agents you spawn/);
   assert.ok(!/full member/.test(r));
@@ -293,4 +296,110 @@ test("tierPeersOutSeed: a private group is never handed a credential nobody gran
 
 test("tierPeersOutSeed: nothing to carry is not an error", () => {
   assert.equal(tierPeersOutSeed({ tier: "commons", serverHasFile: false, tierHasFile: false }), false);
+});
+
+// ── An invited agent in a group's roster ──────────────────────────────────────
+// `Group.members` holds bare PRINCIPAL names, so an invited agent joins a
+// restricted group exactly the way a person does. These lock the two filters
+// that keep that namespace readable.
+
+const peerRow = (name: string, scope?: string, pending = false) => ({
+  name,
+  createdAt: 1,
+  salt: "s",
+  ...(scope ? { scope: scope as never } : {}),
+  ...(pending ? { invite: { ticket: "t", expiresAt: 9 } } : { enrolledAt: 2 }),
+});
+
+test("peerGroupCandidates: member and admin peers are offerable, a restricted one is not", () => {
+  const peers = [peerRow("boxed", "restricted"), peerRow("mate", "member"), peerRow("boss", "admin"), peerRow("legacy")];
+  // `legacy` has no scope at all → `restricted` by default, so it is NOT offered:
+  // a membership would grant it nothing (it is not even a principal).
+  assert.deepEqual(
+    peerGroupCandidates(peers, []).map((c) => c.name),
+    ["mate", "boss"],
+  );
+});
+
+test("peerGroupCandidates: a pending invitation is offerable — the name is already reserved", () => {
+  const got = peerGroupCandidates([peerRow("mate", "member", true)], []);
+  assert.deepEqual(got, [{ name: "mate", scope: "member", pending: true }]);
+});
+
+test("peerGroupCandidates: a name an ACCOUNT holds is dropped, whatever its case", () => {
+  // One roster entry would otherwise grant two principals, and nothing on screen
+  // would say which — `principalClashRefusal` stops new ones, this hides the
+  // rows an instance already has.
+  const peers = [peerRow("support", "member"), peerRow("mate", "admin")];
+  assert.deepEqual(
+    peerGroupCandidates(peers, ["Support", "someone"]).map((c) => c.name),
+    ["mate"],
+  );
+});
+
+test("peerGroupCandidates: an agent the group ALREADY holds stays listed after a narrowing", () => {
+  // Narrowed to `restricted` after it was added: hiding it would leave a member
+  // the picker cannot explain and nobody can take back out.
+  const peers = [peerRow("wasmember", "restricted"), peerRow("other", "restricted")];
+  assert.deepEqual(
+    peerGroupCandidates(peers, [], ["alice", "wasmember"]).map((c) => c.name),
+    ["wasmember"],
+  );
+  // The clash filter is NOT overridden: ambiguous is ambiguous whoever holds it.
+  assert.deepEqual(peerGroupCandidates([peerRow("dup", "restricted")], ["dup"], ["dup"]), []);
+});
+
+test("principalClashRefusal: a person and an agent may not share a name, either way round", () => {
+  const accountNames = ["Alice", "support"];
+  const peerNames = ["brasdroit1"];
+  assert.equal(principalClashRefusal({ name: "bob", kind: "account", accountNames, peerNames }), null);
+  assert.equal(principalClashRefusal({ name: "bob", kind: "agent", accountNames, peerNames }), null);
+  // Creating an ACCOUNT over an invited agent's name, and the reverse.
+  assert.match(
+    String(principalClashRefusal({ name: "BrasDroit1", kind: "account", accountNames, peerNames })),
+    /already an invited agent/,
+  );
+  assert.match(
+    String(principalClashRefusal({ name: "alice", kind: "agent", accountNames, peerNames })),
+    /already an account/,
+  );
+  // Its OWN kind is never a clash here: re-inviting a peer name is the
+  // supersede-and-rotate path, and an existing account is `userWriteVerdict`'s.
+  assert.equal(principalClashRefusal({ name: "support", kind: "account", accountNames, peerNames }), null);
+  assert.equal(principalClashRefusal({ name: "brasdroit1", kind: "agent", accountNames, peerNames }), null);
+  assert.equal(principalClashRefusal({ name: "   ", kind: "agent", accountNames, peerNames }), null);
+});
+
+test("agentInvitePrompt: no scope promises every group — a group is reached by being in it", () => {
+  for (const scope of ["member", "admin"] as const) {
+    const text = agentInvitePrompt({ url: "http://x", ticket: "t", scope });
+    assert.ok(!/in every group/.test(text), scope);
+    assert.match(text, /groups you belong to/, scope);
+  }
+});
+
+test("a member-scope peer is a group member by NAME — that IS the whole mechanism", () => {
+  // `currentAccount` resolves a member/admin peer to `{name, role}`, so the
+  // viewer built from it is person-shaped and `memberOf` finds it in the
+  // roster. Nothing in src/groups.ts knows peers exist, and nothing should:
+  // the day membership requires an ACCOUNT behind the name, every invited
+  // agent silently loses every walled group someone put it in.
+  const g = {
+    id: "comex",
+    name: "Comex",
+    nature: "restricted",
+    members: ["alice", "brasdroit1"],
+    createdAt: 0,
+  } as Group;
+  const peer = { name: "brasdroit1", role: "member" as const };
+  assert.equal(canSeeGroup(g, peer), true);
+  assert.equal(canSeeGroup(g, { name: "outsider", role: "admin" }), false, "an admin has no override");
+  // A member co-owns the group's vault — the operator's choice when they add a
+  // machine to a walled group, and what the panel says on screen.
+  assert.equal(canWriteSecretGroup(g, peer), true);
+  // It can never administer the group: this returns true for a person-shaped
+  // viewer, and the only thing standing in the way is that every group write is
+  // browser-only (`requestFromBrowser` refuses a peer token). Pinned so the
+  // reason stays visible if that gate ever moves.
+  assert.equal(canAdministerGroup(g, peer), true);
 });

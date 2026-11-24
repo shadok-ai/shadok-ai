@@ -284,6 +284,8 @@ import {
   agentInvitePrompt,
   peerScope,
   setPeerScope,
+  peerGroupCandidates,
+  principalClashRefusal,
   type PeerScope,
   type Peer,
 } from "./peers.js";
@@ -6941,12 +6943,44 @@ app.get("/users", (req, res) => {
 // The roster a member-picker needs: NAMES ONLY. `GET /users` is admin-only and
 // carries role/pending/passkeys; a group's members must be choosable by anyone
 // who can see the group, so this exposes the one field that is not sensitive.
+/** The account names a member picker offers: the stored rows, plus the
+ *  bootstrap admin, which is the password itself rather than a row. ONE helper
+ *  so the picker's two halves (`/accounts` and `/peers/names`) judge the same
+ *  namespace — an invited agent is hidden from the picker exactly when an
+ *  account holds its name (`peerGroupCandidates`). */
+function pickerAccountNames(): string[] {
+  const names = loadAccounts().map((a) => a.name);
+  if (GUI_PASSWORD && !names.includes(BOOTSTRAP_ADMIN)) names.unshift(BOOTSTRAP_ADMIN);
+  return names;
+}
 app.get("/accounts", (req, res) => {
   if (!currentAccount(req)) return res.status(401).json({ error: "sign in first" });
-  const names = loadAccounts().map((a) => a.name);
-  // The bootstrap admin is the password itself, not a stored account.
-  if (GUI_PASSWORD && !names.includes(BOOTSTRAP_ADMIN)) names.unshift(BOOTSTRAP_ADMIN);
-  res.json(names);
+  res.json(pickerAccountNames());
+});
+/**
+ * The INVITED AGENTS a group's member picker may offer (`peerGroupCandidates`)
+ * — name, scope, and whether the invitation is still pending.
+ *
+ * A group's roster is a list of principal NAMES, and an invited agent joins a
+ * restricted group by being in it, exactly like a person; this is the other half
+ * of the picker's list. Same gate as `/accounts`, deliberately: managing a
+ * roster is member-only, not admin-only (operator decision 2026-11-03), so
+ * gating this on `admin` would show the people half and hide the agent half
+ * from precisely the members who do the managing. It carries no ticket, no
+ * token and no note — only names, which `/accounts` already exposes for people.
+ *
+ * `?group=<id>` names the roster being edited, so an agent the group ALREADY
+ * holds stays listed even if its scope was narrowed afterwards. The roster is
+ * read from the SERVER's group list, never from the client — a caller that
+ * could name its own roster could make a hidden row appear.
+ */
+app.get("/peers/names", (req, res) => {
+  const viewer = viewerFor(currentAccount(req));
+  if (!viewer) return res.status(401).json({ error: "sign in first" });
+  const wanted = String(req.query.group ?? "").trim();
+  const g = wanted ? loadGroups().find((x) => x.id === wanted) : null;
+  const roster = g && canSeeGroup(g, viewer) ? g.members : [];
+  res.json(peerGroupCandidates(loadPeers(peerFileFor()), pickerAccountNames(), roster));
 });
 
 // Create AND issue the invitation in one step: an account with no way in is a
@@ -6964,6 +6998,16 @@ app.post("/users", async (req, res) => {
     exists: list.some((a) => a.name === name),
   });
   if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  // Accounts and invited agents are ONE namespace: a group's roster stores a
+  // bare name (`principalClashRefusal`). Refused before the invitation is
+  // minted, so a clash never leaves a half-created account behind.
+  const clash = principalClashRefusal({
+    name,
+    kind: "account",
+    accountNames: list.map((a) => a.name),
+    peerNames: loadPeers(peerFileFor()).map((p) => p.name),
+  });
+  if (clash) return res.status(409).json({ error: clash });
   if (!(await stepUpIfTwoFactor(req, res, me!))) return;
   const invite = newInvite(Date.now());
   saveAccounts([...loadAccounts(), { name, role, createdAt: Date.now(), invite }]);
@@ -7543,6 +7587,16 @@ app.post("/peers", (req, res) => {
   // `admin` follows the same rule: the exact string, or nothing.
   const scope: PeerScope = peerScope({ scope: req.body?.scope });
   const file = peerFileFor();
+  // The other half of the shared namespace (`principalClashRefusal`). Only an
+  // ACCOUNT's name is a clash: re-inviting an existing peer name is the
+  // supersede-and-rotate path, which `addPeer` handles on purpose.
+  const clash = principalClashRefusal({
+    name,
+    kind: "agent",
+    accountNames: pickerAccountNames(),
+    peerNames: loadPeers(file).map((p) => p.name),
+  });
+  if (clash) return res.status(409).json({ error: clash });
   const { peers, ticket } = newPeer(loadPeers(file), name, Date.now(), note, scope);
   savePeers(file, peers);
   console.log(`peers: ${me.name} invited peer ${name} (${scope})`);

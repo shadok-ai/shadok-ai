@@ -1452,16 +1452,28 @@ carries a **scope**, chosen when you invite:
 - **restricted** (the default) — only the agents it creates on B; it can never
   see, resume, drive or diff B's other agents.
 - **member** — the invited agent acts **like a person you invite**: it sees,
-  drives and measures **every** agent on B, spawns more, reads its usage. It is
-  not an admin (no account or peer management).
-- **admin** — a member that carries the admin role: it sees every group on a
-  multi-tenant instance, reads what only an admin reads, and may **rewrite a
-  profile's system prompt** from outside (`pilotctl profile-prompt "<text>"
-  --name <profile> --peer B`, i.e. `PUT /profiles/prompt` under its peer token —
-  refused to any other scope). It may also mint a role, born with no secret.
+  drives and measures every agent in the groups it belongs to, spawns more,
+  reads its usage. It is not an admin (no account or peer management).
+- **admin** — a member that carries the admin role: it reads what only an admin
+  reads, and may **rewrite a profile's system prompt** from outside (`pilotctl
+  profile-prompt "<text>" --name <profile> --peer B`, i.e. `PUT
+  /profiles/prompt` under its peer token — refused to any other scope). It may
+  also mint a role, born with no secret.
   What it still cannot do: manage accounts, invite or change peers, or edit a
   profile's guardrails (deny, allow, secrets, model). Those writes are
   browser-only, so no machine credential reaches them whatever its role.
+
+**No scope is a key to a Private group.** On a multi-tenant instance an invited
+agent is judged on its NAME exactly like a person, and an admin has no override
+there, so it reaches a Private group the way a person does: a member of that
+group adds it from the group's **gear ▸ members** picker, where invited agents
+appear beside the accounts, marked `agent`. Added, it is a full member — it sees
+and drives that group's agents, starts more **under the group's own Unix user**,
+and reads *and writes* the group's secrets — but it can never change the group or
+who belongs to it (every group write is browser-only). A `restricted`-scope agent
+is not offered: it has no identity of its own on B, so a membership would grant it
+nothing. And because a roster holds bare names, an account and an invited agent
+may never share one — the second of the two is refused at creation.
 
 The narrow scope is what you get when you say nothing — including for a peer
 invited before scopes existed, which stays restricted until an admin widens it.

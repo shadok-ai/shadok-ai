@@ -62,15 +62,23 @@ export interface Peer {
    *  - `restricted` (default) — only the agents IT created (`ownedByPeer`), and
    *    only `GET /diff` over HTTP. The scope a peer gets when nobody says
    *    otherwise.
-   *  - `member` — everything a web MEMBER can: see and drive EVERY agent, read
-   *    `/usage` / `/live`, spawn, the lot. Not admin (no account or peer
-   *    management). "Invite an agent like a user."
-   *  - `admin` — a member that also carries the ADMIN role: it sees every
-   *    group on a multi-tenant instance, reads what only an admin reads, and
-   *    may rewrite a profile's system prompt from outside (`PUT
-   *    /profiles/prompt`). It still cannot mint or change accounts and peers,
-   *    nor touch guardrails: those writes are browser-only, so no machine
-   *    credential reaches them whatever its role.
+   *  - `member` — everything a web MEMBER can: see and drive EVERY agent its
+   *    GROUPS hold, read `/usage` / `/live`, spawn, the lot. Not admin (no
+   *    account or peer management). "Invite an agent like a user."
+   *  - `admin` — a member that also carries the ADMIN role: it reads what only
+   *    an admin reads and may rewrite a profile's system prompt from outside
+   *    (`PUT /profiles/prompt`). It still cannot mint or change accounts and
+   *    peers, nor touch guardrails: those writes are browser-only, so no
+   *    machine credential reaches them whatever its role.
+   *
+   * NEITHER of them is a key to every group. A peer authenticates under its own
+   * NAME (`currentAccount`), and a group's wall is `memberOf(g, name)` — with no
+   * admin override (operator decision 2026-11-03). So a `member`/`admin` peer
+   * sees the PUBLIC groups and whatever restricted group someone put its name
+   * into, exactly like a person. This doc used to claim `admin` "sees every
+   * group", and the invitation panel said so too: it never did, and an operator
+   * who widened a peer to admin to reach a restricted group got nothing and no
+   * reason why (`peerGroupCandidates`).
    * Absent on a row from before scopes existed → `restricted`, so an upgrade
    * can never widen a credential that is already out there: a peer that was
    * boxed to its own agents stays boxed until an admin WIDENS it
@@ -114,6 +122,76 @@ export function setPeerScope(peers: readonly Peer[], name: string, scope: unknow
   const row = peers.find((p) => p.name === name);
   if (!row) return { ok: false, error: `no peer named ${name}` };
   return { ok: true, from: peerScope(row), peers: peers.map((p) => (p.name === name ? { ...p, scope } : p)) };
+}
+
+/**
+ * The invited agents a group's member picker may offer — the colliding and the
+ * powerless ones dropped.
+ *
+ * A group's roster is a list of PRINCIPAL NAMES (`Group.members`) and
+ * `memberOf` compares them as plain strings, so an invited agent joins a
+ * restricted group exactly the way a person does: by having its name in that
+ * list. Nothing in `src/groups.ts` needs to know peers exist. Two kinds of row
+ * must still be kept out of the picker:
+ *
+ * - A `restricted`-scope peer is not a principal with an identity of its own
+ *   (`currentAccount` returns null for it — it stays the boxed caller
+ *   `peerName` handles), so a membership would do NOTHING for it. Offering it
+ *   would be a switch that reads as granted and grants nothing.
+ * - An account and a peer SHARE that namespace. A peer whose name also names an
+ *   account is dropped rather than offered as a second tile: one roster entry
+ *   would grant two principals and the operator could not tell which.
+ *   `principalClashRefusal` stops new collisions at creation; this covers the
+ *   rows an instance already has.
+ *
+ * `roster` is what the group ALREADY holds, and it overrides the scope filter:
+ * an agent narrowed to `restricted` after it was added must stay VISIBLE, or
+ * the picker would hide a member it cannot explain and the operator could never
+ * take it back out. It never overrides the clash filter — an ambiguous name is
+ * ambiguous whoever holds it.
+ *
+ * Pending rows ARE offered: an invitation not yet redeemed is a peer an
+ * operator is setting up, and a second trip after it enrols buys nothing — the
+ * name is already reserved.
+ */
+export function peerGroupCandidates(
+  peers: readonly Peer[],
+  accountNames: readonly string[],
+  roster: readonly string[] = [],
+): { name: string; scope: PeerScope; pending: boolean }[] {
+  const taken = new Set(accountNames.map((n) => n.trim().toLowerCase()));
+  const held = new Set(roster);
+  return peers
+    .filter((p) => !taken.has(p.name.trim().toLowerCase()))
+    .filter((p) => peerScope(p) !== "restricted" || held.has(p.name))
+    .map((p) => ({ name: p.name, scope: peerScope(p), pending: !!p.invite }));
+}
+
+/**
+ * Why `name` may not be created: the OTHER kind of principal already holds it.
+ * `null` = free.
+ *
+ * Accounts and invited agents are ONE namespace, because a group's roster
+ * stores a bare name and `memberOf` resolves it by string equality. Letting
+ * both spellings exist would make a membership ambiguous for good: adding
+ * "support" to a group would grant the person AND the machine, and revoking one
+ * would not revoke the other. Compared case-insensitively — `normPeerName`
+ * lowercases while an account name keeps its case, so "Support" and "support"
+ * are two spellings of one roster entry waiting to happen.
+ */
+export function principalClashRefusal(input: {
+  name: string;
+  kind: "account" | "agent";
+  accountNames: readonly string[];
+  peerNames: readonly string[];
+}): string | null {
+  const want = input.name.trim().toLowerCase();
+  if (!want) return null;
+  const other = input.kind === "account" ? input.peerNames : input.accountNames;
+  const hit = other.find((n) => n.trim().toLowerCase() === want);
+  if (!hit) return null;
+  const what = input.kind === "account" ? "an invited agent" : "an account";
+  return `"${hit}" is already ${what} — a person and an agent cannot share a name, or a group's roster could not tell them apart`;
 }
 
 /** How long a ticket stays redeemable. Long enough to reach an agent that is
@@ -374,18 +452,24 @@ export function agentInvitePrompt(opts: {
   const brief = (opts.brief ?? "").trim();
   const scope = peerScope({ scope: opts.scope });
   const member = scope !== "restricted";
+  // What a scope reaches stops at the GROUP wall, and neither scope crosses it:
+  // a cockpit's groups are reached by having your name in one, never by being
+  // admin (`peerGroupCandidates`). Saying "every agent, in every group" sent an
+  // invited agent looking for work it could not see.
+  const groupLine =
+    "every agent in the groups you belong to (the cockpit's public ones, plus any Private group a member added you to)";
   const accessLine =
     scope === "admin"
-      ? "You act as an ADMIN of that cockpit: you can see, drive and measure EVERY agent on it, in every group, spawn more, read its usage, and rewrite a profile's system prompt. (Accounts, peers and a profile's guardrails — deny, allow, secrets, model — are changed by a person in its web UI, never by you.)"
+      ? `You act as an ADMIN of that cockpit: you can see, drive and measure ${groupLine}, spawn more, read its usage, and rewrite a profile's system prompt. (Accounts, peers, group membership and a profile's guardrails — deny, allow, secrets, model — are changed by a person in its web UI, never by you.)`
       : member
-        ? "You act as a full member of that cockpit: you can see, drive and measure EVERY agent on it, spawn more, and read its usage — everything a person you invite could. (You cannot manage its accounts or its peers — that stays with an admin.)"
+        ? `You act as a full member of that cockpit: you can see, drive and measure ${groupLine}, spawn more, and read its usage — everything a person you invite could. (You cannot manage its accounts, its peers or who belongs to a group — that stays with a person.)`
         : "You can only see and drive the agents you spawn there — nothing else on that cockpit.";
   const promptHint =
     scope === "admin"
       ? ['  pilotctl profile-prompt "<text>" --name <profile> --peer host   # rewrite a profile\'s system prompt']
       : [];
   const listHint = member
-    ? "  pilotctl list   --peer host                     # every agent on the cockpit"
+    ? "  pilotctl list   --peer host                     # every agent you can see"
     : "  # (you only see the agents you spawn; track their ids)";
   return [
     "You've been invited to collaborate with a shadok-ai cockpit as a peer agent.",
