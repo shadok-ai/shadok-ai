@@ -454,7 +454,11 @@ Enter to skip; you can add it later from the web UI).
   served back to the browser by `GET /media/<name>` from the same directory
   Telegram attachments land in. On a multi-tenant instance each group has its own
   media directory (`/media/g-<group>/<name>`), readable only by that group's
-  agents and served only to people who can see that group.
+  agents and served only to people who can see that group. Every agent is
+  started with that directory as an extra working directory (`--add-dir`), so
+  it reads what you sent **without asking for permission** — and nothing is
+  written into its project or worktree. An agent started before this change
+  needs one *Reload agent* to pick it up.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an
   export, a screenshot, an archive) it arrives as a download card in the chat,
   inline if it is an image, and as an upload in the Telegram topic. It goes
