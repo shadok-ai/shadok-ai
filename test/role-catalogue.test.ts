@@ -76,6 +76,24 @@ test("Shadok-dev keeps what makes it a dev: small tested changes, and it never l
   assert.ok(!denyOf("Shadok-dev").length, "Shadok-dev is the unguarded role");
 });
 
+test("Shadok-dev reviews its own diff and says what it verified against", () => {
+  // The author's half of a review, which the reviewer's half cannot cover: a
+  // change can be green, already read by someone else, and still break on its
+  // first real run when the only thing it was ever exercised against was a stub
+  // that by construction cannot reproduce the failure. A diff does not say what
+  // it was verified AGAINST, so the prompt makes the author say it.
+  const dev = promptOf("Shadok-dev");
+  assert.match(dev, /review your own diff/i);
+  assert.match(dev, /could NOT verify/);
+  assert.match(dev, /stub|mock/i);
+  // The commands are named as an OPTION, never as a given. A role prompt that
+  // assumes a slash command exists is the same false universal as one that
+  // assumes every project carries a CLAUDE.md (part 1 above): the catalogue
+  // ships to cockpits running other Claude Code versions.
+  assert.match(dev, /when your Claude Code carries them/i);
+  assert.match(dev, /otherwise do it by hand/i);
+});
+
 // ── Part 4: the three new roles ──────────────────────────────────────────
 
 test("each new role carries a guardrail shape no other shipped role has", () => {
