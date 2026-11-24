@@ -8,7 +8,7 @@ import { startWhatsApp } from "../src/whatsapp.js";
 import { makeFakeTransport } from "../src/wa-fake.js";
 import { openInbox } from "../src/wa-inbox.js";
 import { upsertInto, type Channel } from "../src/channels.js";
-import type { GuestSetup } from "../src/tg-guests.js";
+import { guestNotice, type GuestSetup } from "../src/tg-guests.js";
 
 // The bridge end to end, with NO network and NO phone: the scripted fake
 // transport stands for WhatsApp, and a fake server socket stands for our own
@@ -71,13 +71,16 @@ class FakeServer {
   channels: Channel[] = [];
   seq = 0;
   autoReady = true;
+  /** Answer a frame the way the server would (a toggle re-broadcasts its question). */
+  onOther?: (ws: FakeWs, f: any) => void;
   connect = (): WsLike => {
     const ws = new FakeWs(this);
     this.sockets.push(ws);
     return ws;
   };
   onFrame(ws: FakeWs, f: any) {
-    if (f.type !== "start" || !this.autoReady) return;
+    if (f.type !== "start") return void this.onOther?.(ws, f);
+    if (!this.autoReady) return;
     const id = f.resume ?? `sess-${++this.seq}`;
     if (!f.resume) this.channels = upsertInto(this.channels, { sessionId: id, cwd: `/home/g1/${f.guestKey}`, group: "g1" });
     setImmediate(() => ws.emit({ type: "ready", sessionId: id }));
@@ -98,6 +101,9 @@ async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer;
   let setup = o.setup ?? OPEN;
   const handle = startWhatsApp({ sessionDir: path.join(root, "session"), refusal: null, loadFactory: async () => fake.factory, log: () => {} });
   const inbox = openInbox(path.join(root, "state", "inbox.json"), { log: () => {} });
+  const mediaDir = path.join(root, "group-media");
+  fs.mkdirSync(mediaDir, { recursive: true });
+  const agentFiles = new Map<string, Buffer>();
   const bridge = startWaBridge({
     handle,
     connect: server.connect,
@@ -109,6 +115,21 @@ async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer;
     spacingMs: 0,
     reattachMs: 0,
     preemptMs: 200,
+    stagingDir: path.join(root, "state", "media"),
+    mediaDirFor: (sid) => {
+      if (!sid) throw new Error("no agent yet");
+      return mediaDir;
+    },
+    readAgentFile: async (_sid, p) => {
+      const b = agentFiles.get(p);
+      if (!b) throw new Error("not a readable file");
+      return b;
+    },
+    transcribe: (async (p: string) =>
+      fs.readFileSync(p, "utf8").startsWith("SPEECH:")
+        ? { ok: true as const, text: fs.readFileSync(p, "utf8").slice(7) }
+        : { ok: false as const, kind: "empty" as const, notice: "rien compris" }) as never,
+    lookAtVideo: async () => ({ durationSec: 4, frames: [{ path: path.join(mediaDir, "f1.jpg"), atSec: 1 }] }),
   });
   return {
     root,
@@ -118,6 +139,8 @@ async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer;
     inbox,
     bridge,
     lines,
+    mediaDir,
+    agentFiles,
     setSetup: (s: GuestSetup) => void (setup = s),
     async link() {
       handle.link();
@@ -385,24 +408,6 @@ test("a guest spawn the server refuses: not replayed for ever, and nothing sent 
   await w.stop();
 });
 
-test("a question the agent asks reaches the person as text, and their reply dismisses it first", async () => {
-  const w = await world();
-  await w.link();
-  say(w, "book me");
-  await tick();
-  const ws = w.server.last();
-  ws.emit({ type: "dialog", question: "Which day?", options: [{ n: 1, label: "Monday" }, { n: 2, label: "Tuesday" }] });
-  await tick();
-  assert.match(w.fake.sent.map((s) => s.text).join("\n"), /Which day\?[\s\S]*Monday[\s\S]*Tuesday/);
-  say(w, "Tuesday please");
-  await tick();
-  assert.ok(ws.frames.some((f) => f.type === "key" && f.key === "escape"));
-  ws.emit({ type: "turn-done" });
-  await tick();
-  assert.deepEqual(ws.prompts().map((p) => p.text), ["book me", "Tuesday please"]);
-  await w.stop();
-});
-
 test("reattach: a live bound agent gets its bridge back at start; an idle one is left alone", async () => {
   const server = new FakeServer();
   server.channels = [
@@ -536,5 +541,240 @@ test("a refused RESUME of a known sender tells them, and is not retried every fe
   await tick();
   assert.equal(w.fake.sent.length, 1, "the person is told something went wrong");
   assert.deepEqual(w.inbox.pending(), []);
+  await w.stop();
+});
+
+// ── step 3: media in, files out, questions, the unreadable message ──────────
+
+const photo = (w: Awaited<ReturnType<typeof world>>, o: { id?: string; caption?: string; size?: number } = {}) =>
+  w.fake.script.deliver({ id: o.id ?? "P1", chat: LID, chatAlt: PN, pushName: "Grace", media: { kind: "image", mime: "image/jpeg", ...(o.size ? { size: o.size } : {}) }, mediaData: "JPEGDATA", ...(o.caption ? { text: o.caption } : {}) });
+
+test("a photo reaches its agent from the GROUP media directory, its caption riding along; the staging copy goes with the ack", async () => {
+  const w = await world();
+  await w.link();
+  photo(w, { caption: "is this the right one?" });
+  await tick(60);
+  const ws = w.server.last();
+  const p = ws.prompts()[0];
+  const dest = path.join(w.mediaDir, "wa-P1.jpg");
+  assert.equal(p.text, `[Attached image: ${dest}]\nis this the right one?`);
+  assert.equal(fs.readFileSync(dest, "utf8"), "JPEGDATA");
+  assert.equal(fs.statSync(dest).mode & 0o777, 0o600);
+  assert.equal(w.inbox.pending().length, 1);
+  ws.emit({ type: "prompt-id", text: p.text });
+  await tick();
+  assert.deepEqual(w.inbox.pending(), []);
+  assert.deepEqual(fs.readdirSync(path.join(w.root, "state", "media")), [], "staging cleaned");
+  await w.stop();
+});
+
+test("a document is a file line; a video gets its stills like on Telegram", async () => {
+  const w = await world();
+  await w.link();
+  w.fake.script.deliver({ id: "D1", chat: LID, media: { kind: "document", mime: "application/pdf", fileName: "price list.pdf" }, mediaData: "PDF" });
+  await tick(60);
+  assert.match(w.server.last().prompts()[0].text, /^\[Attached file: .*wa-D1-price list\.pdf\]$/);
+  w.fake.script.deliver({ id: "V1", chat: LID, media: { kind: "video", mime: "video/mp4" }, mediaData: "MP4" });
+  await tick(60);
+  w.server.last().emit({ type: "turn-done" });
+  await tick(60);
+  const v = w.server.last().prompts().at(-1)!.text;
+  assert.match(v, /\[Attached video: .*wa-V1\.mp4 \(0:04\)\]/);
+  assert.match(v, /Stills from it/);
+  await w.stop();
+});
+
+test("a voice note is transcribed, echoed back, and sent marked as spoken", async () => {
+  const w = await world();
+  await w.link();
+  w.fake.script.deliver({ id: "A1", chat: LID, media: { kind: "audio", mime: "audio/ogg; codecs=opus", voice: true }, mediaData: "SPEECH:is the shop open on sunday" });
+  await tick(60);
+  const p = w.server.last().prompts()[0];
+  assert.equal(p.text, "is the shop open on sunday");
+  assert.equal(p.voice, true);
+  assert.ok(w.fake.sent.some((s) => s.text.includes("is the shop open on sunday") && s.text.startsWith("🎙")), "what was understood is echoed");
+  await w.stop();
+});
+
+test("a voice note that cannot be transcribed is said in guest words, and freed", async () => {
+  const w = await world();
+  await w.link();
+  w.fake.script.deliver({ id: "A2", chat: LID, media: { kind: "audio", voice: true }, mediaData: "noise" });
+  await tick(60);
+  assert.equal(w.server.last().prompts().length, 0);
+  assert.ok(w.fake.sent.some((s) => s.text === guestNotice("voice-failed")));
+  assert.doesNotMatch(w.fake.sent.map((s) => s.text).join(), /rien compris/, "never the pipeline's own (operator) wording");
+  assert.deepEqual(w.inbox.pending(), []);
+  await w.stop();
+});
+
+test("a file over the limit is refused BEFORE downloading, with one line, and starts nothing", async () => {
+  const w = await world();
+  await w.link();
+  photo(w, { size: 60 * 1024 * 1024 });
+  await tick(60);
+  assert.equal(w.server.sockets.length, 0);
+  assert.deepEqual(w.fake.sent, [{ to: LID, text: guestNotice("too-large") }]);
+  assert.deepEqual(w.inbox.pending(), []);
+  await w.stop();
+});
+
+test("an unreadable first message: one notice, nothing spawned, nothing stored — and its later readable copy is processed", async () => {
+  const w = await world();
+  await w.link();
+  w.fake.script.deliver({ id: "U1", chat: LID, unreadable: true });
+  w.fake.script.deliver({ id: "U2", chat: LID, unreadable: true });
+  await tick();
+  assert.equal(w.server.sockets.length, 0);
+  assert.deepEqual(w.fake.sent, [{ to: LID, text: guestNotice("unreadable") }], "once, not twice");
+  assert.deepEqual(w.inbox.pending(), []);
+  // The library's resend brings the content, under the same id.
+  w.fake.script.deliver({ id: "U1", chat: LID, text: "hello, it's me" });
+  await tick();
+  assert.deepEqual(w.server.last().prompts().map((p) => p.text), ["hello, it's me"]);
+  await w.stop();
+});
+
+test("an unreadable message with the door shut: silence", async () => {
+  const w = await world({ setup: SHUT });
+  await w.link();
+  w.fake.script.deliver({ id: "U1", chat: LID, unreadable: true });
+  await tick();
+  assert.deepEqual(w.fake.sent, []);
+  await w.stop();
+});
+
+test("a medium that waited for its agent survives a restart, and reaches it once", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wa-bridge-"));
+  const server = new FakeServer();
+  const fake = makeFakeTransport();
+  server.autoReady = false;
+  const a = await world({ dir: root, server, fake });
+  await a.link();
+  photo(a, { id: "R1" });
+  await tick(60);
+  await a.stop();
+  for (const s of server.sockets) s.close();
+  server.autoReady = true;
+  const b = await world({ dir: root, server, fake });
+  await b.link();
+  await tick(60);
+  const prompts = server.sockets.flatMap((s) => s.prompts().map((p) => p.text));
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /\[Attached image: .*wa-R1\.jpg\]/);
+  await b.stop();
+});
+
+test("a file the agent hands over goes as a picture or a document, read with the agent's rights, to the binding only", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "send me the menu");
+  await tick();
+  w.agentFiles.set("/home/g1/wa-1/menu.png", Buffer.from("PNG"));
+  w.agentFiles.set("/home/g1/wa-1/quote.pdf", Buffer.from("PDF!"));
+  const ws = w.server.last();
+  ws.emit({ type: "stream-tool", name: "ShadokFile", files: [{ path: "/home/g1/wa-1/menu.png", name: "menu.png" }, { path: "/home/g1/wa-1/quote.pdf", name: "quote.pdf" }] });
+  ws.emit({ type: "stream-tool", name: "SendUserFile", files: [{ path: "/etc/shadow", name: "shadow" }] });
+  ws.emit({ type: "stream-tool", name: "Read", summary: "/etc/passwd" });
+  await tick(60);
+  assert.deepEqual(w.fake.files, [
+    { to: LID, name: "menu.png", mime: "image/png", image: true, size: 3 },
+    { to: LID, name: "quote.pdf", mime: "application/pdf", image: false, size: 4 },
+  ]);
+  assert.deepEqual(w.fake.sent, [], "a refused read and a tool call say nothing to a guest");
+  // Once the binding is gone, nothing more goes out.
+  w.server.channels = [];
+  ws.emit({ type: "stream-tool", name: "ShadokFile", files: [{ path: "/home/g1/wa-1/menu.png", name: "menu.png" }] });
+  await tick(60);
+  assert.equal(w.fake.files.length, 2);
+  await w.stop();
+});
+
+const dlg = { type: "dialog", question: "Which day?", multi: false, options: [{ n: 1, label: "Monday" }, { n: 2, label: "Tuesday" }, { n: 3, label: "Type something." }] };
+
+test("a question is a numbered list; the number answers it", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "book me");
+  await tick();
+  const ws = w.server.last();
+  ws.emit(dlg);
+  await tick();
+  assert.match(w.fake.sent.at(-1)!.text, /Which day\?\n\n1\. Monday\n2\. Tuesday\n3\. Type something\./);
+  say(w, "2");
+  await tick();
+  assert.deepEqual(ws.frames.filter((f) => f.type === "choose"), [{ type: "choose", n: 2 }]);
+  assert.equal(ws.prompts().length, 1, "an answer is not a prompt");
+  assert.deepEqual(w.inbox.pending().map((e) => e.text), ["book me"]);
+  await w.stop();
+});
+
+test("an own answer: number then words, or the number then the words in the next message; anything else is asked again", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "book me");
+  await tick();
+  const ws = w.server.last();
+  ws.emit(dlg);
+  await tick();
+  say(w, "maybe");
+  await tick();
+  // One own-answer option: a sentence IS that answer.
+  assert.deepEqual(ws.frames.filter((f) => f.type === "freetext"), [{ type: "freetext", n: 3, text: "maybe" }]);
+  ws.emit({ ...dlg, question: "Which time?" });
+  await tick();
+  say(w, "3");
+  await tick();
+  assert.equal(w.fake.sent.at(-1)!.text, guestNotice("need-text"));
+  say(w, "after lunch");
+  await tick();
+  assert.deepEqual(ws.frames.filter((f) => f.type === "freetext").at(-1), { type: "freetext", n: 3, text: "after lunch" });
+  ws.emit({ type: "dialog", question: "Sure?", multi: false, options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] });
+  await tick();
+  say(w, "what?");
+  await tick();
+  assert.equal(w.fake.sent.at(-1)!.text, guestNotice("dialog-again"));
+  await w.stop();
+});
+
+test("a multiple choice toggles one at a time, waiting for each to land, then submits", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "extras?");
+  await tick();
+  const ws = w.server.last();
+  let opts = [{ n: 1, label: "Milk", checked: true }, { n: 2, label: "Sugar" }, { n: 3, label: "Lemon" }];
+  const order: string[] = [];
+  let landed = 0;
+  w.server.onOther = (s, f) => {
+    // "@n": how many toggles had LANDED (been re-broadcast) when this frame left.
+    order.push(`${f.type}${f.n ?? ""}@${landed}`);
+    if (f.type !== "toggle") return;
+    opts = opts.map((o) => (o.n === f.n ? { ...o, checked: !o.checked } : o));
+    setTimeout(() => {
+      landed++;
+      s.emit({ type: "dialog", question: "Which extras?", multi: true, options: opts });
+    }, 20);
+  };
+  ws.emit({ type: "dialog", question: "Which extras?", multi: true, options: opts });
+  await tick();
+  assert.match(w.fake.sent.at(-1)!.text, /1\. ☑ Milk/);
+  const before = w.fake.sent.length;
+  say(w, "2 3");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(order, ["toggle1@0", "toggle2@1", "toggle3@2", "confirm@3"]);
+  assert.equal(w.fake.sent.length, before, "a re-broadcast after a toggle is not sent again");
+  await w.stop();
+});
+
+test("an agent closed in the cockpit: the person is told once that their next message starts afresh", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "hi");
+  await tick();
+  w.server.channels = [];
+  w.server.last().emit({ type: "stopped" });
+  await tick();
+  assert.deepEqual(w.fake.sent, [{ to: LID, text: guestNotice("ended") }]);
   await w.stop();
 });

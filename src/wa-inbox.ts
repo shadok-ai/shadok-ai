@@ -27,8 +27,13 @@ export interface InboxEntry {
    *  binds and names the channel with. */
   phone?: string;
   name?: string;
+  /** The text — or a medium's caption ("" when it has none). */
   text: string;
   at: number;
+  /** A medium (step 3), already downloaded to a STAGING file beside the inbox:
+   *  the library's message does not survive a restart, this file does. It is
+   *  removed with the entry's acknowledgement. */
+  media?: { path: string; kind: "image" | "document" | "audio" | "video"; mime?: string; voice?: boolean };
 }
 
 export interface Inbox {
