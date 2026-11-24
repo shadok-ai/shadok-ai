@@ -9,6 +9,7 @@ import {
   type WaTransport,
   type WaTransportEvent,
   type WaTransportFactory,
+  type WaOutFile,
 } from "./wa-transport.js";
 import { waAccountKey, type WaInbound } from "./wa-guests.js";
 
@@ -62,6 +63,8 @@ export interface WhatsAppHandle {
   sendText(to: string, text: string): Promise<void>;
   setTyping(to: string, on: boolean): Promise<void>;
   resolveLid(pn: string): Promise<string | null>;
+  downloadMedia(id: string): Promise<Uint8Array>;
+  sendFile(to: string, file: WaOutFile): Promise<void>;
   /** Resolves true once connected (at once if already), false after `ms`. */
   whenConnected(ms: number): Promise<boolean>;
 }
@@ -528,6 +531,12 @@ export function startWhatsApp(o: {
     },
     async resolveLid(pn) {
       return live().resolveLid(pn);
+    },
+    async downloadMedia(id) {
+      return live().downloadMedia(id);
+    },
+    async sendFile(to, f) {
+      await live().sendFile(to, f);
     },
     whenConnected(ms) {
       if (!stopped && s.phase === "connected" && transport) return Promise.resolve(true);

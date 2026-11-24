@@ -2630,6 +2630,11 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     (`connectionOrigin`), so no client can get under it, and a future bridge
     bug that forgets to neutralise fails closed instead of handing a stranger
     the terminal. Any new stranger-facing origin must join that refusal.
+    Its neighbour rule, added with step 3's notices: a bridge that may now say
+    a line to someone with NO binding (an unreadable first message, a refused
+    file) does so only for an address that wrote within minutes
+    (`replyAllowed`, fed by inbound messages only), and only with its own fixed
+    `guestNotice` words — never an agent's text, which still needs a binding.
 
 <a id="inv-82"></a>
 

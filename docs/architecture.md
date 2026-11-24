@@ -678,8 +678,10 @@ The WhatsApp bridge (design:
 `docs/superpowers/specs/2026-11-23-whatsapp-open-dm-design.md`). Step 1: an
 admin links ONE number to the instance, always sees the true state of that
 link, and can unlink it. Step 2 (below, "The WhatsApp guests"): anyone who
-writes a text to that number gets an agent of their own. Media, files out,
-numbered answers to questions and the unreadable-message notice are step 3.
+writes a text to that number gets an agent of their own. Step 3 (below, "Media,
+files and questions"): pictures, documents, voice notes and videos in, the
+agent's files out, questions answered by number, and the unreadable-message
+notice.
 
 - **The seam.** Everything that knows a WhatsApp library sits behind
   `WaTransport` (`src/wa-transport.ts`: `start(on)`, `logout()`, `stop()`, and the
@@ -864,7 +866,12 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
   only from an inbound message, and every send re-checks `sendAllowed` — the
   target is an existing binding of the linked account — at the moment of
   sending. A spawn the server refuses therefore says nothing to the person (there
-  is no binding to send to); the log says why, for the admin.
+  is no binding to send to); the log says why, for the admin. Step 3 adds ONE
+  narrow exception, for the bridge's own fixed notices only: someone who wrote
+  within `REPLY_WINDOW_MS` (10 min) may be answered with no binding yet
+  (`replyAllowed`, fed by inbound messages only) — the unreadable-message line,
+  a refused file. And the `ended` line goes to an address that was this
+  bridge's binding until the cockpit closed it.
 - **Answers.** `mdToWhatsApp`: `*bold*`, `_italic_`, `~strike~`, code kept,
   headings → bold lines, links → `text (url)`, tables → `a · b` lines, `* item`
   → `- item`; no HTML. `waChunks` cuts at paragraph boundaries (4,000 chars).
@@ -878,9 +885,7 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
   the server refuses (the door moved and the instance left that group, a
   sign-out) tells the person, frees the message, and backs the reattach loop off
   for ten minutes — it ends nothing. Every line the bridge says
-  about itself is `guestNotice`'s. A question is sent as its text and options
-  plus the `no-keyboard` notice, and a reply while it is up dismisses it first
-  (numbered answers are step 3).
+  about itself is `guestNotice`'s.
 - **The door** (`PUT /whatsapp/guests`, admin + browser-only, refused while the
   feature is unavailable): a `GuestSetup` whose mode is `dm-only` (open) or
   `group` (shut), stored under `config.whatsappGuests[cwd]`, run through
@@ -897,6 +902,71 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
   channel of the linked account with no bridge and a live tmux agent gets its
   bridge back (`waReattachList`, probing only when there is no bridge — invariant
   38); an idle one is left alone. A bridge of another linked number is closed.
+
+## Media, files and questions (WhatsApp step 3)
+
+Plan: `docs/superpowers/plans/2026-11-24-whatsapp-media-questions.md`.
+
+- **The seam's media half.** `inboundOf` describes an image, a document (also
+  inside `documentWithCaptionMessage`), an audio (`ptt` = a voice note) and a
+  video, unwrapped from view-once / disappearing wrappers, with its caption as
+  the text. `downloadMedia(id)` fetches the bytes through the library's
+  `downloadMediaMessage` with the reupload hook (the phone re-sends an expired
+  copy); the adapter keeps only the 100 most recent media messages for that, in
+  memory. `sendFile(to, file)` sends an image or a document. Bytes cross the
+  worker as structured clones.
+- **No image library.** The on-demand install leaves out `sharp` and `jimp`.
+  Inbound downloads do not need them. Outbound, the library's thumbnail step
+  rejects ("No image processing library available") INSIDE its own try, so a
+  picture goes out intact, without its blurred preview. Degraded, never failed.
+- **Media in, nothing lost.** The library's message lives only in this
+  process, so a medium is downloaded the moment it arrives into a staging file
+  (`whatsapp-state/<instanceKey>/media/`, 0700/0600, `wx`, name rebuilt by
+  `waMediaFileName`) and recorded in the inbox with its path. The 50 MB ceiling
+  (`WA_MEDIA_LIMIT`) is checked on the declared size before downloading and on
+  the bytes after; past it the person gets `too-large`, and nothing is stored.
+  On delivery the bridge waits for the agent (`ready`: the media directory is
+  the agent's GROUP's, `mediaDirFor` = the server's `mediaDirForSession`,
+  invariant 60), copies the file there (`COPYFILE_EXCL`, an existing plain file
+  reused for a replay), and runs Telegram's own pipeline: a voice note through
+  `transcribe` — the understood text echoed to the person (`heardNotice`) and
+  sent with `voice: true`, a failure said as `voice-failed` (the pipeline's own
+  notices are operator wording: logged) — a video through `lookAtVideo`, anything
+  else as `attachmentPrompt`'s line. The staging copy is removed with the
+  entry's acknowledgement. One intake queue per person keeps the order: a text
+  sent after a voice note never overtakes it. A refused spawn acknowledges
+  everything in flight, a medium waiting for `ready` included — found on a side
+  instance, where a pending photo was otherwise replayed into a refused spawn
+  every five seconds.
+- **Files out.** A `stream-tool` named `SendUserFile` or `ShadokFile` is a
+  delivery: each file is read with the AGENT's rights (`readAgentFile` = the
+  server's `readSessionFile`, 50 MB, its error now transport-neutral) and sent
+  as a picture when WhatsApp previews it (`telegramPhotoable`), a document
+  otherwise, to the binding only. A failed read says nothing to a guest. Every
+  other tool call stays the operator's business.
+- **Questions.** A `dialog` becomes a numbered list (`dialogMessage`: body,
+  question, `1. label` — `☑`/`☐` for a multiple choice — and how to answer, all
+  in `guestNotice` words). While it is up, the person's next message is an
+  ANSWER, never a prompt (`parseDialogReply`): the number (`choose`); for an
+  own-answer option, its number and the words, the number alone (the words come
+  next, `need-text`), or straight a sentence when there is exactly one such
+  option (`freetext`); for a multiple choice, the numbers WANTED — the bridge
+  toggles exactly the difference with what is checked, one toggle at a time
+  (each waits for the server's re-broadcast of the question), then `confirm`.
+  Anything else gets `dialog-again`. A multi-question form arrives as one
+  question after another (invariant 30), each its own list. A question stops arming the moment it is answered — here (`choose`,
+  `freetext`, `confirm`) or from the cockpit (the turn's next `working`) — so it
+  can never consume a later message; the toggles' re-broadcasts are repaints of
+  the answer in progress (`answering`), and the SAME question asked again (a
+  second, identical permission prompt, invariant 21) is shown again. Staging
+  files no pending entry claims are purged when the bridge starts.
+- **The unreadable message** (the spike's finding 3). It never enters the
+  inbox nor the seen list, so the library's own resend under the same id is
+  processed normally; the person gets ONE `unreadable` line per 10 minutes,
+  never with the door shut. Writing to them is also what lets their next
+  message decrypt.
+- **An honest ending.** When the cockpit closes a guest's agent, the person is
+  told once (`ended`) that their next message starts a new conversation.
 
 ## Profiles & secrets
 
@@ -3379,7 +3449,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, the boot breaker (`RESUME_MARK`), link / retry / cancel / unlink (every phase). Invariant 75. Step 2: `onMessage` / `onConnected` listeners, `account()` (the linked number, device dropped, also from a stored session), `sendText` / `setTyping` / `resolveLid` through the current transport only while connected, `whenConnected(ms)`. |
 | `src/wa-bridge.ts` | `startWaBridge` — the WhatsApp guests: one loopback socket per person proving `x-shadok-wa-bridge`, inbox-first delivery, PN→LID re-keying, `sendAllowed` before every send, formatted answers through a per-person queue, preempt, reattach and replay. See "The WhatsApp guests". |
 | `src/wa-guests.ts` | Pure WhatsApp guest rules: `WaBinding`, `bareJid`, `waAccountKey`, `waGuestWorkDirName`, `inboundVerdict`, `senderKey`, `findWaChannel`, `waGuestSetup`, `waReattachList`, `sendAllowed`. Tested. |
-| `src/wa-format.ts` | Pure `mdToWhatsApp`, `waChunks`, `neutralizeCommand`, `stripAttachmentMarkers`. Tested. |
+| `src/wa-format.ts` | Pure `mdToWhatsApp`, `waChunks`, `neutralizeCommand`, `stripAttachmentMarkers`; step 3: `waMediaFileName`, `dialogMessage`, `parseDialogReply`. Tested. |
 | `src/wa-inbox.ts` | The persisted inbox (`openInbox`, `waStateDir`): received-not-submitted entries and capped seen ids, written atomically, 0600. Tested. |
 | `src/wa-worker-host.ts` / `src/wa-worker.ts` | Runs a transport in a worker thread so an error raised inside the library ends the worker, never the server: `workerTransportFactory` (one worker per transport, exactly one `close{error}` when it dies, `stop()` lets the adapter drain its writes) and `probeInWorker` (does the library load?). |
 | `src/wa-baileys.ts` | The ONLY file that names the WhatsApp library. It loads it through the installed copy's `load.mjs` (`loadBaileysFactory(entryUrl)`, in a worker), never by bare name. Also `closeReasonOf`, `accountOf`, `qrLoaderFrom` and `qrSvg` (server-side QR drawing). QR pairing only, because pairing by code is broken upstream. |

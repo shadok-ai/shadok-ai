@@ -10,6 +10,10 @@ const STUB_MESSAGING = {
   async resolveLid() {
     return null;
   },
+  async downloadMedia(): Promise<Uint8Array> {
+    throw new Error("no media");
+  },
+  async sendFile() {},
 };
 
 /** Behaves: a QR on start, then open after a "scan" written to disk. */
@@ -30,6 +34,12 @@ export async function loadGood(): Promise<WaTransportFactory> {
       async setTyping() {},
       async resolveLid(pn) {
         return pn === "33611111111@s.whatsapp.net" ? "100000000000001@lid" : null;
+      },
+      async downloadMedia(id) {
+        return Buffer.from(`bytes-of-${id}`);
+      },
+      async sendFile(to, f) {
+        emit?.({ type: "message", msg: { id: "file", chat: to, fromMe: true, live: true, unreadable: false, text: `file:${f.name}:${Buffer.from(f.data).length}`, at: 0 } });
       },
     };
   };

@@ -128,7 +128,7 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
     w.on("error", (e) => died(`the WhatsApp library failed: ${oneLine(e)}`));
     w.on("exit", (code) => died(`the WhatsApp library stopped unexpectedly (exit ${code})`));
 
-    const call = (cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid", args?: unknown[]) =>
+    const call = (cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid" | "downloadMedia" | "sendFile", args?: unknown[]) =>
       new Promise<unknown>((resolve, reject) => {
         if (dead) return reject(new Error("the WhatsApp worker is gone"));
         const id = ++seq;
@@ -148,6 +148,13 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
         const v = await call("resolveLid", [pn]);
         return typeof v === "string" ? v : null;
       },
+      // Bytes cross the thread boundary as a structured clone (a Uint8Array).
+      downloadMedia: async (id) => {
+        const v = await call("downloadMedia", [id]);
+        if (!(v instanceof Uint8Array)) throw new Error("the WhatsApp worker returned no bytes");
+        return v;
+      },
+      sendFile: (to, f) => call("sendFile", [to, f]).then(() => {}),
       async stop() {
         stopping = true;
         if (!dead) {

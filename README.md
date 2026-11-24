@@ -967,9 +967,24 @@ from the phone's *Linked devices* list too.
   being started, or while the server was updating, is answered once it is back.
 - **Closing a guest's agent in the cockpit** ends that conversation: their next
   message starts a new agent. A link that drops ends nothing.
-- **Text only, for now.** Pictures, documents, voice notes, files the agent
-  sends, and answering a question by its number come next. A question an agent
-  asks reaches the person as text, and they answer in words.
+- **Pictures, documents, voice notes and videos** reach the person's agent the
+  way Telegram attachments do (a voice note is transcribed, and what was
+  understood is echoed back to the person; a video is looked at through a few
+  stills). Up to **50 MB** per file; a larger one gets a line asking for a
+  smaller file or a link.
+- **Files the agent hands over** reach the person as a picture or a document.
+  Pictures go out without WhatsApp's blurred preview thumbnail, because the
+  WhatsApp library is installed without an image-processing library; the
+  picture itself is intact.
+- **Questions** the agent asks arrive as a numbered list: the person answers
+  with the number (several numbers for a multiple choice), or with their own
+  words where the question offers that.
+- **A first message that arrives unreadable** (WhatsApp sometimes delivers the
+  first messages from a new sender before they are readable by a linked
+  device) gets one line asking the person to send it again — at most once
+  every ten minutes, never with the door shut.
+- **Closing a guest's agent** tells the person, once, that their next message
+  starts a new conversation.
 - The panel always shows the link's true state, one at a time: *Not linked*,
   *Linking*, *Connected*, *Reconnecting* (a link that stops answering leaves
   *Connected* within about two minutes, even with no disconnect event),

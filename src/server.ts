@@ -7879,6 +7879,13 @@ function startWhatsAppHandle(): void {
     channels: { load: loadChannels, upsert: upsertChannel },
     inbox: openInbox(path.join(waFake ? `${stateDir}-fake` : stateDir, "inbox.json")),
     sessionAlive: (id) => tmuxHasSession("sk-" + id),
+    // Step 3: a received medium waits beside the inbox, then lands in the
+    // agent's GROUP media directory; a file an agent hands over is read with
+    // the agent's rights — both exactly Telegram's rules (invariant 60).
+    stagingDir: path.join(waFake ? `${stateDir}-fake` : stateDir, "media"),
+    mediaDirFor: mediaDirForSession,
+    readAgentFile: readSessionFile,
+    multiTenant: DEPLOYMENT_MODE === "multi-tenant",
   });
 }
 
@@ -7922,6 +7929,7 @@ app.get("/whatsapp", async (req, res) => {
     // the bridge's answers. Fake mode only: a real instance never echoes a
     // guest's conversation through this route.
     out.fakeSent = waFake.sent.slice(-20);
+    out.fakeFiles = waFake.files.slice(-20);
   }
   res.json(out);
 });
@@ -8011,7 +8019,23 @@ app.post("/whatsapp/fake/:action", (req, res) => {
     // Someone "writes" to the fake number: the side-instance stand-in for a phone.
     const chat = str("chat");
     if (!chat) return res.status(400).json({ error: "chat is required" });
-    waFake.script.deliver({ chat, chatAlt: str("chatAlt"), text: str("text"), pushName: str("pushName"), id: str("id") });
+    // A medium for the side instance: `media` = image | document | audio |
+    // video (`voice: true` for a voice note), its bytes as base64 `data`.
+    const kind = str("media");
+    const media =
+      kind === "image" || kind === "document" || kind === "audio" || kind === "video"
+        ? { kind: kind as "image" | "document" | "audio" | "video", ...(str("mime") ? { mime: str("mime") } : {}), ...(str("fileName") ? { fileName: str("fileName") } : {}), ...(b.voice === true ? { voice: true } : {}) }
+        : undefined;
+    waFake.script.deliver({
+      chat,
+      chatAlt: str("chatAlt"),
+      text: str("text"),
+      pushName: str("pushName"),
+      id: str("id"),
+      ...(media ? { media } : {}),
+      ...(str("data") ? { mediaData: Buffer.from(str("data")!, "base64") } : {}),
+      ...(b.unreadable === true ? { unreadable: true } : {}),
+    });
   } else if (action === "mapLid") {
     const pn = str("pn"), lid = str("lid");
     if (!pn || !lid) return res.status(400).json({ error: "pn and lid are required" });
@@ -8715,7 +8739,7 @@ async function readSessionFile(sessionId: string | null, p: string): Promise<Buf
     const user = who.user;
     const st = await statAsUser(user, p);
     if (!st?.isFile) throw new Error("not a readable file");
-    if (st.size > MAX) throw new Error("file too large for Telegram");
+    if (st.size > MAX) throw new Error("file too large to send (over 50 MB)");
     const { cmd, argv } = readAsUserArgv(user, p);
     return new Promise((resolve, reject) =>
       execFile(cmd, argv, { encoding: "buffer", maxBuffer: MAX + 1, timeout: 60_000 }, (err, out) =>
@@ -8726,7 +8750,7 @@ async function readSessionFile(sessionId: string | null, p: string): Promise<Buf
   const opened = openForServe(p, false);
   if (!opened) throw new Error("not a readable file");
   try {
-    if (opened.stat.size > MAX) throw new Error("file too large for Telegram");
+    if (opened.stat.size > MAX) throw new Error("file too large to send (over 50 MB)");
     const buf = Buffer.alloc(opened.stat.size);
     let off = 0;
     while (off < buf.length) {
