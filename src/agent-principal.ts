@@ -72,12 +72,17 @@ export function resolveAgentPrincipal(
     createdBy?: string | null;
     createdByPeer?: string;
   }[],
-  peerScope: (name: string) => "member" | "restricted" | null,
+  peerScope: (name: string) => "admin" | "member" | "restricted" | null,
   liveProfile?: string | null,
 ): AgentPrincipal {
   const ch = channels.find((c) => c.sessionId === sessionId);
   const tag = ch?.createdByPeer;
-  const peer = tag && peerScope(tag) !== "member" ? tag : null;
+  // Boxed when the creator is restricted OR no longer listed. Spelled as the
+  // two boxed answers rather than "anything but member": the day a third
+  // unboxed scope appeared (`admin`), the negative form would have boxed every
+  // agent that scope spawned.
+  const s = tag ? peerScope(tag) : null;
+  const peer = tag && (s === null || s === "restricted") ? tag : null;
   return {
     sessionId,
     group: ch?.group ?? null,

@@ -16,6 +16,7 @@ import {
   withManagedPrompt,
   promptOrigin,
   promptEditVerdict,
+  peerPromptEditVerdict,
   BOSS_PROFILE_NAME,
   adoptTracking,
   effectiveProfile,
@@ -571,4 +572,21 @@ test("skillScriptAllow: every agent may run the cockpit-only skill verbs unpromp
   const own = profileArgs({ name: "p", allow: ["Bash(git log:*)"] } as never);
   const withOwn = JSON.parse(own[own.indexOf("--settings") + 1]);
   assert.ok(withOwn.permissions.allow.includes("Bash(git log:*)"));
+});
+
+test("peerPromptEditVerdict: only an admin peer writes a prompt from outside", () => {
+  const base = { target: "Reviewer", targetExists: true, managed: false };
+  assert.deepEqual(peerPromptEditVerdict({ ...base, scope: "admin" }), { ok: true, create: false });
+  assert.deepEqual(peerPromptEditVerdict({ ...base, scope: "admin", targetExists: false }), { ok: true, create: true });
+  for (const scope of ["member", "restricted"] as const) {
+    const v = peerPromptEditVerdict({ ...base, scope });
+    assert.ok(!v.ok && /only an admin peer/.test(v.error), `${scope} must be refused`);
+  }
+});
+
+test("peerPromptEditVerdict: a peer has no profile of its own, and a managed prompt stays the build's", () => {
+  const blank = peerPromptEditVerdict({ scope: "admin", target: "  ", targetExists: false, managed: false });
+  assert.ok(!blank.ok && /profile name required/.test(blank.error));
+  const managed = peerPromptEditVerdict({ scope: "admin", target: "Shadok-Tweak", targetExists: true, managed: true });
+  assert.ok(!managed.ok && /at every boot/.test(managed.error));
 });

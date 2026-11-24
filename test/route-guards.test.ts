@@ -196,6 +196,22 @@ test("wiring: profile routes carry their verdicts", () => {
   assert.ok(gate < prompt.indexOf("upsertProfile("));
 });
 
+test("wiring: a peer's scope is changed by an admin person, and a peer writes a prompt only as itself", () => {
+  // Widening a peer is a grant of remote reach: the browser-admin gate runs
+  // before the registry is read or written.
+  const put = route("put", "/peers");
+  const gate = put.indexOf("accountAdmin(req, res)");
+  assert.ok(gate > 0, "PUT /peers must call accountAdmin (browser-only by default)");
+  assert.ok(gate < put.indexOf("setPeerScope(") && put.indexOf("setPeerScope(") < put.indexOf("savePeers("));
+  assert.ok(put.includes("dropPeerSockets("), "a socket's reach is resolved at connect: a scope change must cut it");
+  // The peer branch of the prompt write is reached only when NO local session
+  // key verified, and it judges the peer by the registry's scope.
+  const prompt = route("put", "/profiles/prompt");
+  const noSession = prompt.indexOf("if (!id) {");
+  const peerBranch = prompt.indexOf("peerPromptWrite(prow.name, peerScope(prow)");
+  assert.ok(noSession > 0 && peerBranch > noSession && peerBranch < prompt.indexOf("promptWriteRefusal("));
+});
+
 test("wiring: restart-all, DELETE /channel and PUT /channels are group-gated", () => {
   assert.ok(route("post", "/restart-all").includes("restartAllPlan("));
   const del = route("delete", "/channel");

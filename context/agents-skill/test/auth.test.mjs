@@ -82,3 +82,30 @@ test("with no password (no SHADOK_AUTH), no cookie is sent", async () => {
     await mock.close();
   }
 });
+
+test("profile-prompt --peer writes under the peer token and never sends the local session key", async () => {
+  // The session key authenticates this agent on ITS machine. Posting it to a
+  // remote instance would hand that instance a credential it has no use for.
+  process.env.SHADOK_SESSION_KEY = "sid.deadbeef";
+  const mock = await startMockServer({});
+  try {
+    await run([
+      "profile-prompt", "Review with care.", "--name", "Reviewer",
+      "--peer-url", `http://localhost:${mock.port}`, "--peer-token", "peer.tok",
+    ]);
+    const call = mock.http.find((h) => h.url.startsWith("/profiles/prompt"));
+    assert.ok(call, "no call to /profiles/prompt");
+    assert.equal(call.method, "PUT");
+    assert.equal(call.peer, "peer.tok");
+    assert.equal(call.sessionKey, undefined, "the local key went out in a header");
+    assert.deepEqual(call.body, { systemPrompt: "Review with care.", name: "Reviewer" });
+    // A peer has no profile of its own there: without --name there is nothing to edit.
+    await assert.rejects(
+      run(["profile-prompt", "x", "--peer-url", `http://localhost:${mock.port}`, "--peer-token", "peer.tok"]),
+      /--name <profile> is required with --peer/,
+    );
+  } finally {
+    delete process.env.SHADOK_SESSION_KEY;
+    await mock.close();
+  }
+});

@@ -65,19 +65,55 @@ export interface Peer {
    *  - `member` — everything a web MEMBER can: see and drive EVERY agent, read
    *    `/usage` / `/live`, spawn, the lot. Not admin (no account or peer
    *    management). "Invite an agent like a user."
+   *  - `admin` — a member that also carries the ADMIN role: it sees every
+   *    group on a multi-tenant instance, reads what only an admin reads, and
+   *    may rewrite a profile's system prompt from outside (`PUT
+   *    /profiles/prompt`). It still cannot mint or change accounts and peers,
+   *    nor touch guardrails: those writes are browser-only, so no machine
+   *    credential reaches them whatever its role.
    * Absent on a row from before scopes existed → `restricted`, so an upgrade
    * can never widen a credential that is already out there: a peer that was
-   * boxed to its own agents stays boxed until someone RE-INVITES it as a
-   * member. Widening is a decision, and a decision is written down.
+   * boxed to its own agents stays boxed until an admin WIDENS it
+   * (`setPeerScope`, or a re-invitation). Widening is a decision, and a
+   * decision is written down.
    */
-  scope?: "member" | "restricted";
+  scope?: PeerScope;
+}
+
+export type PeerScope = "admin" | "member" | "restricted";
+export const PEER_SCOPES: readonly PeerScope[] = ["restricted", "member", "admin"];
+
+/** Is this value one of the three scopes, spelled exactly? */
+export function isPeerScope(v: unknown): v is PeerScope {
+  return typeof v === "string" && (PEER_SCOPES as readonly string[]).includes(v);
 }
 
 /** The scope of a peer row, defaulting to `restricted`. The one place the
  *  default lives, so a stored row and a bare token agree — and it is the SAFE
- *  one: `member` only ever comes from something that spelled it out. */
-export function peerScope(peer: { scope?: "member" | "restricted" } | undefined): "member" | "restricted" {
-  return peer?.scope === "member" ? "member" : "restricted";
+ *  one: `member` and `admin` only ever come from something that spelled them
+ *  out, exactly. */
+export function peerScope(peer: { scope?: unknown } | undefined): PeerScope {
+  return isPeerScope(peer?.scope) ? peer!.scope : "restricted";
+}
+
+export type ScopeChange = { ok: true; peers: Peer[]; from: PeerScope } | { ok: false; error: string };
+
+/**
+ * Pure: change the scope of an EXISTING peer, keeping everything else — the
+ * salt above all, so the peer keeps the token it already holds. That is the
+ * difference with a re-invitation, which re-rolls the salt and so needs the
+ * other side to enrol again.
+ *
+ * An unknown scope is refused, never defaulted: this is an explicit change, and
+ * silently turning a typo into `restricted` would report a narrowing nobody
+ * asked for. The caller must drop the peer's live connections afterwards — a
+ * socket's reach is resolved once, at connect.
+ */
+export function setPeerScope(peers: readonly Peer[], name: string, scope: unknown): ScopeChange {
+  if (!isPeerScope(scope)) return { ok: false, error: `scope must be one of: ${PEER_SCOPES.join(", ")}` };
+  const row = peers.find((p) => p.name === name);
+  if (!row) return { ok: false, error: `no peer named ${name}` };
+  return { ok: true, from: peerScope(row), peers: peers.map((p) => (p.name === name ? { ...p, scope } : p)) };
 }
 
 /** How long a ticket stays redeemable. Long enough to reach an agent that is
@@ -181,7 +217,7 @@ export function addPeer(
   salt: string,
   ticket: string,
   ttlMs: number = PEER_INVITE_TTL_MS,
-  scope: "member" | "restricted" = "restricted",
+  scope: PeerScope = "restricted",
 ): Peer[] {
   const row: Peer = {
     name,
@@ -200,7 +236,7 @@ export function newPeer(
   name: string,
   now: number,
   note?: string,
-  scope: "member" | "restricted" = "restricted",
+  scope: PeerScope = "restricted",
 ): { peers: Peer[]; ticket: string } {
   const ticket = randomBytes(32).toString("base64url");
   return {
@@ -332,14 +368,22 @@ export function agentInvitePrompt(opts: {
   url: string;
   ticket: string;
   brief?: string;
-  scope?: "member" | "restricted";
+  scope?: PeerScope;
 }): string {
   const url = opts.url.replace(/\/+$/, "");
   const brief = (opts.brief ?? "").trim();
-  const member = peerScope({ scope: opts.scope }) === "member";
-  const accessLine = member
-    ? "You act as a full member of that cockpit: you can see, drive and measure EVERY agent on it, spawn more, and read its usage — everything a person you invite could. (You cannot manage its accounts or its peers — that stays with an admin.)"
-    : "You can only see and drive the agents you spawn there — nothing else on that cockpit.";
+  const scope = peerScope({ scope: opts.scope });
+  const member = scope !== "restricted";
+  const accessLine =
+    scope === "admin"
+      ? "You act as an ADMIN of that cockpit: you can see, drive and measure EVERY agent on it, in every group, spawn more, read its usage, and rewrite a profile's system prompt. (Accounts, peers and a profile's guardrails — deny, allow, secrets, model — are changed by a person in its web UI, never by you.)"
+      : member
+        ? "You act as a full member of that cockpit: you can see, drive and measure EVERY agent on it, spawn more, and read its usage — everything a person you invite could. (You cannot manage its accounts or its peers — that stays with an admin.)"
+        : "You can only see and drive the agents you spawn there — nothing else on that cockpit.";
+  const promptHint =
+    scope === "admin"
+      ? ['  pilotctl profile-prompt "<text>" --name <profile> --peer host   # rewrite a profile\'s system prompt']
+      : [];
   const listHint = member
     ? "  pilotctl list   --peer host                     # every agent on the cockpit"
     : "  # (you only see the agents you spawn; track their ids)";
@@ -358,6 +402,7 @@ export function agentInvitePrompt(opts: {
     '  pilotctl prompt <id> "<your work>" --peer host   # drive it',
     "  pilotctl diff   <id> --peer host                 # read what it changed",
     listHint,
+    ...promptHint,
     "",
     accessLine,
     "",

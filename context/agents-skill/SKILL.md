@@ -32,7 +32,7 @@ and automatically starts the shadok-ai server when it is not running (port
 | `reap [--idle 30m] [--dry-run]` | closes every finished agent you spawned: not busy, nobody watching, idle for `--idle` (default 30m). Over a restricted `--peer` that is every agent the peer lists for you (its own, dormant ones included); anywhere else only the ids in your local state. Use it to clear a backlog |
 | `set-parent <id> <parent-id\|none>` | re-link an agent to a parent, or **detach** it with `none` (it then reports to nobody). The link is what makes the parent hear when the agent finishes, blocks or dies — set automatically at spawn, flipped here when a side task is done and you want it off a lead's back |
 | `screen <id>` | raw TUI screen (debug) |
-| `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
+| `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile. With `--peer X --name NAME`: a profile ON X, which X accepts only from an **admin**-scope peer |
 | `talk-handle` | prints **your own** handle — the "here is a handle to me" you share so another agent can send you a letter → `{handle}` |
 | `talk <handle> "message"` | sends a one-way **letter** to the agent that handle points to → `{ok, delivered}`. A letter, NOT a drive: it is read in the recipient's own context and you get no transcript back (see below) |
 
@@ -209,6 +209,13 @@ pilotctl reap --peer brasdroit1 --dry-run                             # what you
   - **member** — you act like an invited user: `list`, `diff`, resume/drive/stop
     **any** agent on X, spawn more, read its usage. You are not an admin (no
     account or peer management).
+  - **admin** — a member that also sees every group on X and may rewrite a
+    profile's system prompt there: `profile-prompt "<text>" --name <profile>
+    --peer X`. Accounts, peers and a profile's guardrails (deny, allow, secrets,
+    model) stay with a person in X's web UI — do not look for a way around it.
+  X's admin can change your scope at any time without re-inviting you: your
+  token stays valid, your open link is cut once, and the next command runs
+  under the new scope. A `403` that names your access means ask them, not retry.
   Track the ids you `spawn` either way and drive them by id. `list --peer X`
   answers with X's agents and says so (`peer: <url>`); a refusal comes back as
   an explicit `peer-scope` error, never as your own machine's list.

@@ -20,6 +20,7 @@ import {
   peersOutFileFor,
   agentInvitePrompt,
   peerScope,
+  setPeerScope,
 } from "../src/peers.js";
 
 const secret = randomBytes(32);
@@ -192,7 +193,10 @@ test("peerScope: defaults to restricted; member only when spelled out", () => {
   assert.equal(peerScope({ scope: "restricted" }), "restricted");
   // A stray value is not a member either — only the exact string widens.
   assert.equal(peerScope({ scope: "Member" as "member" }), "restricted");
-  assert.equal(peerScope({ scope: "admin" as unknown as "member" }), "restricted");
+  assert.equal(peerScope({ scope: "admin" }), "admin");
+  assert.equal(peerScope({ scope: "Admin" }), "restricted", "admin is spelled exactly, like member");
+  assert.equal(peerScope({ scope: "owner" }), "restricted");
+  assert.equal(peerScope({ scope: true }), "restricted");
 });
 
 test("newPeer / addPeer store the scope; default restricted", () => {
@@ -219,6 +223,45 @@ test("agentInvitePrompt: member says full member, restricted says own-agents-onl
   const d = agentInvitePrompt({ url: "http://h", ticket: "t" });
   assert.match(d, /only see and drive the agents you spawn/);
   assert.ok(!/full member/.test(d));
+});
+
+test("agentInvitePrompt: admin names what it adds AND what stays with a person", () => {
+  const a = agentInvitePrompt({ url: "http://h", ticket: "t", scope: "admin" });
+  assert.match(a, /ADMIN of that cockpit/);
+  assert.match(a, /profile-prompt .* --name <profile> --peer host/);
+  assert.match(a, /guardrails/);
+  assert.match(a, /never by you/);
+  assert.match(a, /pilotctl list   --peer host/, "an admin lists the whole cockpit, like a member");
+  // The prompt-write hint is a capability claim: it must not reach a scope
+  // that would get a 403 for following it.
+  for (const scope of ["member", "restricted"] as const)
+    assert.ok(!/profile-prompt/.test(agentInvitePrompt({ url: "http://h", ticket: "t", scope })));
+});
+
+test("setPeerScope: changes the scope and NOTHING else — the token survives", () => {
+  const secret = Buffer.from("s");
+  const enrolled = redeemPeer(addPeer([], "ada", 1000, "note", "salt-1", "tkt"), "ada", 2000);
+  const token = signPeerToken("ada", secret, "salt-1");
+  const out = setPeerScope(enrolled, "ada", "admin");
+  assert.ok(out.ok);
+  assert.equal(out.from, "restricted");
+  assert.equal(peerScope(out.peers[0]), "admin");
+  assert.deepEqual({ ...out.peers[0], scope: undefined }, { ...enrolled[0], scope: undefined });
+  assert.equal(peerFromToken(token, secret, out.peers), "ada", "no re-enrolment after a scope change");
+  // Narrowing goes through the same door.
+  const back = setPeerScope(out.peers, "ada", "restricted");
+  assert.ok(back.ok && back.from === "admin" && peerScope(back.peers[0]) === "restricted");
+});
+
+test("setPeerScope: an unknown scope or peer is refused, never defaulted", () => {
+  const peers = addPeer([], "ada", 1000, undefined, "salt", "tkt", undefined, "member");
+  for (const bad of ["Admin", "owner", "", undefined, null, 1]) {
+    const out = setPeerScope(peers, "ada", bad);
+    assert.equal(out.ok, false, `scope ${String(bad)} must be refused`);
+  }
+  assert.equal(peerScope(peers[0]), "member", "the input list is never mutated");
+  const ghost = setPeerScope(peers, "nobody", "member");
+  assert.ok(!ghost.ok && /no peer named nobody/.test(ghost.error));
 });
 
 test("peersOutFileFor: anchored on the TIER's state home, so a dropped agent can read it", () => {
