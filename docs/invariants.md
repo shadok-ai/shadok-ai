@@ -2546,3 +2546,43 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     for "a box that will not clear" is therefore tried FIRST on a scrolled box
     instead of after forty presses have spent sixteen seconds of the message's
     own path getting nowhere.
+
+<a id="inv-79"></a>
+
+75. **Only the adapter imports the WhatsApp library, and only from the copy an
+    admin installed; a missing library is a panel state, never a boot failure.**
+    The library is not a dependency of the app at all, for reasons that are
+    properties of the product, not preferences. It is not chosen for good (the
+    design keeps a Go alternative behind the same seam), and it is a heavy,
+    release-candidate tree most instances will never use. Shipping it as an
+    optionalDependency, the first version of this, still made every
+    `npx shadok-ai` and every auto-update fetch it. It is installed ON DEMAND
+    (`src/wa-library.ts`) into the data directory, never into the app's
+    node_modules, which the updater rewrites. What gets installed is the
+    release's decision, not the registry's: exact versions in one place
+    (`context/whatsapp-lib/package.json`), the whole tree pinned by integrity in a
+    shipped shrinkwrap, `npm ci` and never `npm install`, scripts off. A copy
+    fingerprinted for another release is stale and never loaded. Installing
+    happens only on an admin's Link or Retry. A boot that finds a stored session
+    without its library halts and says so instead of fetching code by itself.
+    `src/wa-baileys.ts` is the one file that names the library. It loads it
+    through the installed copy's `load.mjs`, never by bare name: a bare import
+    would resolve from the app's node_modules and silently use any stray copy
+    there. It declares the few library types it touches locally, since the build
+    must pass without the library. A load failure is `halted{library}` with the
+    reason, the stored session is kept, and Retry reinstalls.
+    `test/wa-baileys.test.ts` scans `src/` for the quoted package name, and
+    `test/wa-library.test.ts` checks that the app's manifest and lockfile carry
+    no WhatsApp package and that every entry of the shipped tree has an
+    integrity hash. No test reaches the network: the installer runs behind an
+    injected command.
+    **And it never runs in the server's thread.** Lazy and optional covers a
+    library that is ABSENT; it does nothing for one that is present and throws
+    from its own async code — an unhandled rejection in its socket handling is
+    outside every try we own, and it exits the process, with the boot resume
+    turning that into a crash loop for a feature that handled no message. The
+    transport therefore runs in a worker thread (`src/wa-worker-host.ts`), which
+    contains it by construction, rather than behind a process-level handler,
+    which would change the fate of every OTHER error and could only guess an
+    error's origin from its stack. What a worker cannot contain — a native
+    crash — is what the boot breaker in `src/whatsapp.ts` is for.

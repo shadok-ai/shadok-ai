@@ -90,7 +90,13 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief, instanceContextInterviewBrief } from "./greeting.js";
 import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
-import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
+import { accountsEnabled, deploymentMode, migratedIsolationRefusal, probeCanProvision } from "./capability.js";
+import { startWhatsApp, type WhatsAppHandle } from "./whatsapp.js";
+import { waSessionDir } from "./wa-transport.js";
+import { linkView } from "./wa-link.js";
+import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "./wa-baileys.js";
+import { makeWaLibrary, waLibRoot, type WaLibrary } from "./wa-library.js";
+import { fakeInstallRunner, fakeQrEncoder, makeFakeTransport, type FakeScript } from "./wa-fake.js";
 import {
   migrationPlan,
   runMigration,
@@ -517,7 +523,7 @@ import { latestVersion, update } from "./updater.js";
 import { resolveAutoUpdate, resolveChannel, type UpdateChannel } from "./update-channel.js";
 import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
-import { RELOAD_EXIT_CODE } from "./supervisor.js";
+import { RELOAD_EXIT_CODE, UPDATE_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin, isLocalCaller, hostHeaderAllowed, hostRefusal, parseAllowedHosts,
@@ -7780,6 +7786,124 @@ async function telegramState(viewer: Viewer | null = null) {
   };
 }
 
+// ── WhatsApp: linking the instance's number (src/whatsapp.ts) ─────────────
+// Step 1 of the WhatsApp bridge: an admin links a number, sees the true state
+// of that link, and can unlink it. No message is handled yet.
+//
+// `SHADOK_WA_FAKE=1` swaps the library for the scripted fake transport, so the
+// panel can be driven in a browser on a side instance without a phone. It is
+// for verification only: it also opens the script routes below, and keeps its
+// "session" in a directory of its own so it can never touch a real one.
+const waFake = process.env.SHADOK_WA_FAKE === "1" ? makeFakeTransport() : null;
+let waHandleRef: WhatsAppHandle | null = null;
+const waHandle = (): WhatsAppHandle | null => waHandleRef;
+let waLibRef: WaLibrary | null = null;
+const waLib = (): WaLibrary | null => waLibRef;
+let waQrLoad: () => Promise<unknown> = async () => {
+  throw new Error("the WhatsApp library is not ready");
+};
+
+function startWhatsAppHandle(): void {
+  const dir = waSessionDir(os.homedir(), instanceKey());
+  // The library is installed on demand, at an admin's first Link, into the
+  // DATA directory (on the volume: it survives an auto-update and a recreate)
+  // — never into the app's node_modules, which the updater rewrites. With the
+  // fake, a fake npm in a directory of its own (SHADOK_WA_FAKE_INSTALL=fail
+  // makes it fail like an offline machine).
+  const lib = makeWaLibrary({
+    root: waFake ? `${waLibRoot(os.homedir())}-fake` : waLibRoot(os.homedir()),
+    ...(waFake ? { run: fakeInstallRunner(process.env.SHADOK_WA_FAKE_INSTALL) } : {}),
+  });
+  waLibRef = lib;
+  waQrLoad = waFake ? fakeQrEncoder : qrLoaderFrom(() => lib.entryUrl());
+  waHandleRef = startWhatsApp({
+    sessionDir: waFake ? `${dir}-fake` : dir,
+    // Re-read on every tick: the group migration completes AFTER boot, and the
+    // feature opens then without a restart.
+    refusal: () => migratedIsolationRefusal(DEPLOYMENT_MODE, groupsMigrated),
+    loadFactory: waFake ? async () => waFake.factory : async () => loadBaileysFactory(lib.entryUrl()),
+    library: lib,
+  });
+}
+
+// The boot breaker (src/whatsapp.ts) reads a resume cut short by the process
+// dying as a crash. A DELIBERATE exit — an auto-update, a reload, a clean
+// shutdown — is not one, so it releases the guard on the way out. Anything
+// else (a crash, exit 1) leaves it armed, which is the point. A SIGTERM
+// bypasses 'exit' handlers: a container stopped mid-resume halts the link once,
+// and the panel offers Retry.
+process.on("exit", (code) => {
+  if (code === 0 || code === UPDATE_EXIT_CODE || code === RELOAD_EXIT_CODE) waHandleRef?.releaseResumeGuard();
+});
+
+// Admin-only, like the Telegram config: one number for the whole instance.
+// The GET is browserOnly:false (a same-origin read sends no Origin); the QR is
+// drawn only for a PERSON's browser — an agent's session key passes admin
+// GETs, and the payload is what links a device to the account.
+app.get("/whatsapp", async (req, res) => {
+  if (!accountAdmin(req, res, false, "view or change the WhatsApp link")) return;
+  const wa = waHandle();
+  if (!wa) return res.status(503).json({ error: "starting" });
+  const forPerson = cookieAccount(req)?.role === "admin";
+  const view = linkView(wa.state(), Date.now(), forPerson);
+  const out: Record<string, unknown> = { ...view };
+  if (forPerson && typeof view.qr === "string") {
+    const drawn = await qrSvg(view.qr, waQrLoad);
+    if ("svg" in drawn) out.qrSvg = drawn.svg;
+    else out.qrError = drawn.error;
+  }
+  delete out.qr;
+  out.stored = wa.hasStoredSession();
+  // Before the first Link: the panel says that Link downloads the library.
+  out.library = waLib()?.status();
+  if (waFake) out.fake = true;
+  res.json(out);
+});
+app.post("/whatsapp/link", (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
+  const wa = waHandle();
+  if (!wa) return res.status(503).json({ error: "starting" });
+  const r = wa.link();
+  if (!r.ok) return res.status(409).json({ error: r.error });
+  res.json({ ok: true });
+});
+// From a halted link (a permanent refusal, a local failure, a crash while
+// resuming): try the stored session again. Never automatic — that is the point.
+app.post("/whatsapp/retry", (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
+  const wa = waHandle();
+  if (!wa) return res.status(503).json({ error: "starting" });
+  const r = wa.retry();
+  if (!r.ok) return res.status(409).json({ error: r.error });
+  res.json({ ok: true });
+});
+app.delete("/whatsapp/link", async (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
+  const wa = waHandle();
+  if (!wa) return res.status(503).json({ error: "starting" });
+  // Cancel while linking (nothing to log out of yet); otherwise log the device
+  // out on WhatsApp's side and wipe the stored session — even if the logout fails.
+  if (wa.state().phase === "linking") {
+    await wa.cancel();
+    if (wa.state().phase === "halted") return res.status(500).json({ error: String((wa.state() as { reason?: string }).reason ?? "cancel failed") });
+    return res.json({ ok: true });
+  }
+  const r = await wa.unlink();
+  // Never "ok" for an unlink that removed nothing or failed to remove: the
+  // credential would still be on disk while the admin believes it gone.
+  if (!r.ok) return res.status(r.nothing ? 409 : 500).json({ error: r.error });
+  res.json({ ok: true });
+});
+const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal"] as const;
+app.post("/whatsapp/fake/:action", (req, res) => {
+  if (!waFake) return res.status(404).json({ error: "not found" });
+  if (!accountAdmin(req, res, true, "drive the fake WhatsApp transport")) return;
+  const action = String(req.params.action) as (typeof WA_FAKE_ACTIONS)[number];
+  if (!WA_FAKE_ACTIONS.includes(action)) return res.status(400).json({ error: "unknown action" });
+  (waFake.script as FakeScript)[action]();
+  res.json({ ok: true });
+});
+
 // Telegram bot config — token/on-off/allowed-chats, applied hot (no restart).
 // Behind the GUI password gate like the rest. The token is write-only: never
 // returned here, only set/removed.
@@ -13449,6 +13573,13 @@ server.listen(port, HOST, () => {
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
   tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks, onChannelClosed: forgetChannelTriggers });
+  // WhatsApp link (step 1: linking only). Never fails the boot: a missing
+  // library or a refused deployment is a panel state, not an error.
+  try {
+    startWhatsAppHandle();
+  } catch (e) {
+    console.warn(`whatsapp: could not start: ${(e as Error)?.message ?? e}`);
+  }
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

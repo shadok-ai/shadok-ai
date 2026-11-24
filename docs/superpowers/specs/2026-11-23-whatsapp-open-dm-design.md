@@ -1,7 +1,8 @@
 # WhatsApp: anyone who writes to the instance's number gets their own agent
 
 Design, drafted 2026-11-23 and checked once against the code by a reader in
-the builder's seat. Approved 2026-11-23. Status: not implemented.
+the builder's seat. Approved 2026-11-23. Status: step 1 (the seam, linking and
+the panel) implemented; steps 2 and 3 not yet.
 
 ## Intent
 
@@ -159,10 +160,15 @@ These are observations, not assumptions; the design leans on each of them.
    server import the interface, never the library. Two reasons: the library is
    not chosen yet, and a fake transport is the only way to test the bridge end
    to end without a phone.
-2. **The library is not a hard dependency of the server.** It is loaded when
-   WhatsApp is configured; an install without it, or a library that fails to
-   load, leaves the cockpit and Telegram untouched and shows a plain reason in
-   the panel.
+2. **The library is not a dependency of the server at all.** It is installed
+   on demand, at an admin's first Link, into the data directory. The versions
+   and the whole tree are pinned by the release (exact versions, a shipped
+   integrity-pinned lockfile, `npm ci`, install scripts off), so an instance that
+   never links a number installs nothing. A library that is missing, stale or
+   fails to install or load leaves the cockpit and Telegram untouched and shows a
+   plain reason with an Install button in the panel. A boot never installs it by
+   itself. (Decided by the admin on 2026-11-23, replacing the optionalDependency
+   of the first draft.)
 3. **Session storage** lives under `~/.shadok-ai/whatsapp/<instance key>/`,
    mode 0700, on the data volume, so a container recreate does not unlink the
    number. One instance, one session; the existing per-launch-dir lock already
@@ -227,7 +233,9 @@ panel shows exactly one of them at a time:
 | Connected | The account's name and number, linked since when, connected since when |
 | Reconnecting | Same identity, "connection lost N minutes ago, retrying" |
 | Unlinked remotely | Why (removed from the phone, session closed by WhatsApp), and "Link again" |
-| Unavailable | The library is missing or failed to load, with the reason |
+| Installing | The library is being fetched (first Link, or Install), "it can take a minute" |
+| WhatsApp library needed | Missing, out of date, or failed to install or load, with the reason and Install |
+| Unavailable | The deployment refuses the feature, with the reason |
 
 Below the state, when a number is linked: the **open-DM settings** (restricted
 group and profile pickers, both or nothing, same pickers and same refusals as

@@ -923,6 +923,52 @@ from the board group's creator, so an instance that already has an owner never
 hands itself to whoever messages next — a bot username is public, and a DM is a
 shell.
 
+### WhatsApp (optional, linking only for now)
+
+The **WhatsApp** panel (in the ⋯ menu, beside Telegram, admin only) links ONE
+WhatsApp number to the instance. Linking makes the instance a **linked device**
+of that account, the way WhatsApp Web is: click **Link a number**, then on the
+phone open *Settings → Linked devices → Link a device* and scan the code the
+panel shows (it refreshes by itself; nobody scanning for three minutes ends the
+attempt). The panel then shows who the instance is linked as and since when;
+**Unlink** logs the device out on WhatsApp's side and deletes the stored session
+— even when that logout cannot reach WhatsApp, in which case remove the device
+from the phone's *Linked devices* list too.
+
+- **Use a number you can afford to lose.** This is not WhatsApp's official API:
+  linking a device this way is outside WhatsApp's terms of use, and the number
+  can be restricted or banned. The panel says so before you link.
+- **One number, one instance.** Nothing stops the same account from being linked
+  to two instances, and both would answer — don't.
+- **Only linking exists so far.** Messages are not handled yet; anyone-who-writes-
+  gets-their-own-agent (the WhatsApp twin of Telegram's open DMs) comes next.
+- The panel always shows the link's true state, one at a time: *Not linked*,
+  *Linking*, *Connected*, *Reconnecting* (a link that stops answering leaves
+  *Connected* within about two minutes, even with no disconnect event),
+  *Unlinked remotely* (removed from the phone), *Stopped* with the reason (WhatsApp
+  refused the number, the same number was connected elsewhere, a local failure, or
+  a previous start that went down while resuming — nothing is retried on its own;
+  **Retry** or **Link again** is your call), *Installing the WhatsApp library*,
+  *WhatsApp library needed* with the reason, or *Unavailable* with the reason.
+  **Unlink** is offered whenever a session is stored, in every state.
+- **Multi-tenant, migrated instances only.** The stored session IS the account,
+  so it must be out of every agent's reach: it lives in
+  `~/.shadok-ai/whatsapp/<instance>/` (mode 0700, on the data volume, so a
+  recreate does not unlink the number), and the feature is refused on a
+  mono-tenant instance and until the groups migration has completed.
+- **The WhatsApp library is installed on demand, not with shadok-ai.** Neither
+  `npx shadok-ai` nor the auto-update fetches any WhatsApp package: an instance
+  that never links a number installs nothing. The first **Link** by an admin runs
+  `npm ci` (about 35 MB on disk, a few seconds on a good connection) into
+  `~/.shadok-ai/whatsapp-lib/` on the data volume, so it survives updates and
+  recreates. The versions and the whole package tree are pinned by the release
+  (by checksum), install scripts are off, and the machine needs `npm` and access
+  to the npm registry. A failed install says why (no network, no npm, a full
+  disk) and offers **Install** again. When a release pins a new version, the old
+  copy is never used: the panel asks you to **Install** before the link
+  reconnects. The same happens when a stored session finds no library at boot,
+  because nothing is ever installed without an admin's click.
+
 ### Running in Docker
 
 > Putting one instance online for someone else, on its own machine, behind a
@@ -1530,6 +1576,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_AUTOUPDATE=0` | don't apply a newer release by itself (**ON by default** under the supervisor, i.e. `npx shadok-ai`; a server run directly never self-updates, since nothing would respawn it). `0`/`false` turns it off, `1`/`true` forces it on; the GUI setting wins over either once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
+| `SHADOK_WA_FAKE=1` | **verification only**: the WhatsApp panel drives a scripted fake transport instead of the library (no phone, no real account), and `POST /whatsapp/fake/:action` scripts it — for checking the panel on a side instance |
 | `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
 | `SHADOK_SEED_SKILLS=0` | don't rewrite the machine-wide skill scripts at boot — for a build run side by side with another instance, so it doesn't hand that instance's agents scripts newer than the server they call |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
@@ -1754,7 +1801,9 @@ to — from the profile's editor or from a tick on the secret's *Injected into*
 chips, both directions of the same link — and which agent **received** it at spawn or in a cron guard, with the person
 or door that caused it; names only, never a value; filters `secret`, `action`,
 `actor`, `agent`, `since`, `limit`. Also in the vault panel → *Audit log*, and
-🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —
+🕘 on each secret), `/telegram`, `/whatsapp` (GET — the link's state, the QR drawn
+as SVG only for a signed-in admin's browser; POST/DELETE `/whatsapp/link` — link,
+cancel or unlink, admin and browser-only), `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
 `/connect/status` (GET — `{available, providers: {linkedin, google, github},

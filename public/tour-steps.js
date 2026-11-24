@@ -145,7 +145,7 @@ export const TOUR_STEPS = [
     // no test here can hold; a list of functions is not.
     body:
       "Secrets, the shared ledger, the Skill Factory and profiles. The ⋯ menu holds the " +
-      "rest: Telegram, sound, the diff, stats, light or dark mode and this tour.",
+      "rest: Telegram, WhatsApp, sound, the diff, stats, light or dark mode and this tour.",
     // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
     // generates no box at all — its rect is all zeros, so the step would have
     // been dropped as "not visible" on the very layout where the toolbar is
@@ -166,6 +166,7 @@ export const TOUR_STEPS = [
       "#securityBtn",
       "#reportsBtn",
       "#telegramBtn",
+      "#whatsappBtn",
       "#muteNotif",
       "#moreBtn",
       "#starBtn",

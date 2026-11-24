@@ -1,0 +1,10 @@
+{
+  "name": "shadok-ai-whatsapp-lib",
+  "private": true,
+  "description": "The WhatsApp library shadok-ai installs on demand, at the first Link. The ONE place its versions are pinned; package-lock.json pins the whole tree by integrity.",
+  "type": "module",
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "qrcode": "1.5.4"
+  }
+}
