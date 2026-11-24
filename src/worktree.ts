@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listSessions } from "./extract.js";
-import { foreignOwner, gitIn } from "./git-exec.js";
+import { foreignOwner, gitAs, gitIn, type Owner } from "./git-exec.js";
 
 export interface Worktree {
   /** Working directory of the isolated checkout. */
@@ -103,6 +103,106 @@ export function createWorktree(repo: string, tag: string, stateHome: string = os
 }
 
 /**
+ * Pure: must an agent running as `user` get a CLONE rather than a worktree of a
+ * repo owned by `repoUid`? A worktree shares the repo's `.git` — objects, refs,
+ * its own admin dir — so the agent must be able to write there. When it runs as
+ * ANOTHER OS user (a private or restricted group), it cannot: the repo is its
+ * owner's, and opening it to the group would breach the very wall the group is.
+ * Worse, `worktree add` itself runs as the repo's owner (`gitIn`), who cannot
+ * traverse the group's 0700 home, so the spawn died on "could not create leading
+ * directories … Permission denied". A clone in the group's home is the group's
+ * alone.
+ */
+export function needsClone(repoUid: number | null, user: Owner | null): boolean {
+  return !!user && repoUid !== null && repoUid !== user.uid;
+}
+
+/**
+ * The CLONE twin of `createWorktree`, for an agent whose OS user does not own
+ * the repo (`needsClone`). Same place (`worktreeDir`), same branch name, same
+ * fork point — so prune and the diff find it — but a repository of its own,
+ * owned by `user`.
+ *
+ * The history crosses as a BUNDLE: the repo's owner writes it (git running in
+ * its own repo, as `gitIn` already does), the group's user clones from that
+ * file. Neither side ever runs git inside the other's repository, so neither
+ * executes configuration the other could plant (hooks, `core.fsmonitor`, a
+ * filter) — the reason `safe.directory` is never used here (src/git-exec.ts).
+ * `origin` is then pointed at the repo's own `origin` URL, so the agent pushes
+ * its branch where everyone else does, with its own credentials. The fork point
+ * is recorded as `shadok.base`: the repo's HEAD may later move to a commit this
+ * clone never received, and the diff still needs a base.
+ */
+export interface CloneDeps {
+  /** git run AS the group's user (default: `setpriv` through `gitAs`). */
+  gitAsUser: (cwd: string, args: string[]) => string;
+  chown: (p: string, uid: number, gid: number) => void;
+}
+
+export function createIsolatedClone(
+  repo: string,
+  tag: string,
+  stateHome: string,
+  user: Owner,
+  deps: CloneDeps = {
+    gitAsUser: (cwd, args) =>
+      gitAs(user, cwd, args, { timeout: 300_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }),
+    chown: (p, uid, gid) => fs.chownSync(p, uid, gid),
+  },
+): Worktree {
+  const head = git(repo, ["rev-parse", "HEAD"]);
+  const branch = `shadok-ai/${tag}`;
+  const dir = worktreeDir(stateHome, repo, tag);
+  const created = fs.mkdirSync(path.dirname(dir), { recursive: true });
+  if (created) {
+    for (let d = path.dirname(dir); ; d = path.dirname(d)) {
+      deps.chown(d, user.uid, user.gid);
+      if (d === created || d === path.dirname(d)) break;
+    }
+  }
+  // A scratch dir the repo's owner can write the bundle into and the group's
+  // user can then read it from: handed to one, then to the other.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shadok-bundle-"));
+  try {
+    const owner = foreignOwner(repo);
+    if (owner) deps.chown(tmp, owner.uid, owner.gid);
+    const bundle = path.join(tmp, "repo.bundle");
+    let current = "";
+    try {
+      current = git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    } catch {
+      /* detached HEAD: bundle HEAD alone */
+    }
+    git(repo, ["bundle", "create", bundle, current || "HEAD"]);
+    let originUrl = "";
+    try {
+      originUrl = git(repo, ["remote", "get-url", "origin"]);
+    } catch {
+      /* no origin: the clone keeps none either */
+    }
+    deps.chown(tmp, user.uid, user.gid);
+    deps.chown(bundle, user.uid, user.gid);
+    deps.gitAsUser(path.dirname(dir), ["clone", "--quiet", "--no-checkout", bundle, dir]);
+    deps.gitAsUser(dir, ["checkout", "--quiet", "-b", branch, head]);
+    deps.gitAsUser(dir, ["config", "shadok.base", head]);
+    if (originUrl) deps.gitAsUser(dir, ["remote", "set-url", "origin", originUrl]);
+    else deps.gitAsUser(dir, ["remote", "remove", "origin"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  return { path: dir, branch, repo };
+}
+
+/** Pure-ish: is `dir` a clone of its own (a `.git` DIRECTORY), not a worktree (a `.git` FILE)? */
+export function isOwnClone(dir: string): boolean {
+  try {
+    return fs.statSync(path.join(dir, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Removes a worktree only if it has no uncommitted changes (git refuses a
  * dirty removal without --force, which we intentionally don't pass — work is
  * never discarded automatically).
@@ -128,6 +228,21 @@ export function pruneWorktree(repo: string, branch: string | null | undefined, s
   if (!branch || !branch.startsWith("shadok-ai/")) return "none";
   const tag = branch.replace(/^shadok-ai\//, "");
   const dir = worktreeDir(stateHome, repo, tag);
+  // A clone of its own (`createIsolatedClone`): its branch lives ONLY in it, so
+  // the clone goes only when it holds nothing — clean, and no commit past the
+  // fork point. Anything else stays, exactly like a dirty worktree.
+  if (isOwnClone(dir)) {
+    try {
+      const dirty = git(dir, ["status", "--porcelain"]);
+      const base = git(dir, ["config", "shadok.base"]);
+      const ahead = Number(git(dir, ["rev-list", "--count", `${base}..HEAD`]) || "0");
+      if (dirty || ahead > 0) return "kept";
+      fs.rmSync(dir, { recursive: true, force: true });
+      return "removed";
+    } catch {
+      return "kept";
+    }
+  }
   // 1) Remove the checkout, but only if it's clean (no uncommitted changes).
   if (fs.existsSync(dir)) {
     try {
@@ -272,7 +387,14 @@ export function gitDiff(cwd: string, repo?: string | null): DiffResult {
       try {
         from = forkPoint(cwd, repo, "HEAD");
       } catch {
-        // Unrelated histories, detached base…: fall back to the working tree.
+        // A clone of its own never received a base the repo moved to since: use
+        // the fork point it recorded. Else (unrelated histories, detached
+        // base…) fall back to the working tree.
+        try {
+          from = git(cwd, ["merge-base", git(cwd, ["config", "shadok.base"]), "HEAD"]);
+        } catch {
+          /* working tree only */
+        }
       }
     }
     diff = git(cwd, ["diff", from]);
