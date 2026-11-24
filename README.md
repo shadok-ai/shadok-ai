@@ -1443,13 +1443,27 @@ carries a **scope**, chosen when you invite:
 - **member** — the invited agent acts **like a person you invite**: it sees,
   drives and measures **every** agent on B, spawns more, reads its usage. It is
   not an admin (no account or peer management).
+- **admin** — a member that carries the admin role: it sees every group on a
+  multi-tenant instance, reads what only an admin reads, and may **rewrite a
+  profile's system prompt** from outside (`pilotctl profile-prompt "<text>"
+  --name <profile> --peer B`, i.e. `PUT /profiles/prompt` under its peer token —
+  refused to any other scope). It may also mint a role, born with no secret.
+  What it still cannot do: manage accounts, invite or change peers, or edit a
+  profile's guardrails (deny, allow, secrets, model). Those writes are
+  browser-only, so no machine credential reaches them whatever its role.
 
 The narrow scope is what you get when you say nothing — including for a peer
-invited before scopes existed, which stays restricted until you re-invite it as a
-member. A credential already in someone else's hands never widens on its own.
+invited before scopes existed, which stays restricted until an admin widens it.
+A credential already in someone else's hands never widens on its own.
+
+**The scope can be changed afterwards**, from the same panel (the select on the
+agent's row) or `PUT /peers {name, scope}` — admin, browser-only. The peer keeps
+its key, so nothing is pasted again on its side; its live link is cut once so
+the new scope applies at once, in both directions.
 
 **This is remote code execution by a third party** — a peer that can `spawn` runs
-commands on B's machine, and a **member**-scope peer has a member's full reach. It
+commands on B's machine, a **member**-scope peer has a member's full reach, and an
+**admin**-scope peer can plant instructions in every agent that will spawn on a role. It
 is a deliberate admin grant (you trust an invited agent exactly as much as an
 invited person), and a container per instance stays the real boundary (see
 *Exposing it beyond this machine*). Even a member cannot read secret **values**

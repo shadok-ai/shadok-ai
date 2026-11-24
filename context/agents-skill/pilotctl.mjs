@@ -684,12 +684,22 @@ async function cmdReap(flags) {
  *
  * The prompt is passed to claude at spawn, so a change lands at the agent's
  * next restart, not mid-session.
+ *
+ * Over `--peer` it is the REMOTE instance's profile that is written, under your
+ * peer token — which that instance accepts only from an admin-scope peer — and
+ * `--name` is required, since you have no profile there. Your local session key
+ * is NOT sent: it is a credential for this machine and none of theirs.
  */
 async function cmdProfilePrompt(text, flags) {
-  const key = process.env.SHADOK_SESSION_KEY;
-  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
   if (!text || !text.trim()) throw new Error("a system prompt is required");
-  const body = { key, systemPrompt: text };
+  const body = { systemPrompt: text };
+  if (PEER) {
+    if (!flags.name) throw new Error("--name <profile> is required with --peer: you have no profile of your own on that instance");
+  } else {
+    const key = process.env.SHADOK_SESSION_KEY;
+    if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+    body.key = key;
+  }
   if (flags.name) body.name = flags.name;
   if (flags.readonly) body.readOnly = true;
   const r = await fetch(`${httpBase()}/profiles/prompt`, {

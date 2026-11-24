@@ -743,6 +743,37 @@ export function promptEditVerdict(opts: {
   return { ok: true, create: false };
 }
 
+/**
+ * The same question for a PEER — another instance's agent writing a prompt here
+ * over its peer token, with no session of its own on this machine.
+ *
+ * Only an `admin` peer may. Rewriting a role plants instructions in every agent
+ * that will ever spawn on it, which on a multi-tenant instance is exactly the
+ * write reserved to an admin; a member peer keeps a member's reach and a
+ * restricted one never leaves its box. An admin peer has no profile of its own,
+ * so the target is always named, and like the lead it may mint a role.
+ *
+ * What it cannot reach is unchanged: the route reads no guardrail from the body,
+ * and a managed prompt is refused for the reason given above.
+ */
+export function peerPromptEditVerdict(opts: {
+  scope: "admin" | "member" | "restricted";
+  target: string;
+  targetExists: boolean;
+  managed: boolean;
+}): PromptEdit {
+  if (opts.scope !== "admin")
+    return { ok: false, error: "only an admin peer may edit a profile's prompt — ask this cockpit's admin to change your access" };
+  const target = opts.target.trim();
+  if (!target) return { ok: false, error: "profile name required (--name): a peer has no profile of its own" };
+  if (opts.managed)
+    return {
+      ok: false,
+      error: `${target} takes its prompt from context/tweak-prompt.md at every boot — edit that file instead`,
+    };
+  return { ok: true, create: !opts.targetExists };
+}
+
 export type AttachVerdict = { ok: boolean; error?: string };
 
 /**

@@ -4182,7 +4182,7 @@
       <div class="ib-url" id="inviteUrl"></div>
     </div>
     <hr class="peers-sep">
-    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. <b>restricted</b> (the default) only touches the agents it spawns; <b>member</b> acts like a user — it sees and drives the whole cockpit, never admin.</p>
+    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. <b>restricted</b> (the default) only touches the agents it spawns; <b>member</b> acts like a user — it sees and drives the whole cockpit; <b>admin</b> also sees every group and may rewrite a profile's prompt. None of them can manage accounts, invite agents or change a profile's guardrails. You can change an agent's access below at any time — it keeps its key.</p>
     <ul id="peersList"></ul>
     <form id="peersAdd">
       <input id="peerName" placeholder="peer name (e.g. brasdroit1)" autocomplete="off" spellcheck="false">
@@ -4190,9 +4190,10 @@
       <!-- restricted FIRST, so the selected-by-default option is the narrow one:
            handing over the whole cockpit is a choice you make, never one you
            forget to unmake. -->
-      <select id="peerScope" title="restricted: only the agents it spawns. member: acts like a user (whole cockpit).">
+      <select id="peerScope" title="restricted: only the agents it spawns. member: acts like a user (whole cockpit). admin: member, plus every group and profile prompts.">
         <option value="restricted">restricted (own agents)</option>
         <option value="member">member (whole cockpit)</option>
+        <option value="admin">admin (+ profile prompts)</option>
       </select>
       <button type="submit">Invite agent</button>
     </form>
@@ -17304,13 +17305,36 @@
       const meta = document.createElement("div");
       const who = document.createElement("b"); who.textContent = p.name;
       const sub = document.createElement("div"); sub.className = "pmeta";
-      // Mirrors `peerScope` on the server: anything that is not an explicit
-      // `member` reads as restricted, so a row from before scopes is not
-      // labelled wider than it is.
-      sub.textContent = (p.scope === "member" ? "member" : "restricted")
-        + (p.note ? " · " + p.note : "")
-        + (p.pending ? " · not enrolled yet" : "");
+      // Mirrors `peerScope` on the server: anything that is not an exact scope
+      // name reads as restricted, so a row from before scopes is not labelled
+      // wider than it is.
+      const SCOPES = ["restricted", "member", "admin"];
+      const current = SCOPES.includes(p.scope) ? p.scope : "restricted";
+      sub.textContent = [p.note, p.pending ? "not enrolled yet" : ""].filter(Boolean).join(" · ");
       meta.append(who, sub);
+      // The access is changed in place: the agent keeps its key, so nothing has
+      // to be pasted again on its side.
+      const sel = document.createElement("select");
+      sel.title = "what this agent may touch here — change it at any time, it keeps its key";
+      for (const s of SCOPES) {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s; o.selected = s === current;
+        sel.appendChild(o);
+      }
+      sel.addEventListener("change", async () => {
+        const next = sel.value;
+        const wider = SCOPES.indexOf(next) > SCOPES.indexOf(current);
+        const what = next === "admin"
+          ? "It will see every group and may rewrite any profile's prompt."
+          : next === "member" ? "It will see and drive every agent on this cockpit." : "It will only touch the agents it spawned.";
+        if (wider && !confirm("Give " + p.name + " " + next + " access?\n\n" + what)) { sel.value = current; return; }
+        const r = await fetch("/peers", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: p.name, scope: next }),
+        });
+        if (!r.ok) { const out = await r.json().catch(() => ({})); alert(out.error || "failed"); }
+        renderPeers();
+      });
       const del = document.createElement("button");
       del.textContent = "revoke"; del.style.color = "#e26";
       del.addEventListener("click", async () => {
@@ -17318,7 +17342,7 @@
         await fetch("/peers?name=" + encodeURIComponent(p.name), { method: "DELETE" });
         renderPeers();
       });
-      const btns = document.createElement("div"); btns.className = "u-actions"; btns.append(del);
+      const btns = document.createElement("div"); btns.className = "u-actions"; btns.append(sel, del);
       li.append(meta, btns);
       ul.appendChild(li);
     }

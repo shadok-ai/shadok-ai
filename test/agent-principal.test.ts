@@ -67,6 +67,13 @@ test("an agent a RESTRICTED peer spawned inherits the peer's box; a member peer'
   assert.equal(resolveAgentPrincipal("s-member-peer", CHANNELS, scope).peer, null);
 });
 
+test("an agent an ADMIN peer spawned is not boxed — and is still a member, never an admin", () => {
+  const ch = [{ sessionId: "s-admin-peer", createdByPeer: "chief" }];
+  const p = resolveAgentPrincipal("s-admin-peer", ch, (n) => (n === "chief" ? "admin" : null));
+  assert.equal(p.peer, null);
+  assert.equal(agentAccount(p).role, "member", "the peer's role does not flow down to what it spawns");
+});
+
 test("a REVOKED peer's agent stays boxed (an unknown peer is never proven a member)", () => {
   assert.equal(resolveAgentPrincipal("s-peer", CHANNELS, () => null).peer, "remote");
 });

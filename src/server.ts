@@ -283,6 +283,8 @@ import {
   tierPeersOutSeed,
   agentInvitePrompt,
   peerScope,
+  setPeerScope,
+  type PeerScope,
   type Peer,
 } from "./peers.js";
 import {
@@ -440,6 +442,7 @@ import {
   upsertProfile,
   removeProfile,
   promptEditVerdict,
+  peerPromptEditVerdict,
   secretAttachVerdict,
   READONLY_DENY,
   TWEAK_PROFILE_NAME,
@@ -1569,11 +1572,16 @@ function currentAccount(req: Caller): { name: string; role: Role; agent?: AgentP
   if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   // A MEMBER-scope peer (an invited agent from another instance) authenticates
   // as a web MEMBER: everything a person you invite can do — see/drive EVERY
-  // agent, read `/usage` and `/live`, spawn — but never admin (no account or
-  // peer management). A RESTRICTED peer is NOT a member: it stays the boxed
-  // principal that `peerName`/the `peer-scope` checks handle.
+  // agent, read `/usage` and `/live`, spawn — but never admin. An ADMIN-scope
+  // peer carries the admin ROLE: every group, the admin reads, and the prompt
+  // write on `PUT /profiles/prompt`. Neither can manage accounts or peers nor
+  // edit guardrails — those writes are browser-only (`requestFromBrowser`
+  // refuses any request carrying a peer token), so the role alone opens none
+  // of them. A RESTRICTED peer is NOT a member: it stays the boxed principal
+  // that `peerName`/the `peer-scope` checks handle.
   const prow = peerRow(req);
-  if (prow && peerScope(prow) === "member") return { name: prow.name, role: "member" };
+  const pscope = prow ? peerScope(prow) : null;
+  if (prow && pscope !== "restricted") return { name: prow.name, role: pscope === "admin" ? "admin" : "member" };
   // The server's own in-process client (the Telegram bridge) — a machine, not a
   // person, so it is recognised HERE and stays refused by `cookieAccount`.
   if (isInternalClient(cookieSession(req))) return { name: BOOTSTRAP_ADMIN, role: "admin" };
@@ -1731,9 +1739,10 @@ function peerName(req: { headers: Record<string, unknown> }): string | null {
   return peerRow(req)?.name ?? null;
 }
 /** The scope of the peer a request authenticates as (`member`/`restricted`), or
- *  null when it is not a peer. `member` peers act as web members; `restricted`
- *  ones stay boxed to the agents they created. */
-function peerScopeFor(req: { headers: Record<string, unknown> }): "member" | "restricted" | null {
+ *  null when it is not a peer. `member` peers act as web members, `admin` ones
+ *  as an admin over the machine routes; `restricted` ones stay boxed to the
+ *  agents they created. */
+function peerScopeFor(req: { headers: Record<string, unknown> }): PeerScope | null {
   const row = peerRow(req);
   return row ? peerScope(row) : null;
 }
@@ -7523,12 +7532,13 @@ app.post("/peers", (req, res) => {
   if (!name) return res.status(400).json({ error: "a peer name is required" });
   const note = typeof req.body?.note === "string" ? req.body.note.trim() || undefined : undefined;
   const brief = typeof req.body?.brief === "string" ? req.body.brief : "";
-  // Scope: `restricted` (default — only the agents it spawns) or `member` (acts
-  // like an invited user, sees and drives the whole cockpit). Anything but the
-  // exact string "member" is restricted, so a stray value, an old client or a
+  // Scope: `restricted` (default — only the agents it spawns), `member` (acts
+  // like an invited user, sees and drives the whole cockpit) or `admin` (a
+  // member with the admin role). Anything but an exact scope name is restricted, so a stray value, an old client or a
   // body that forgot the key never hands out the whole cockpit by accident:
   // widening is always something a caller spelled out.
-  const scope: "member" | "restricted" = req.body?.scope === "member" ? "member" : "restricted";
+  // `admin` follows the same rule: the exact string, or nothing.
+  const scope: PeerScope = peerScope({ scope: req.body?.scope });
   const file = peerFileFor();
   const { peers, ticket } = newPeer(loadPeers(file), name, Date.now(), note, scope);
   savePeers(file, peers);
@@ -7544,6 +7554,41 @@ app.post("/peers", (req, res) => {
   const url = ((req.headers.origin as string | undefined)?.trim() || `http://${req.headers.host ?? "localhost"}`).replace(/\/+$/, "");
   res.json({ ok: true, name, ticket, scope, invitePrompt: agentInvitePrompt({ url, ticket, brief, scope }) });
 });
+/** Terminate every live socket of a peer; returns how many. */
+function dropPeerSockets(name: string): number {
+  let dropped = 0;
+  for (const c of wss.clients) {
+    if ((c as WebSocket & { __peer?: string }).__peer === name) {
+      try {
+        c.terminate();
+        dropped++;
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  return dropped;
+}
+// Change what an invited agent may touch, AFTER the invitation. The peer keeps
+// its token (the salt is untouched), so nothing has to be re-enrolled on the
+// other side. Its live sockets are dropped: a connection's reach is resolved
+// once at connect, and a narrowed peer must not keep the wider one until it
+// happens to reconnect — pilotctl opens a socket per command, so the cut costs
+// it nothing. HTTP calls re-read the registry and follow at once.
+app.put("/peers", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = normPeerName(req.body?.name);
+  if (!name) return res.status(400).json({ error: "a peer name is required" });
+  const file = peerFileFor();
+  const out = setPeerScope(loadPeers(file), name, req.body?.scope);
+  if (!out.ok) return res.status(400).json({ error: out.error });
+  const scope = req.body.scope as PeerScope;
+  savePeers(file, out.peers);
+  const dropped = out.from === scope ? 0 : dropPeerSockets(name);
+  console.log(`peers: ${me.name} changed peer ${name} ${out.from} → ${scope} (${dropped} live connection(s) dropped)`);
+  res.json({ ok: true, name, scope, from: out.from });
+});
 app.delete("/peers", (req, res) => {
   const me = accountAdmin(req, res);
   if (!me) return;
@@ -7556,17 +7601,7 @@ app.delete("/peers", (req, res) => {
   // pilotctl link must stop at once. The agents it spawned are LEFT for this
   // instance's admin to keep or stop (killing another party's in-flight work
   // silently is worse than orphaning it under local control).
-  let dropped = 0;
-  for (const c of wss.clients) {
-    if ((c as WebSocket & { __peer?: string }).__peer === name) {
-      try {
-        c.terminate();
-        dropped++;
-      } catch {
-        /* already gone */
-      }
-    }
-  }
+  const dropped = dropPeerSockets(name);
   console.log(`peers: ${me.name} revoked peer ${name} (${dropped} live connection(s) dropped)`);
   res.json({ ok: true, dropped });
 });
@@ -7670,12 +7705,20 @@ app.put("/profiles", (req, res) => {
  *
  * Authorization is the session KEY from the agent's env, never the session id —
  * `/live` publishes every id.
+ *
+ * A second caller exists: an ADMIN-scope peer, over its peer token
+ * (`peerPromptWrite`). It is tried only when no local session key verified, so
+ * an agent of this machine is always judged as that agent.
  */
 app.put("/profiles/prompt", (req, res) => {
   const b = req.body ?? {};
   const key = typeof b.key === "string" ? b.key : "";
   const id = localSessionForKey(req, key);
-  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  if (!id) {
+    const prow = peerRow(req);
+    if (prow) return peerPromptWrite(prow.name, peerScope(prow), b, res);
+    return res.status(403).json({ error: "unknown or missing session key" });
+  }
   // Profiles are global: in multi-tenant this write crosses every group's wall
   // (invariant 63) — refused before any per-profile rule is consulted.
   const modeRefusal = promptWriteRefusal({ mode: DEPLOYMENT_MODE });
@@ -7707,6 +7750,45 @@ app.put("/profiles/prompt", (req, res) => {
     note: "applies at the agent's next restart — the prompt is passed at spawn",
   });
 });
+
+/**
+ * `PUT /profiles/prompt` for an admin PEER. Not subject to `promptWriteRefusal`:
+ * that rule keeps an agent of ONE group from writing a prompt every group
+ * loads, and its own text names who may instead — an admin. An admin peer is
+ * that admin's delegate, and the grant was made by a person, by name, from the
+ * browser (`POST /peers`, `PUT /peers`). Same body, same floor as the agent
+ * path: an update starts from the stored profile, a creation carries no secret.
+ */
+function peerPromptWrite(
+  peer: string,
+  scope: PeerScope,
+  b: { name?: unknown; systemPrompt?: unknown; readOnly?: unknown },
+  res: express.Response,
+) {
+  const target = typeof b.name === "string" ? b.name.trim() : "";
+  const existing = target ? getProfile(target) : undefined;
+  const verdict = peerPromptEditVerdict({
+    scope,
+    target,
+    targetExists: !!existing,
+    managed: MANAGED_PROFILE_NAMES.includes(target),
+  });
+  if (!verdict.ok) return res.status(403).json({ error: verdict.error });
+  if (target === ANY_PROFILE) return res.status(400).json({ error: `"${ANY_PROFILE}" is reserved; pick another profile name.` });
+  const systemPrompt = typeof b.systemPrompt === "string" ? b.systemPrompt : "";
+  if (!systemPrompt.trim()) return res.status(400).json({ error: "systemPrompt required" });
+  const next: Profile = verdict.create
+    ? { name: target, systemPrompt, deny: b.readOnly ? [...READONLY_DENY] : undefined, secrets: [] }
+    : { ...existing!, systemPrompt };
+  upsertProfile(next);
+  console.log(`profile-prompt: peer ${peer} → ${target}${verdict.create ? " [created]" : ""}`);
+  res.json({
+    ok: true,
+    profile: target,
+    created: verdict.create,
+    note: "applies at each agent's next restart — the prompt is passed at spawn",
+  });
+}
 
 /**
  * The second — and last — profile write an agent can make: attach to its OWN
