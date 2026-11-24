@@ -519,8 +519,11 @@ import {
 } from "./twofactor.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import { supersedeSession } from "./live-handover.js";
+import { ownerByName } from "./git-exec.js";
 import {
   createWorktree,
+  createIsolatedClone,
+  needsClone,
   pruneWorktree,
   ensureWorktreeCheckout,
   gitDiff,
@@ -12551,7 +12554,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // actually work in it instead of landing on the invalid-settings
               // screen. `agentStateHome(null)` is the server home, so mono-tenant
               // is byte-for-byte unchanged.
-              worktree = createWorktree(cwd, id.slice(0, 8), agentStateHome(earlyUser));
+              // An agent running as ANOTHER OS user than the repo's owner (a
+              // private or restricted group) gets a clone of its own instead:
+              // it could neither create nor write a worktree of that repo
+              // (`needsClone`).
+              const dropOwner = earlyUser ? ownerByName(earlyUser) : null;
+              let repoUid: number | null = null;
+              try { repoUid = fs.statSync(cwd).uid; } catch { /* createWorktree reports it */ }
+              worktree = needsClone(repoUid, dropOwner)
+                ? createIsolatedClone(cwd, id.slice(0, 8), agentStateHome(earlyUser), dropOwner!)
+                : createWorktree(cwd, id.slice(0, 8), agentStateHome(earlyUser));
               effectiveCwd = worktree.path;
               await chownAgentStateToDropUser(worktree.path, earlyUser);
             } catch (e) {

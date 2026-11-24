@@ -71,6 +71,36 @@ export function ownerGitCommand(
   };
 }
 
+/** Pure: the passwd row for user `name` as an `Owner`, or null when absent. */
+export function passwdOwner(passwd: string, name: string): Owner | null {
+  for (const line of passwd.split("\n")) {
+    const f = line.split(":");
+    if (f.length >= 6 && f[0] === name && /^\d+$/.test(f[2]) && /^\d+$/.test(f[3]))
+      return { uid: Number(f[2]), gid: Number(f[3]), name, home: f[5] || null };
+  }
+  return null;
+}
+
+/** The OS user `name` as an `Owner`, read from /etc/passwd; null when unknown. */
+export function ownerByName(name: string): Owner | null {
+  try {
+    return passwdOwner(fs.readFileSync("/etc/passwd", "utf8"), name);
+  } catch {
+    return null;
+  }
+}
+
+/** Run `git -C cwd …args` AS `owner` (no root attempt first). */
+export function gitAs(
+  owner: Owner,
+  cwd: string,
+  args: readonly string[],
+  opts: Omit<ExecFileSyncOptionsWithStringEncoding, "encoding"> = {},
+): string {
+  const run = ownerGitCommand(owner, cwd, args);
+  return execFileSync(run.cmd, run.argv, { ...opts, encoding: "utf8", env: { ...process.env, ...run.env } });
+}
+
 /** Who owns `dir`, when the server is root and that is someone else; else null. */
 export function foreignOwner(dir: string): Owner | null {
   if (typeof process.getuid !== "function" || process.getuid() !== 0) return null;

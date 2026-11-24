@@ -13,11 +13,13 @@ const server = fs.readFileSync(
 );
 
 test("the MT-token guard runs before createWorktree in the spawn path", () => {
-  const wt = server.indexOf("worktree = createWorktree(");
+  // The checkout is a worktree OR, for an agent that does not own the repo, a
+  // clone of its own (`needsClone`): one assignment chooses between them.
+  const wt = server.indexOf("worktree = needsClone(");
   // The guard is the connect verdict (src/connect-gate.ts) since the onboarding
   // rework; its early call must still come before the checkout is created.
   const guard = server.indexOf("await connectRefusal(earlyUser)");
   assert.ok(wt > 0 && guard > 0, "both anchors must exist");
-  assert.ok(guard < wt, "the early connect guard must appear before worktree = createWorktree(");
+  assert.ok(guard < wt, "the early connect guard must appear before the checkout is created");
   assert.ok(server.indexOf("return fail(early.message") < wt, "the early refusal must return before createWorktree");
 });
