@@ -20,7 +20,10 @@ import {
   tgToolsEnabled,
   setTgTools,
   isHomeChannel,
+  loadTgDelivered,
+  saveTgDelivered,
 } from "./channels.js";
+import { replayPlan, replayHeader, advanceMark, type DeliveredMark } from "./tg-replay.js";
 import { triggerSummary } from "./channel-triggers.js";
 import { secretNames, setSecret, deleteSecret, secretWriteVerdict, secretNameRefusal, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
@@ -1206,6 +1209,16 @@ interface Bridge {
   // is freshly created for an existing channel, so a fresh mirror isn't empty.
   // Cleared after the first `history` so a reconnect/reboot never re-spams.
   backfill?: boolean;
+  /** How far this binding has delivered (`src/tg-replay.ts`). Held here so a
+   *  delivery costs ONE small write and no read — the bridge is the only writer
+   *  of its own key. */
+  delivered?: DeliveredMark | null;
+  /** The resume point this binding had when the bridge OPENED, consumed by the
+   *  first `history` frame so it posts the gap and only the gap. Separate from
+   *  `delivered`, which has already moved on by then. Null on a first-ever
+   *  attach — a new mirror has no backlog — and on a fresh topic, which replays
+   *  through `backfill` instead. */
+  replayFrom?: DeliveredMark | null;
   // Whether to post tool calls in this channel — a topic setting, read once
   // when the bridge opens so we do not touch the disk on every event of a turn.
   // Toggled by /tools.
@@ -1628,6 +1641,17 @@ export function startTelegram(
     }
   };
 
+  /**
+   * Remember what this binding has delivered, so a later reattach replays the
+   * gap instead of losing it (`src/tg-replay.ts`). One small synchronous write
+   * per delivered message — the same cost, and the same reason, as the tail's
+   * `writePos`: a resume point written only AFTER the content was consumed.
+   */
+  const markDelivered = (b: Bridge, next: DeliveredMark): void => {
+    b.delivered = advanceMark(b.delivered, next);
+    saveTgDelivered(b.key, b.delivered);
+  };
+
   /** Open (or resume) a session for a chat/topic and wire its events to Telegram. */
   const openBridge = (
     key: string,
@@ -1652,6 +1676,15 @@ export function startTelegram(
       pendingActions: [],
       worktree: opts.worktree,
       backfill: opts.backfill,
+      // A reattach resumes a binding that already has a history in its chat, so
+      // it gets a resume point. A fresh topic does not: `backfill` is its own
+      // replay, and handing it a mark as well would post the gap twice.
+      ...(opts.resumeId && !opts.backfill
+        ? (() => {
+            const mark = loadTgDelivered()[key] ?? null;
+            return { delivered: mark, replayFrom: mark };
+          })()
+        : { delivered: null }),
       guest: isGuestChat(chatId, threadId),
       showTools: tgToolsEnabled(key),
       name: opts.name,
@@ -1701,17 +1734,49 @@ export function startTelegram(
       }
       switch (m.type) {
         case "history": {
-          // Only replay for a freshly-created topic; never on a reconnect/reboot
-          // (arrives before `ready`, so the flag gates it exactly once).
-          if (!b.backfill) break;
-          b.backfill = false;
-          const turns = (Array.isArray(m.turns) ? m.turns : []).slice(-15);
-          if (!turns.length) break;
-          send(b, `— history resumed (last ${turns.length} exchanges) —`);
-          for (const t of turns) {
-            const txt = String(t?.text ?? "").trim();
-            if (txt) send(b, t.role === "user" ? "👤 " + txt : txt);
+          const all: any[] = Array.isArray(m.turns) ? m.turns : [];
+          // A freshly-created topic replays recent history so the mirror is not
+          // born empty (the flag arrives before `ready`, so it gates exactly
+          // once). It also SEEDS the resume point: without that, the gap after
+          // this bridge's first death would be measured from nothing and
+          // replayed as "no mark" — i.e. not at all.
+          if (b.backfill) {
+            b.backfill = false;
+            b.replayFrom = null;
+            const turns = all.slice(-15);
+            if (!turns.length) break;
+            send(b, `— history resumed (last ${turns.length} exchanges) —`);
+            for (const t of turns) {
+              const txt = String(t?.text ?? "").trim();
+              if (txt) send(b, t.role === "user" ? "👤 " + txt : txt);
+            }
+            const last = turns[turns.length - 1];
+            markDelivered(b, { at: typeof last?.at === "number" ? last.at : Date.now() });
+            break;
           }
+          // A RECONNECT posts the gap and only the gap: everything written
+          // while no bridge was attached to carry it. The mark is consumed here
+          // whatever the plan says, so a second `history` (a later resume on the
+          // same bridge) can never replay the same window twice.
+          const mark = b.replayFrom;
+          b.replayFrom = null;
+          if (!mark) break;
+          const plan = replayPlan(all, mark);
+          if (!plan.post.length) break;
+          console.log(
+            `telegram: ${b.key} — replaying ${plan.post.length} message(s) missed while no bridge was attached` +
+              (plan.dropped ? ` (+${plan.dropped} older dropped)` : ""),
+          );
+          send(b, replayHeader(plan.post.length, plan.dropped));
+          for (const t of plan.post) {
+            const txt = t.text.trim();
+            // A replayed prompt keeps its author: the history carries the
+            // `⟦platform · time · who⟧` header's fields, so the same label the
+            // live echo would have printed is available here (see `loadHistory`).
+            send(b, t.role === "user" ? promptEchoLabel(t.origin, false, t.from) + "\n" + txt : txt);
+          }
+          const last = plan.post[plan.post.length - 1];
+          markDelivered(b, { at: typeof last.at === "number" ? last.at : Date.now() });
           break;
         }
         case "ready":
@@ -1728,6 +1793,12 @@ export function startTelegram(
           break;
         case "stream-text": {
           if (!m.text?.trim()) break;
+          // Marked here rather than after each branch: both of them deliver
+          // THIS block (one posts it, the other replaces the preface that
+          // already carried it), so the resume point moves either way. The
+          // transcript's own `at` is used where present — it is the clock a
+          // replayed turn is compared in.
+          markDelivered(b, { at: typeof m.at === "number" ? m.at : Date.now() });
           // Is this block the authoritative twin of a preface already shown?
           // (the tail only delivers it once the question is answered). If so we
           // EDIT the existing message — clean Markdown replaces the screen's
@@ -1747,6 +1818,12 @@ export function startTelegram(
           // necessarily comes from ANOTHER client. We show it, marked — a bot
           // cannot post under the user's name.
           if (!m.text?.trim()) break;
+          // The echo has no transcript time — it is broadcast at submit, before
+          // Claude Code writes the prompt down — so the resume point takes our
+          // own delivery instant, and the TEXT comes with it: that is what lets
+          // a replay recognise this prompt instead of posting it twice (see
+          // `DeliveredMark.text`).
+          markDelivered(b, { at: Date.now(), text: String(m.text) });
           const label = promptEchoLabel(m.origin, m.auto, m.from);
           // A file pasted into the web composer is a MEDIA, not a path. The web
           // renders its marker as a thumbnail; printing the marker here left the
@@ -1919,7 +1996,13 @@ export function startTelegram(
     });
     ws.on("close", () => {
       b.typing.stop();
-      if (bridges.get(key) === b) bridges.delete(key);
+      if (bridges.get(key) !== b) return;
+      bridges.delete(key);
+      // SAY it. A bridge dying is what opens the mirror's gap, and it used to
+      // leave no trace at all — so an operator whose web messages stopped
+      // reaching the topic had nothing to read, on either side. The reconcilers
+      // reattach it within ~5s when its agent is still alive.
+      console.log(`telegram: ${key} — bridge closed; nothing reaches this chat until it is reattached`);
     });
     ws.on("error", () => {});
     return b;

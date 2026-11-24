@@ -26,7 +26,8 @@ branch and role — and it is told when one of its own finishes, blocks on
 a question, or dies. Nothing else wakes it.
 
 **It keeps working when you are not there.** Mirror an agent to a Telegram topic
-and answer from your phone, one topic per agent. Put a prompt on a schedule with a
+and answer from your phone, one topic per agent — and a topic that was cut off
+replays what it missed when it comes back, rather than quietly skipping it. Put a prompt on a schedule with a
 **guard that runs without the model**: prints nothing, nothing happened, zero
 tokens spent.
 
