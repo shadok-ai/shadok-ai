@@ -12175,18 +12175,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // loopback client can place an agent in that group or pick the role
           // strangers drive (invariant 49).
           // Two bridges, two doors: the setup is the one of the bridge this socket
-          // PROVED (its secret), never one a frame names.
-          const guestPlan = guestSpawnPlan({
-            marker: msg.guest,
-            fromBridge: isTelegramBridge || isWhatsAppBridge,
-            resuming: !!msg.resume,
-            setup:
-              msg.guest === true
-                ? isWhatsAppBridge
-                  ? waGuestSetupForCwd(loadConfig(), process.cwd())
-                  : guestSetupForCwd(loadConfig(), process.cwd())
-                : GUEST_SETUP_OFF,
-          });
+          // PROVED (its secret), never one a frame names — a Telegram socket
+          // never spawns on the WhatsApp door's profile, nor the reverse.
+          const guestPlan = isWhatsAppBridge
+            ? guestSpawnPlan({
+                marker: msg.guest,
+                fromBridge: isWhatsAppBridge,
+                resuming: !!msg.resume,
+                setup: msg.guest === true ? waGuestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
+              })
+            : guestSpawnPlan({
+                marker: msg.guest,
+                fromBridge: isTelegramBridge,
+                resuming: !!msg.resume,
+                setup: msg.guest === true ? guestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
+              });
           if (guestPlan.kind === "refused") return fail(guestPlan.message, guestPlan.code);
           const guestSetup = guestPlan.kind === "guest" ? guestPlan : null;
           const guestGroupId = guestSetup?.group ?? null;
@@ -12333,10 +12336,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // memory and where `CLAUDE.md` is read, so one person's agent
             // loaded the notes another person's agent had written, with
             // nothing on screen to show it (`guestWorkDirName`).
-            if (guestSetup) {
-              // `wa-<digits>` for a WhatsApp sender, `tg-<id>` for Telegram:
-              // each rebuilt from its own bridge's id, never from the other's.
-              const sub = isWhatsAppBridge ? waGuestWorkDirName(msg.guestKey) : guestWorkDirName(msg.guestKey);
+            // `wa-<digits>` for a WhatsApp sender, `tg-<id>` for Telegram: each
+            // rebuilt from its own bridge's id, never from the other's.
+            if (guestSetup && isWhatsAppBridge) {
+              const sub = waGuestWorkDirName(msg.guestKey);
+              if (!sub) return fail("a guest's agent needs the person it belongs to", "guest-key");
+              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), sub, earlyUser);
+            } else if (guestSetup) {
+              const sub = guestWorkDirName(msg.guestKey);
               // No usable id → REFUSE, never fall back to the shared home: a
               // silent fallback is exactly the mixing this closes, and it would
               // come back the day a caller forgets the field (invariant 24).

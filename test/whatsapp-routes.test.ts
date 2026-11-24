@@ -102,9 +102,9 @@ test("the WhatsApp bridge proves its own per-process secret, and that alone make
 });
 
 test("a guest spawn reads the setup of the bridge the socket PROVED, and names the wa- directory", () => {
-  assert.match(SRC, /fromBridge: isTelegramBridge \|\| isWhatsAppBridge,/);
-  assert.match(SRC, /isWhatsAppBridge\s*\? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)\s*: guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)/);
-  assert.match(SRC, /isWhatsAppBridge \? waGuestWorkDirName\(msg\.guestKey\) : guestWorkDirName\(msg\.guestKey\)/);
+  assert.match(SRC, /const guestPlan = isWhatsAppBridge\s*\? guestSpawnPlan\(\{\s*marker: msg\.guest,\s*fromBridge: isWhatsAppBridge,/);
+  assert.match(SRC, /setup: msg\.guest === true \? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\) : GUEST_SETUP_OFF/);
+  assert.match(SRC, /if \(guestSetup && isWhatsAppBridge\) \{\s*const sub = waGuestWorkDirName\(msg\.guestKey\);\s*if \(!sub\) return fail\([^)]*"guest-key"\)/);
 });
 
 test("the server refuses a bare slash command from the whatsapp origin", () => {
