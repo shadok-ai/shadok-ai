@@ -923,7 +923,7 @@ from the board group's creator, so an instance that already has an owner never
 hands itself to whoever messages next — a bot username is public, and a DM is a
 shell.
 
-### WhatsApp (optional, linking only for now)
+### WhatsApp (optional): anyone who writes gets their own agent
 
 The **WhatsApp** panel (in the ⋯ menu, beside Telegram, admin only) links ONE
 WhatsApp number to the instance. Linking makes the instance a **linked device**
@@ -940,8 +940,32 @@ from the phone's *Linked devices* list too.
   can be restricted or banned. The panel says so before you link.
 - **One number, one instance.** Nothing stops the same account from being linked
   to two instances, and both would answer — don't.
-- **Only linking exists so far.** Messages are not handled yet; anyone-who-writes-
-  gets-their-own-agent (the WhatsApp twin of Telegram's open DMs) comes next.
+- **Open DMs.** Once a number is linked, the panel shows the **guest door**:
+  a switch, the **restricted group** strangers' agents are born into, and the
+  **profile** they run on (the job description) — the same pickers and the same
+  refusals as Telegram's open DMs, which this is the WhatsApp twin of. With the
+  door open, anyone who sends a text to the number gets an agent of their own,
+  named after their WhatsApp name, and always comes back to the same one — even
+  if WhatsApp shows them under a different address (a LID or their phone
+  number) on another day. Only the group's members see those conversations
+  (and the person's number), from the cockpit, like any other agent; what you
+  type there reaches the person, labelled with your name.
+- **A guest can only talk.** Nothing typed in WhatsApp is a command: a message
+  starting with `/clear` or `/login` reaches the agent as text, and the server
+  refuses a command from WhatsApp anyway. Groups, status, channels, calls and
+  your own messages from the phone are ignored.
+- **The door shut is silence** — no agent, no reply, for new and known senders
+  alike (an automatic reply to a stranger is a risk for the number). Existing
+  agents are kept and answer again once it is open. The bridge never writes to a
+  number that has not written to it first; an agent may write again later to
+  someone who has (a schedule, a notification, you from the cockpit).
+- **Nothing is lost across a restart.** A message received while an agent was
+  being started, or while the server was updating, is answered once it is back.
+- **Closing a guest's agent in the cockpit** ends that conversation: their next
+  message starts a new agent. A link that drops ends nothing.
+- **Text only, for now.** Pictures, documents, voice notes, files the agent
+  sends, and answering a question by its number come next. A question an agent
+  asks reaches the person as text, and they answer in words.
 - The panel always shows the link's true state, one at a time: *Not linked*,
   *Linking*, *Connected*, *Reconnecting* (a link that stops answering leaves
   *Connected* within about two minutes, even with no disconnect event),
@@ -1576,7 +1600,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_AUTOUPDATE=0` | don't apply a newer release by itself (**ON by default** under the supervisor, i.e. `npx shadok-ai`; a server run directly never self-updates, since nothing would respawn it). `0`/`false` turns it off, `1`/`true` forces it on; the GUI setting wins over either once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
-| `SHADOK_WA_FAKE=1` | **verification only**: the WhatsApp panel drives a scripted fake transport instead of the library (no phone, no real account), and `POST /whatsapp/fake/:action` scripts it — for checking the panel on a side instance |
+| `SHADOK_WA_FAKE=1` | **verification only**: the WhatsApp panel drives a scripted fake transport instead of the library (no phone, no real account), and `POST /whatsapp/fake/:action` scripts it (`deliver` makes someone write to the number, `mapLid` teaches it a LID; `GET /whatsapp` then shows what the fake phone received as `fakeSent`) — for checking the panel and the guests on a side instance |
 | `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
 | `SHADOK_SEED_SKILLS=0` | don't rewrite the machine-wide skill scripts at boot — for a build run side by side with another instance, so it doesn't hand that instance's agents scripts newer than the server they call |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |

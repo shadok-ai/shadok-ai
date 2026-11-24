@@ -2586,3 +2586,44 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     which would change the fate of every OTHER error and could only guess an
     error's origin from its stack. What a worker cannot contain — a native
     crash — is what the boot breaker in `src/whatsapp.ts` is for.
+
+<a id="inv-80"></a>
+
+76. **One binding field per transport, never a shared one — a WhatsApp sender
+    lives in `Channel.whatsapp`, and no Telegram code ever reads it.** The
+    tempting shortcut was to reuse `Channel.telegram` for "the chat this agent
+    answers": it already has a reattach loop, a merge keep-rule and a lookup.
+    But code all over the system reads the SIGN of a Telegram `chatId` —
+    `isHomeChannel` (negative, no topic = the undeletable home base),
+    `reattachDmBridges` and `adoptOwnerFromBindings` (positive, no topic = a
+    DM, possibly the bot's OWNER), `mergeChannels`' "general" naming,
+    `reconcileWebChannels`' drop of a foreign group. A phone number written
+    there would be reattached as a Telegram chat, could make a WhatsApp sender
+    the Telegram owner, or become a home channel nobody can close. So the
+    binding has its own field, its own lookup (`findWaChannel`), its own
+    reattach (`waReattachList`) and its own line in `mergeChannels`' keep-rule
+    and `SERVER_OWNED`; `isMirrored` is false for it whatever `mirror` says, so
+    the Telegram mirror loop never publishes a guest's conversation as a topic.
+    A browser can neither drop it nor plant it on a new row — a planted binding
+    would be a way to make the bridge send to a number that never wrote. The
+    rule generalises to the next transport: a new bridge gets a new field, and
+    `test/channels.test.ts` proves the old ones never see it.
+
+<a id="inv-81"></a>
+
+77. **A bridge with no command dispatcher still owes the command refusal — and
+    the guarantee lives in the server, not the bridge.** The server submits a
+    message that `isSlashCommand` BARE (no header line ahead of it), so the
+    terminal runs it: `/clear` from a stranger erases the continuity the
+    WhatsApp feature promises, `/login` or `/model` are worse. Telegram guests
+    were safe by accident of architecture — their messages pass through the
+    bot's command dispatcher, which refuses them (`guestCommandRefusal`).
+    WhatsApp has no dispatcher at all, so nothing stood in the way until it
+    was built on purpose, twice: the bridge rewrites a leading `/name` as
+    `\/name` (`neutralizeCommand`, so the words still reach the agent as
+    text), and the `prompt` handler refuses a bare slash command from the
+    `whatsapp` origin with `code: "command-refused"`. The second is the one
+    that counts: the origin is derived from the bridge's secret
+    (`connectionOrigin`), so no client can get under it, and a future bridge
+    bug that forgets to neutralise fails closed instead of handing a stranger
+    the terminal. Any new stranger-facing origin must join that refusal.
