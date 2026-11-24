@@ -227,3 +227,29 @@ test("screen returns the last screen received", async () => {
   }
 });
 
+
+test("runs when invoked through a SYMLINKED skill directory (group HOME)", async () => {
+  // In a group HOME, ~/.claude/skills/shadok-ai-agents is a symlink to the
+  // machine-wide copy. path.resolve(argv[1]) does not follow links while
+  // import.meta.url does, so a naive entry guard exited 0 printing nothing.
+  const { execFile } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const skillDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-link-"));
+  const link = path.join(dir, "shadok-ai-agents");
+  fs.symlinkSync(skillDir, link);
+  const mock = await startMockServer({ sessions: [{ id: "old-1", mtime: 123 }] });
+  const res = await new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [path.join(link, "pilotctl.mjs"), "list"],
+      { env: { ...process.env, SHADOK_PORT: String(mock.port) } },
+      (e, out, err) => resolve({ code: e ? (e.code ?? 1) : 0, out, err }),
+    );
+  });
+  await mock.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.code, 0, res.err);
+  assert.notEqual(res.out.trim(), "", "no output through the link");
+  assert.deepEqual(JSON.parse(res.out).resumable, [{ id: "old-1", mtime: 123 }]);
+});
