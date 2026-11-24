@@ -3,6 +3,7 @@ import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
 import { type Folder, sanitizeFolders } from "./agent-folders.js";
 import os from "node:os";
 import path from "node:path";
+import { findWaChannel, type WaBinding } from "./wa-guests.js";
 
 /** A Telegram chat/topic a channel is bound to (folded into the channel). */
 export interface TgBinding {
@@ -32,6 +33,12 @@ export interface Channel {
   home?: boolean;
   /** Present iff the session is bound to a Telegram chat/topic — what IS. */
   telegram?: TgBinding | null;
+  /** Present iff the session belongs to a WhatsApp sender — its OWN field,
+   *  never `telegram`: Telegram code reads the sign of a `chatId` all over
+   *  (home channel, DM reattach, owner adoption), and a phone number written
+   *  there would be read as a Telegram chat. Server-owned; written by the
+   *  WhatsApp bridge only, from an inbound message (src/wa-guests.ts). */
+  whatsapp?: WaBinding | null;
   /** What the user WANTS: should this channel also live in Telegram?
    *  Distinct from `telegram` — without an explicit intent, "not mirrored yet"
    *  and "deliberately not mirrored" are indistinguishable, and the reconcile
@@ -107,6 +114,9 @@ export interface Channel {
  * from an old tab's PUT): with no intent, the binding decides.
  */
 export function isMirrored(c: Channel): boolean {
+  // A WhatsApp guest's conversation is never published elsewhere — whatever a
+  // tab asks (`mirror` is client-owned, so asking is all a tab can do).
+  if (c.whatsapp) return false;
   return c.mirror ?? !!c.telegram;
 }
 
@@ -117,7 +127,7 @@ export function isMirrored(c: Channel): boolean {
  * only resume its own agents" — which broke any multi-step remote exchange
  * (the holder's first resume ran; the browser's next sync wiped the owner). Same
  * loss as `profile`/`parent` before they were listed here. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "group", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills", "createdBy"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "whatsapp", "profile", "model", "effort", "parent", "home", "group", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills", "createdBy"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -318,6 +328,15 @@ export function channelForTelegram(chatId: number, threadId?: number): Channel |
   return findTelegramChannel(loadChannels(), chatId, threadId);
 }
 
+/** The channel bound to this WhatsApp sender on this linked account. */
+export function findWhatsAppChannel(
+  list: Channel[],
+  account: string,
+  sender: { lid: string | null; pn: string | null },
+): Channel | undefined {
+  return findWaChannel(list, account, sender);
+}
+
 /**
  * Pure core of the PUT merge (exported for testing). The client drives order
  * and its own metadata (name, group); server-owned fields are preserved per
@@ -374,6 +393,9 @@ export function mergeChannels(
       // are UPDATES; this extends the same wall to genuinely new rows.
       const born = { ...c };
       delete born.group;
+      // Same wall for the WhatsApp binding: a browser that planted one could
+      // make the bridge send to a number that never wrote.
+      delete born.whatsapp;
       result.push(born);
       continue;
     }
@@ -383,6 +405,7 @@ export function mergeChannels(
     // browser PUT can neither change them (above) nor introduce them.
     if (prev.skills === undefined) delete merged.skills;
     if (prev.createdBy === undefined) delete merged.createdBy;
+    if (prev.whatsapp === undefined) delete merged.whatsapp;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
     // Same for `folder`: a tab pushes it only when it filed the agent itself, so
     // one that had not seen a move made elsewhere cannot write the old one back.
@@ -397,8 +420,8 @@ export function mergeChannels(
   }
   for (const c of stored) {
     if (seen.has(c.sessionId)) continue;
-    // never erase live/Telegram, nor a row the caller cannot even see
-    if (liveIds.has(c.sessionId) || c.telegram || !canSee(c)) result.push(c);
+    // never erase live/Telegram/WhatsApp, nor a row the caller cannot even see
+    if (liveIds.has(c.sessionId) || c.telegram || c.whatsapp || !canSee(c)) result.push(c);
   }
   // The main channel — a GROUP's General topic (no threadId) — is always named
   // "general", server-authoritative so a stale client can't rename it. A DM

@@ -2,7 +2,9 @@
 
 Design, drafted 2026-11-23 and checked once against the code by a reader in
 the builder's seat. Approved 2026-11-23. Status: step 1 (the seam, linking and
-the panel) implemented; steps 2 and 3 not yet.
+the panel) implemented; step 2 (the binding, the guest door, text both ways)
+implemented — plan `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`;
+step 3 not yet.
 
 ## Intent
 

@@ -131,6 +131,8 @@ export type ConnectionFacts = {
   systemDrive: boolean;
   /** Presented the per-process Telegram-bridge secret (src/telegram.ts). */
   telegramBridge: boolean;
+  /** Presented the per-process WhatsApp-bridge secret (src/wa-bridge.ts). */
+  whatsappBridge: boolean;
   /** Signed by a verified agent session key (pilotctl inside an agent). */
   agent: boolean;
   /** Authenticated as a peer instance (`x-shadok-peer`). */
@@ -160,6 +162,7 @@ const LOCAL_CLAIMS = new Set(["cli", "boot"]);
 export function connectionOrigin(c: ConnectionFacts, claimed: unknown): string {
   if (c.systemDrive) return "cron";
   if (c.telegramBridge) return "telegram";
+  if (c.whatsappBridge) return "whatsapp";
   if (c.agent) return "agent";
   if (c.peer) return "peer";
   if (c.browser) return "web";

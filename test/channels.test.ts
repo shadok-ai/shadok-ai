@@ -520,3 +520,40 @@ test("mainGroupHeal: restores main into an observed list missing it, keeping eve
   assert.deepEqual(mainGroupHeal(stored)?.map((g) => g.id), ["main", "2", "p1"]);
   assert.equal(mainGroupHeal(ensureMainGroup(stored)), null);
 });
+
+// ── the WhatsApp binding (its own field, never Channel.telegram) ────────────
+import { findWhatsAppChannel } from "../src/channels.js";
+
+const WA_ROW: Channel = {
+  sessionId: "wa1",
+  cwd: "/home/g/wa-100000000000001",
+  name: "Grace",
+  group: "g1",
+  whatsapp: { account: "33600000000@s.whatsapp.net", id: "100000000000001@lid", phone: "33611111111" },
+};
+
+test("mergeChannels: a WhatsApp-bound row the browser omitted survives the sync", () => {
+  const out = mergeChannels([WA_ROW], [], new Set());
+  assert.deepEqual(out, [WA_ROW]);
+});
+
+test("mergeChannels: a browser can neither drop nor rewrite the WhatsApp binding", () => {
+  const out = mergeChannels([WA_ROW], [{ sessionId: "wa1", cwd: "x", name: "renamed", whatsapp: null } as Channel], new Set());
+  assert.deepEqual(out[0].whatsapp, WA_ROW.whatsapp);
+  assert.equal(out[0].name, "renamed");
+  const planted = mergeChannels([], [{ sessionId: "new", cwd: "x", whatsapp: WA_ROW.whatsapp } as Channel], new Set());
+  assert.equal(planted[0].whatsapp, undefined, "a browser cannot plant a binding on a new row");
+});
+
+test("a WhatsApp-bound row is never a Telegram chat and never mirrored", () => {
+  assert.equal(isMirrored(WA_ROW), false);
+  assert.equal(isMirrored({ ...WA_ROW, mirror: true }), false, "even when a tab asks for it");
+  assert.equal(findTelegramChannel([WA_ROW], 33611111111), undefined);
+  // The main-channel naming rule reads `telegram` only: the guest keeps its name.
+  assert.equal(mergeChannels([WA_ROW], [WA_ROW], new Set())[0].name, "Grace");
+});
+
+test("findWhatsAppChannel: by account and person", () => {
+  assert.equal(findWhatsAppChannel([WA_ROW], "33600000000@s.whatsapp.net", { lid: "100000000000001@lid", pn: null })?.sessionId, "wa1");
+  assert.equal(findWhatsAppChannel([WA_ROW], "33699999999@s.whatsapp.net", { lid: "100000000000001@lid", pn: null }), undefined);
+});

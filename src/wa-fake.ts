@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WaAccount } from "./wa-link.js";
+import type { WaInbound } from "./wa-guests.js";
 import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-transport.js";
 import type { RunCommand } from "./wa-library.js";
 
@@ -41,6 +42,13 @@ export interface FakeScript {
    *  "reconnecting". */
   offline(): void;
   online(): void;
+  /** Someone writes to the linked number. Delivered at once to a connected
+   *  device (and then acknowledged, gone from the server, as the library does
+   *  on receipt), or held while the device is away and delivered after its
+   *  next open — the two facts a restart test must rest on. */
+  deliver(m: Partial<WaInbound> & { chat: string }): void;
+  /** The transport learns that this phone address is that LID. */
+  mapLid(pn: string, lid: string): void;
 }
 
 const CREDS = "fake-creds.json";
@@ -54,15 +62,33 @@ function readCreds(dir: string): WaAccount | null {
   }
 }
 
-export function makeFakeTransport(): { factory: WaTransportFactory; script: FakeScript; starts: number; stops: number } {
+export function makeFakeTransport(): {
+  factory: WaTransportFactory;
+  script: FakeScript;
+  starts: number;
+  stops: number;
+  /** Messages the fake's "server" still holds for an absent device. */
+  held: number;
+  sent: { to: string; text: string }[];
+  typing: { to: string; on: boolean }[];
+} {
   let starts = 0;
+  let msgSeq = 0;
+  const held: WaInbound[] = [];
+  const sent: { to: string; text: string }[] = [];
+  const typing: { to: string; on: boolean }[] = [];
+  const lids = new Map<string, string>();
   let stops = 0;
   let qrSeq = 0;
   let failLogout = false;
   let offline = false;
   // Only the most recently started, not yet stopped transport is scriptable:
   // a stopped one must never emit again, exactly like a closed socket.
-  let current: { dir: string; emit: (e: WaTransportEvent) => void; silent: boolean; qrs: number } | null = null;
+  let current: { dir: string; emit: (e: WaTransportEvent) => void; silent: boolean; qrs: number; open: boolean } | null = null;
+  const isOpen = () => !!current && current.open && !current.silent;
+  const flushHeld = () => {
+    while (held.length && isOpen()) emit({ type: "message", msg: held.shift()! });
+  };
 
   const emit = (e: WaTransportEvent) => {
     if (current && !current.silent) current.emit(e);
@@ -79,11 +105,14 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     const t: WaTransport = {
       async start(on) {
         starts++;
-        mine = { dir: sessionDir, emit: on, silent: offline, qrs: 0 };
+        mine = { dir: sessionDir, emit: on, silent: offline, qrs: 0, open: false };
         current = mine;
         const creds = readCreds(sessionDir);
-        if (creds) emit({ type: "open", account: creds });
-        else nextQr();
+        if (creds && !mine.silent) {
+          mine.open = true;
+          emit({ type: "open", account: creds });
+          flushHeld();
+        } else if (!creds) nextQr();
       },
       async logout() {
         if (failLogout) {
@@ -97,6 +126,17 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
         if (current === mine) current = null;
         mine = null;
       },
+      async sendText(to, text) {
+        if (!mine || current !== mine || !isOpen()) throw new Error("fake: not connected");
+        sent.push({ to, text });
+      },
+      async setTyping(to, on) {
+        if (!mine || current !== mine || !isOpen()) throw new Error("fake: not connected");
+        typing.push({ to, on });
+      },
+      async resolveLid(pn) {
+        return lids.get(pn) ?? null;
+      },
     };
     return t;
   };
@@ -108,6 +148,7 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
       emit({ type: "close", reason: "restart" });
     },
     drop() {
+      if (current) current.open = false;
       emit({ type: "close", reason: "lost" });
     },
     goSilent() {
@@ -137,6 +178,24 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     online() {
       offline = false;
     },
+    deliver(m) {
+      const msg: WaInbound = {
+        id: m.id ?? `FAKE${++msgSeq}`,
+        chat: m.chat,
+        ...(m.chatAlt ? { chatAlt: m.chatAlt } : {}),
+        fromMe: m.fromMe ?? false,
+        live: m.live ?? true,
+        unreadable: m.unreadable ?? false,
+        ...(m.text !== undefined ? { text: m.text } : {}),
+        ...(m.pushName ? { pushName: m.pushName } : {}),
+        at: m.at ?? Date.now(),
+      };
+      held.push(msg);
+      flushHeld();
+    },
+    mapLid(pn, lid) {
+      lids.set(pn, lid);
+    },
   };
 
   return {
@@ -148,6 +207,11 @@ export function makeFakeTransport(): { factory: WaTransportFactory; script: Fake
     get stops() {
       return stops;
     },
+    get held() {
+      return held.length;
+    },
+    sent,
+    typing,
   };
 }
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WaAccount } from "./wa-link.js";
+import type { WaInbound } from "./wa-guests.js";
 
 /**
  * The seam between shadok and whatever WhatsApp library sits behind it.
@@ -11,8 +12,9 @@ import type { WaAccount } from "./wa-link.js";
  * is the only way to exercise the link without a phone. Only `wa-baileys.ts`
  * may import the library itself; a test scans for it.
  *
- * Step 1 covers linking only. The message-carrying half of the seam (inbound
- * events, sendText, sendFile, setTyping) arrives with step 2.
+ * Step 2 adds the message-carrying half: inbound `message` events (already
+ * reduced to the library-neutral `WaInbound`), `sendText`, `setTyping` and
+ * `resolveLid`. Files (`sendFile`) arrive with step 3.
  */
 
 export type WaTransportEvent =
@@ -21,7 +23,11 @@ export type WaTransportEvent =
   | { type: "alive" }
   /** `fatal`: WhatsApp refused for good (banned, replaced, bad session) — retrying
    *  changes nothing, so the handle stops and the panel says `detail`. */
-  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error" | "fatal"; detail?: string };
+  | { type: "close"; reason: "restart" | "lost" | "logged-out" | "error" | "fatal"; detail?: string }
+  /** One inbound message. The library ACKNOWLEDGES it on receipt, before
+   *  anything of ours runs — whoever consumes this owes it a persisted inbox
+   *  (`wa-inbox.ts`), or a restart in between loses it for good. */
+  | { type: "message"; msg: WaInbound };
 
 export interface WaTransport {
   /** Connect (or resume the stored session). Events until `stop`. */
@@ -31,6 +37,14 @@ export interface WaTransport {
   /** Resolves only once nothing more can be written to the session directory:
    *  an unlink wipes right after it, and the directory must STAY empty. */
   stop(): Promise<void>;
+  /** Send a text to a person's address. Rejects when not connected. The bridge
+   *  calls it only for an existing binding (`sendAllowed`). */
+  sendText(to: string, text: string): Promise<void>;
+  /** Show (or stop showing) "typing…" in that person's chat. */
+  setTyping(to: string, on: boolean): Promise<void>;
+  /** The LID the transport knows for a phone-number address, or null — what
+   *  lets a PN-only message find a person already bound under their LID. */
+  resolveLid(pn: string): Promise<string | null>;
 }
 
 export type WaTransportFactory = (o: { sessionDir: string }) => Promise<WaTransport>;

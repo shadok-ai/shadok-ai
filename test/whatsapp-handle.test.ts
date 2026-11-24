@@ -716,3 +716,74 @@ test("a refusal that lands while installing wins, and the install's success star
   assert.equal(h.state().phase, "unavailable");
   assert.equal(fake.starts, 0);
 });
+
+// ── the message half (step 2) ───────────────────────────────────────────────
+
+test("an inbound message reaches the listener, and counts as a sign of life", async () => {
+  const { h, fake, c } = setup();
+  const got: string[] = [];
+  h.onMessage((m) => got.push(m.text ?? ""));
+  await linkAndScan(h, fake);
+  await c.advance(LIVENESS_MS - 10_000);
+  fake.script.deliver({ chat: "100000000000001@lid", text: "hello" });
+  assert.deepEqual(got, ["hello"]);
+  await c.advance(20_000);
+  assert.equal(h.state().phase, "connected", "the message refreshed the liveness clock");
+});
+
+test("account(): the linked number, device dropped — also from a stored session while reconnecting", async () => {
+  const { h, fake, dir } = setup();
+  assert.equal(h.account(), null);
+  await linkAndScan(h, fake);
+  assert.equal(h.account(), "33600000000@s.whatsapp.net");
+  await h.stop();
+  fake.script.offline();
+  const again = setup({ dir, fake });
+  await flush();
+  assert.equal(again.h.state().phase, "reconnecting");
+  assert.equal(again.h.account(), "33600000000@s.whatsapp.net");
+  await again.h.stop();
+});
+
+test("sendText goes through the current transport only while connected", async () => {
+  const { h, fake, c } = setup();
+  await assert.rejects(h.sendText("100000000000001@lid", "x"), /not connected/);
+  await linkAndScan(h, fake);
+  await h.sendText("100000000000001@lid", "hi");
+  await h.setTyping("100000000000001@lid", true);
+  assert.deepEqual(fake.sent, [{ to: "100000000000001@lid", text: "hi" }]);
+  assert.deepEqual(fake.typing, [{ to: "100000000000001@lid", on: true }]);
+  fake.script.drop();
+  await flush();
+  assert.equal(h.state().phase, "reconnecting");
+  await assert.rejects(h.sendText("100000000000001@lid", "lost"), /not connected/);
+  // whenConnected waits for the reconnect rather than dropping.
+  const waiting = h.whenConnected(60_000);
+  await c.advance(5_000);
+  assert.equal(await waiting, true);
+  await h.sendText("100000000000001@lid", "back");
+  assert.equal(fake.sent.at(-1)?.text, "back");
+});
+
+test("whenConnected gives up after its bound, and onConnected fires on every (re)connect", async () => {
+  const { h, fake, c } = setup();
+  let opens = 0;
+  h.onConnected(() => opens++);
+  const w = h.whenConnected(10_000);
+  await c.advance(11_000);
+  assert.equal(await w, false);
+  await linkAndScan(h, fake);
+  assert.equal(opens, 1);
+  fake.script.drop();
+  await flush();
+  await c.advance(5_000);
+  assert.equal(h.state().phase, "connected");
+  assert.equal(opens, 2);
+});
+
+test("resolveLid asks the transport", async () => {
+  const { h, fake } = setup();
+  await linkAndScan(h, fake);
+  fake.script.mapLid("33611111111@s.whatsapp.net", "100000000000001@lid");
+  assert.equal(await h.resolveLid("33611111111@s.whatsapp.net"), "100000000000001@lid");
+});

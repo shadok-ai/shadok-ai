@@ -92,6 +92,9 @@ import { homeGreetingBrief, instanceContextInterviewBrief } from "./greeting.js"
 import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, migratedIsolationRefusal, probeCanProvision } from "./capability.js";
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp.js";
+import { waGuestWorkDirName } from "./wa-guests.js";
+import { startWaBridge, type WaBridge } from "./wa-bridge.js";
+import { openInbox, waStateDir } from "./wa-inbox.js";
 import { waSessionDir } from "./wa-transport.js";
 import { linkView } from "./wa-link.js";
 import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "./wa-baileys.js";
@@ -383,6 +386,8 @@ import {
   type TelegramPatch,
   guestSetupForCwd,
   setGuestSetupForCwd,
+  waGuestSetupForCwd,
+  setWaGuestSetupForCwd,
 } from "./config.js";
 import {
   secretsFor,
@@ -803,6 +808,11 @@ const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
 // bridge's cookie cannot serve: `driveChannel` presents the very same one, and
 // with no password there is no cookie at all.
 const TELEGRAM_BRIDGE_SECRET = randomBytes(32).toString("hex");
+// The WhatsApp bridge's own proof (src/wa-bridge.ts), on the same terms and for
+// the same reasons — and a DIFFERENT secret, because the server picks the guest
+// setup by which bridge a socket proved: a Telegram socket must never spawn on
+// the WhatsApp door's profile, nor the reverse.
+const WHATSAPP_BRIDGE_SECRET = randomBytes(32).toString("hex");
 /** Does a request present `secret` in header `name`? Constant time, length-guarded. */
 function presentsSecret(req: { headers: Record<string, unknown> }, name: string, secret: string): boolean {
   const raw = req.headers[name];
@@ -7796,6 +7806,7 @@ async function telegramState(viewer: Viewer | null = null) {
 // "session" in a directory of its own so it can never touch a real one.
 const waFake = process.env.SHADOK_WA_FAKE === "1" ? makeFakeTransport() : null;
 let waHandleRef: WhatsAppHandle | null = null;
+let waBridgeRef: WaBridge | null = null;
 const waHandle = (): WhatsAppHandle | null => waHandleRef;
 let waLibRef: WaLibrary | null = null;
 const waLib = (): WaLibrary | null => waLibRef;
@@ -7823,6 +7834,24 @@ function startWhatsAppHandle(): void {
     refusal: () => migratedIsolationRefusal(DEPLOYMENT_MODE, groupsMigrated),
     loadFactory: waFake ? async () => waFake.factory : async () => loadBaileysFactory(lib.entryUrl()),
     library: lib,
+  });
+  // Step 2: the bridge — one loopback socket per person who writes, each
+  // proving the WhatsApp bridge secret, so the server derives the `whatsapp`
+  // origin and the WhatsApp guest door from the CONNECTION (invariant 61).
+  const handle = waHandleRef;
+  const stateDir = waStateDir(os.homedir(), instanceKey());
+  waBridgeRef = startWaBridge({
+    handle,
+    connect: () => {
+      const cookie = tgCookie();
+      return new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, {
+        headers: { ...(cookie ? { cookie } : {}), "x-shadok-wa-bridge": WHATSAPP_BRIDGE_SECRET },
+      });
+    },
+    setup: () => waGuestSetupForCwd(loadConfig(), process.cwd()),
+    channels: { load: loadChannels, upsert: upsertChannel },
+    inbox: openInbox(path.join(waFake ? `${stateDir}-fake` : stateDir, "inbox.json")),
+    sessionAlive: (id) => tmuxHasSession("sk-" + id),
   });
 }
 
@@ -7854,9 +7883,19 @@ app.get("/whatsapp", async (req, res) => {
   }
   delete out.qr;
   out.stored = wa.hasStoredSession();
+  // The guest door (step 2), and the restricted groups THIS admin may put
+  // strangers in — per caller, exactly like Telegram's picker.
+  out.guests = waGuestSetupForCwd(loadConfig(), process.cwd());
+  out.guestGroups = guestGroupChoices(loadGroups(), viewerFor(currentAccount(req))).map((g) => ({ id: g.id, name: g.name }));
   // Before the first Link: the panel says that Link downloads the library.
   out.library = waLib()?.status();
-  if (waFake) out.fake = true;
+  if (waFake) {
+    out.fake = true;
+    // What the fake "phone" received — the side instance's only way to read
+    // the bridge's answers. Fake mode only: a real instance never echoes a
+    // guest's conversation through this route.
+    out.fakeSent = waFake.sent.slice(-20);
+  }
   res.json(out);
 });
 app.post("/whatsapp/link", (req, res) => {
@@ -7894,13 +7933,63 @@ app.delete("/whatsapp/link", async (req, res) => {
   if (!r.ok) return res.status(r.nothing ? 409 : 500).json({ error: r.error });
   res.json({ ok: true });
 });
-const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal"] as const;
+// The WhatsApp guest door: which restricted group strangers' agents are born
+// into, which profile they run on, and the switch. The same decision as
+// Telegram's (`guestPatchFlow`), with Telegram's door as the OTHER one: the
+// instance leaves a group only when neither door still targets it. Read live
+// by the bridge on every message, so nothing restarts.
+app.put("/whatsapp/guests", (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the WhatsApp link")) return;
+  // Unavailable is about the deployment (mono-tenant, or groups not migrated):
+  // a door saved there would open the day the gate lifts, unseen.
+  const refusal = migratedIsolationRefusal(DEPLOYMENT_MODE, groupsMigrated);
+  if (refusal) return res.status(409).json({ error: refusal });
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const cwd = process.cwd();
+  const want: GuestSetup = {
+    // Only an explicit `true` opens: a hand-made request must never open a
+    // door by omitting a field.
+    mode: b.on === true ? "dm-only" : "group",
+    group: typeof b.group === "string" ? b.group : null,
+    profile: typeof b.profile === "string" ? b.profile : null,
+  };
+  const flow = guestPatchFlow({
+    mode: DEPLOYMENT_MODE,
+    previous: waGuestSetupForCwd(loadConfig(), cwd),
+    want,
+    groups: loadGroups(),
+    profileExists: (n) => !!getProfile(n),
+    // WhatsApp has no owner to protect: its door is always `dm-only`.
+    hasOwner: true,
+    other: guestSetupForCwd(loadConfig(), cwd),
+  });
+  if (!flow.ok) return res.status(flow.status).json({ error: flow.error });
+  saveGroups(flow.groups);
+  setWaGuestSetupForCwd(loadConfig(), cwd, flow.setup);
+  // The membership this door would have taken back stays for Telegram's: it
+  // is now Telegram's to take back when IT closes.
+  if (flow.handOver) setGuestSetupForCwd(loadConfig(), cwd, { ...guestSetupForCwd(loadConfig(), cwd), joined: true });
+  res.json({ guests: waGuestSetupForCwd(loadConfig(), cwd) });
+});
+
+const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal", "deliver", "mapLid"] as const;
 app.post("/whatsapp/fake/:action", (req, res) => {
   if (!waFake) return res.status(404).json({ error: "not found" });
   if (!accountAdmin(req, res, true, "drive the fake WhatsApp transport")) return;
   const action = String(req.params.action) as (typeof WA_FAKE_ACTIONS)[number];
   if (!WA_FAKE_ACTIONS.includes(action)) return res.status(400).json({ error: "unknown action" });
-  (waFake.script as FakeScript)[action]();
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string) : undefined);
+  if (action === "deliver") {
+    // Someone "writes" to the fake number: the side-instance stand-in for a phone.
+    const chat = str("chat");
+    if (!chat) return res.status(400).json({ error: "chat is required" });
+    waFake.script.deliver({ chat, chatAlt: str("chatAlt"), text: str("text"), pushName: str("pushName"), id: str("id") });
+  } else if (action === "mapLid") {
+    const pn = str("pn"), lid = str("lid");
+    if (!pn || !lid) return res.status(400).json({ error: "pn and lid are required" });
+    waFake.script.mapLid(pn, lid);
+  } else (waFake.script as FakeScript)[action]();
   res.json({ ok: true });
 });
 
@@ -7968,10 +8057,13 @@ app.put("/telegram", async (req, res) => {
       // cannot be saved before the DMs are paired — it would be a door that
       // cannot open. `dm-only` has no owner at all and is exempt.
       hasOwner: loadTgOwner() !== null,
+      // The instance's membership is shared with the WhatsApp door.
+      other: waGuestSetupForCwd(loadConfig(), cwd),
     });
     if (!flow.ok) return res.status(flow.status).json({ error: flow.error });
     saveGroups(flow.groups);
     setGuestSetupForCwd(loadConfig(), cwd, flow.setup);
+    if (flow.handOver) setWaGuestSetupForCwd(loadConfig(), cwd, { ...waGuestSetupForCwd(loadConfig(), cwd), joined: true });
     guestsChanged = true;
   }
 
@@ -9182,7 +9274,7 @@ type ClientMessage =
        * it: the channel's Telegram binding is written at `ready`, after the
        * spawn that needs it.
        */
-      guestKey?: number;
+      guestKey?: number | string;
       cwd?: string;
       resume?: string;
       continue?: boolean;
@@ -11889,6 +11981,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   })();
   // The Telegram bridge, proved the same way (its own secret, same compare).
   const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
+  // The WhatsApp bridge, proved by its own secret (same compare).
+  const isWhatsAppBridge = presentsSecret(req, "x-shadok-wa-bridge", WHATSAPP_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
@@ -12065,6 +12159,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             {
               systemDrive: isSystemDrive,
               telegramBridge: isTelegramBridge,
+              whatsappBridge: isWhatsAppBridge,
               agent: !!callerAgent,
               peer: !!callerPeer && !callerAgent,
               browser: fromBrowser,
@@ -12079,12 +12174,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Everything that matters is then read from the CONFIGURATION, so no
           // loopback client can place an agent in that group or pick the role
           // strangers drive (invariant 49).
-          const guestPlan = guestSpawnPlan({
-            marker: msg.guest,
-            fromBridge: isTelegramBridge,
-            resuming: !!msg.resume,
-            setup: msg.guest === true ? guestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
-          });
+          // Two bridges, two doors: the setup is the one of the bridge this socket
+          // PROVED (its secret), never one a frame names — a Telegram socket
+          // never spawns on the WhatsApp door's profile, nor the reverse.
+          const guestPlan = isWhatsAppBridge
+            ? guestSpawnPlan({
+                marker: msg.guest,
+                fromBridge: isWhatsAppBridge,
+                resuming: !!msg.resume,
+                setup: msg.guest === true ? waGuestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
+              })
+            : guestSpawnPlan({
+                marker: msg.guest,
+                fromBridge: isTelegramBridge,
+                resuming: !!msg.resume,
+                setup: msg.guest === true ? guestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
+              });
           if (guestPlan.kind === "refused") return fail(guestPlan.message, guestPlan.code);
           const guestSetup = guestPlan.kind === "guest" ? guestPlan : null;
           const guestGroupId = guestSetup?.group ?? null;
@@ -12231,7 +12336,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // memory and where `CLAUDE.md` is read, so one person's agent
             // loaded the notes another person's agent had written, with
             // nothing on screen to show it (`guestWorkDirName`).
-            if (guestSetup) {
+            // `wa-<digits>` for a WhatsApp sender, `tg-<id>` for Telegram: each
+            // rebuilt from its own bridge's id, never from the other's.
+            if (guestSetup && isWhatsAppBridge) {
+              const sub = waGuestWorkDirName(msg.guestKey);
+              if (!sub) return fail("a guest's agent needs the person it belongs to", "guest-key");
+              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), sub, earlyUser);
+            } else if (guestSetup) {
               const sub = guestWorkDirName(msg.guestKey);
               // No usable id → REFUSE, never fall back to the shared home: a
               // silent fallback is exactly the mixing this closes, and it would
@@ -12453,7 +12564,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // account on the instance.
           if (guestSetup && agentGroupId !== guestSetup.group) {
             console.log(
-              `telegram: guest spawn refused — resolved group ${agentGroupId ?? "none"} is not the configured ${guestSetup.group}`,
+              `${isWhatsAppBridge ? "whatsapp" : "telegram"}: guest spawn refused — resolved group ${agentGroupId ?? "none"} is not the configured ${guestSetup.group}`,
             );
             return fail(
               "the configured guest group is not usable from here — a guest's agent must never land anywhere else",
@@ -12616,6 +12727,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (session.busy) return fail("a response is already in progress", "busy");
           const text = msg.text.trim();
           if (!text) return;
+          // A WhatsApp guest is a stranger, and this bridge has no command
+          // dispatcher to stop them: a bare `/clear` or `/login` would reach the
+          // terminal as a COMMAND. The bridge neutralises a leading command name
+          // (src/wa-format.ts); this is the guarantee behind it, because a
+          // bridge is not where a guarantee should live.
+          if (origin === "whatsapp" && isSlashCommand(text))
+            return fail("commands are not accepted from WhatsApp", "command-refused");
           // The Telegram bridge is trusted to name its sender — it knows it. A
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
@@ -12692,7 +12810,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const command = isSlashCommand(text);
             if (
               !command &&
-              (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent" || origin === "peer")
+              (origin === "web" || origin === "telegram" || origin === "whatsapp" || origin === "cli" || origin === "agent" || origin === "peer")
             ) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
@@ -12701,7 +12819,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
               // Only the bridge transcribes voice notes, so only it may say so.
-              const platform = msg.voice === true && origin === "telegram" ? `${origin} vocal` : origin;
+              const platform = msg.voice === true && (origin === "telegram" || origin === "whatsapp") ? `${origin} vocal` : origin;
               // An agent header ends with the sender's REPLY ADDRESS — its short
               // session id — because a name is not an address: nothing makes tab
               // names unique and every tool takes an id, so naming the sender was

@@ -19,7 +19,7 @@ interface Spec {
   sessionDir?: string;
   probe?: boolean;
 }
-type Cmd = { id: number; cmd: "start" | "logout" | "stop" };
+type Cmd = { id: number; cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid"; args?: unknown[] };
 
 const port = parentPort!;
 const spec = workerData as Spec;
@@ -31,10 +31,21 @@ if (spec.probe) {
 } else {
   const t: WaTransport = await factory({ sessionDir: spec.sessionDir! });
   port.on("message", (m: Cmd) => {
-    const run =
-      m.cmd === "start" ? t.start((e) => port.postMessage({ ev: e })) : m.cmd === "logout" ? t.logout() : t.stop();
+    const a = Array.isArray(m.args) ? m.args : [];
+    const run: Promise<unknown> =
+      m.cmd === "start"
+        ? t.start((e) => port.postMessage({ ev: e }))
+        : m.cmd === "logout"
+          ? t.logout()
+          : m.cmd === "sendText"
+            ? t.sendText(String(a[0]), String(a[1]))
+            : m.cmd === "setTyping"
+              ? t.setTyping(String(a[0]), a[1] === true)
+              : m.cmd === "resolveLid"
+                ? t.resolveLid(String(a[0]))
+                : t.stop();
     run.then(
-      () => port.postMessage({ id: m.id, ok: true }),
+      (value) => port.postMessage({ id: m.id, ok: true, value }),
       (e: unknown) => port.postMessage({ id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) }),
     );
   });

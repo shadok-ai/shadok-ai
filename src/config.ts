@@ -10,6 +10,7 @@ import {
   normalizeGuestSetup,
   normalizeTgMode,
 } from "./tg-guests.js";
+import { waGuestSetup } from "./wa-guests.js";
 
 /**
  * Global CLI config at ~/.shadok-ai/config.json (mode 600). The Telegram bot
@@ -46,6 +47,13 @@ export interface Config {
     string,
     { mode?: string; on?: boolean; group?: string | null; profile?: string | null; joined?: boolean }
   >;
+  /**
+   * Per launch-directory WhatsApp guest door (`src/wa-guests.ts`): the same
+   * shape as `telegramGuests`, its own key — the server picks the setup by
+   * which bridge secret a socket proved, so the two never mix. `mode` is
+   * `dm-only` (open) or `group` (shut); WhatsApp has no other.
+   */
+  whatsappGuests?: Record<string, { mode?: string; group?: string | null; profile?: string | null; joined?: boolean }>;
   /** Optional GUI password (also settable via SHADOK_GUI_PASSWORD). */
   guiPassword?: string;
   /**
@@ -406,6 +414,23 @@ export function applyGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config
     ...(s.joined ? { joined: true } : {}),
   };
   return cfg;
+}
+
+/** This directory's WhatsApp guest door — shut whenever absent or malformed. */
+export function waGuestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
+  return waGuestSetup(cfg.whatsappGuests?.[cwd]);
+}
+
+/** Pure: set this directory's WhatsApp guest door on `cfg` (caller persists). */
+export function applyWaGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config {
+  cfg.whatsappGuests ??= {};
+  const w = waGuestSetup(s);
+  cfg.whatsappGuests[cwd] = { mode: w.mode, group: w.group, profile: w.profile, ...(w.joined ? { joined: true } : {}) };
+  return cfg;
+}
+
+export function setWaGuestSetupForCwd(cfg: Config, cwd: string, s: GuestSetup): void {
+  saveConfig(applyWaGuestSetup(cfg, cwd, s));
 }
 
 /** Set this directory's Telegram mode and open-DM setup, and persist. */

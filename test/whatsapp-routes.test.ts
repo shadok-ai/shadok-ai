@@ -92,3 +92,49 @@ test("GET /whatsapp passes on why a QR could not be drawn", () => {
   const r = route('app.get("/whatsapp",');
   assert.match(r, /out\.qrError = drawn\.error/);
 });
+
+// ── step 2: the bridge's identity and the guest door ────────────────────────
+
+test("the WhatsApp bridge proves its own per-process secret, and that alone makes it whatsapp", () => {
+  assert.match(SRC, /const WHATSAPP_BRIDGE_SECRET = randomBytes\(32\)\.toString\("hex"\)/);
+  assert.match(SRC, /const isWhatsAppBridge = presentsSecret\(req, "x-shadok-wa-bridge", WHATSAPP_BRIDGE_SECRET\)/);
+  assert.match(SRC, /whatsappBridge: isWhatsAppBridge,/);
+});
+
+test("a guest spawn reads the setup of the bridge the socket PROVED, and names the wa- directory", () => {
+  assert.match(SRC, /const guestPlan = isWhatsAppBridge\s*\? guestSpawnPlan\(\{\s*marker: msg\.guest,\s*fromBridge: isWhatsAppBridge,/);
+  assert.match(SRC, /setup: msg\.guest === true \? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\) : GUEST_SETUP_OFF/);
+  assert.match(SRC, /if \(guestSetup && isWhatsAppBridge\) \{\s*const sub = waGuestWorkDirName\(msg\.guestKey\);\s*if \(!sub\) return fail\([^)]*"guest-key"\)/);
+});
+
+test("the server refuses a bare slash command from the whatsapp origin", () => {
+  const i = SRC.indexOf('case "prompt": {');
+  const body = SRC.slice(i, SRC.indexOf('case "run": {', i));
+  assert.match(body, /if \(origin === "whatsapp" && isSlashCommand\(text\)\)\s*return fail\([^)]*"command-refused"\)/);
+  // …and the refusal sits BEFORE anything is submitted.
+  assert.ok(body.indexOf('"command-refused"') < body.indexOf("submitRecovering("));
+  // A WhatsApp prompt carries the context header, and may say it was spoken.
+  assert.match(body, /origin === "telegram" \|\| origin === "whatsapp" \|\| origin === "cli"/);
+  assert.match(body, /msg\.voice === true && \(origin === "telegram" \|\| origin === "whatsapp"\)/);
+});
+
+test("PUT /whatsapp/guests is an admin browser write, refused while unavailable, run through the shared flow", () => {
+  const r = route('app.put("/whatsapp/guests",');
+  assert.match(r, /accountAdmin\(req, res, true,/);
+  assert.match(r, /migratedIsolationRefusal\(DEPLOYMENT_MODE, groupsMigrated\)/);
+  assert.match(r, /guestPatchFlow\(/);
+  assert.match(r, /other: guestSetupForCwd\(loadConfig\(\), cwd\)/);
+  assert.match(r, /if \(flow\.handOver\)/);
+});
+
+test("PUT /telegram passes the WhatsApp door as the other one", () => {
+  const r = route('app.put("/telegram",');
+  assert.match(r, /other: waGuestSetupForCwd\(loadConfig\(\), cwd\)/);
+  assert.match(r, /if \(flow\.handOver\)/);
+});
+
+test("GET /whatsapp carries the guest door and the groups this admin may choose", () => {
+  const r = route('app.get("/whatsapp",');
+  assert.match(r, /out\.guests = waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)/);
+  assert.match(r, /guestGroupChoices\(loadGroups\(\), viewerFor\(currentAccount\(req\)\)\)/);
+});
