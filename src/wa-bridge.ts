@@ -405,6 +405,13 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
         const st = fs.lstatSync(dest);
         if (!st.isFile() || st.isSymbolicLink()) throw new Error("an unexpected entry sits where the attachment goes");
       }
+      // The GROUP must be the directory's: `copyFileSync` (libuv) gives the copy
+      // the SOURCE's group — root's, from the 0700 staging dir — instead of
+      // inheriting the setgid directory's, as a plain write does. 0640 root:root
+      // left the agent, which runs as the group's user, unable to read the very
+      // file it was told about. Set explicitly, so a copy left behind by an
+      // earlier run (the EEXIST reuse above) is repaired too.
+      if (d.multiTenant) fs.lchownSync(dest, fs.lstatSync(dest).uid, fs.statSync(dir).gid);
       fs.chmodSync(dest, d.multiTenant ? 0o640 : 0o600);
     } catch (err) {
       log(`whatsapp: ${short(b)} — a received file could not be handed to its agent: ${(err as Error)?.message ?? err}`);

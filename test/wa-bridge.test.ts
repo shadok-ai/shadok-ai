@@ -93,7 +93,7 @@ class FakeServer {
   }
 }
 
-async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer; fake?: ReturnType<typeof makeFakeTransport>; alive?: (id: string) => boolean } = {}) {
+async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer; fake?: ReturnType<typeof makeFakeTransport>; alive?: (id: string) => boolean; multiTenant?: boolean } = {}) {
   const root = o.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), "wa-bridge-"));
   const fake = o.fake ?? makeFakeTransport();
   const server = o.server ?? new FakeServer();
@@ -116,6 +116,7 @@ async function world(o: { setup?: GuestSetup; dir?: string; server?: FakeServer;
     reattachMs: 0,
     preemptMs: 200,
     stagingDir: path.join(root, "state", "media"),
+    multiTenant: o.multiTenant,
     mediaDirFor: (sid) => {
       if (!sid) throw new Error("no agent yet");
       return mediaDir;
@@ -548,6 +549,24 @@ test("a refused RESUME of a known sender tells them, and is not retried every fe
 
 const photo = (w: Awaited<ReturnType<typeof world>>, o: { id?: string; caption?: string; size?: number } = {}) =>
   w.fake.script.deliver({ id: o.id ?? "P1", chat: LID, chatAlt: PN, pushName: "Grace", media: { kind: "image", mime: "image/jpeg", ...(o.size ? { size: o.size } : {}) }, mediaData: "JPEGDATA", ...(o.caption ? { text: o.caption } : {}) });
+
+// The agent runs as the GROUP's OS user and reads the file through the group
+// bit. A copy that kept the server's own group was 0640 and unreadable by the
+// very agent it was announced to.
+test("multi-tenant: the handed file belongs to the media directory's group, not the server's", async (t) => {
+  const other = (process.getgroups?.() ?? []).find((g) => g !== process.getgid?.());
+  if (other === undefined) return t.skip("needs a second group to tell the directory's group from the server's");
+  const w = await world({ multiTenant: true });
+  fs.chownSync(w.mediaDir, process.getuid!(), other);
+  fs.chmodSync(w.mediaDir, 0o2750);
+  await w.link();
+  photo(w);
+  await tick(60);
+  const st = fs.statSync(path.join(w.mediaDir, "wa-P1.jpg"));
+  assert.equal(st.gid, other);
+  assert.equal(st.mode & 0o777, 0o640);
+  await w.stop();
+});
 
 test("a photo reaches its agent from the GROUP media directory, its caption riding along; the staging copy goes with the ack", async () => {
   const w = await world();
