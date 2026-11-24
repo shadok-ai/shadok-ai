@@ -778,3 +778,20 @@ test("an agent closed in the cockpit: the person is told once that their next me
   assert.deepEqual(w.fake.sent, [{ to: LID, text: guestNotice("ended") }]);
   await w.stop();
 });
+
+test("a refused spawn frees a medium still waiting for its agent: nothing staged, nothing replayed", async () => {
+  const w = await world();
+  w.server.autoReady = false;
+  await w.link();
+  photo(w, { id: "X1" });
+  await tick(60);
+  w.server.last().emit({ type: "error", code: "guest-group", message: "the configured guest group is not usable from here" });
+  await tick(60);
+  assert.deepEqual(w.inbox.pending(), []);
+  assert.deepEqual(fs.readdirSync(path.join(w.root, "state", "media")), []);
+  const n = w.server.sockets.length;
+  w.bridge.reconcile();
+  await tick(60);
+  assert.equal(w.server.sockets.length, n, "no respawn storm");
+  await w.stop();
+});

@@ -281,11 +281,25 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     d.inbox.ack(e.id);
     for (const b of bridges) b.inflight.delete(e.id);
     // The staging copy goes with its entry: delivered or refused, it is done.
-    if (e.media?.path) fs.rm(e.media.path, { force: true }, () => {});
+    if (e.media?.path)
+      try {
+        fs.rmSync(e.media.path, { force: true });
+      } catch {
+        /* a leftover is harmless: the next ack or purge removes it */
+      }
   };
   const ackAll = (b: Bridge) => {
     for (const e of b.awaiting.splice(0)) ack(e);
     for (const e of b.held.splice(0)) ack(e);
+    // …and whatever is still on its way in — a medium waiting for the agent's
+    // media directory sits in neither list. Left pending, the replay loop would
+    // hand it to a new bridge every few seconds: one refused spawn each time.
+    const pending = d.inbox.pending();
+    for (const id of [...b.inflight]) {
+      const e = pending.find((x) => x.id === id);
+      if (e) ack(e);
+    }
+    b.closing = true;
     for (const go of b.afterReady.splice(0)) go();
     if (b.preempting) {
       ack(b.preempting);
