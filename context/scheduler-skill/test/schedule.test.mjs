@@ -283,3 +283,30 @@ test("update end to end: resolves the prefix, posts the full cron with its id", 
     await cockpit.close();
   }
 });
+
+test("runs when invoked through a SYMLINKED skill directory (group HOME)", async () => {
+  // In a group HOME, ~/.claude/skills/shadok-scheduler is a symlink to the
+  // machine-wide copy. Node resolves links in import.meta.url but not in
+  // argv[1]: a naive entry guard saw "imported, not run" and exited 0 having
+  // done NOTHING — an agent announced a cron that was never created.
+  const { mkdtempSync, symlinkSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(path.join(tmpdir(), "sched-link-"));
+  const link = path.join(dir, "shadok-scheduler");
+  symlinkSync(path.dirname(path.dirname(SCRIPT)), link);
+  const srv = await fakeCockpit({
+    "GET /crons": { body: [{ id: "aaaaaaaa1111", sessionId: "sess-1", enabled: true, schedule: { kind: "interval", everyMin: 5 }, prompt: "mine" }] },
+    "GET /timezone": { body: { timezone: "UTC", system: "UTC" } },
+  });
+  const res = await new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [path.join(link, "scripts", "schedule.mjs"), "list"],
+      { env: { ...process.env, SHADOK_PORT: "", SHADOK_SESSION_ID: "", SHADOK_AUTH: "", ...AGENT(srv.port) } },
+      (e, out, err) => resolve({ code: e ? (e.code ?? 1) : 0, out, err }),
+    );
+  });
+  await srv.close();
+  rmSync(dir, { recursive: true, force: true });
+  assert.match(res.out, /\[aaaaaaaa\] every 5m/, `no output through the link (code ${res.code}): ${res.err}`);
+});

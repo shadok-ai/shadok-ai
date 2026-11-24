@@ -124,3 +124,29 @@ test("refuses to run outside a shadok-ai agent", async () => {
   assert.notEqual(res.code, 0);
   assert.match(res.err, /SHADOK_PORT/);
 });
+
+test("runs when invoked through a SYMLINKED skill directory (group HOME)", async () => {
+  // In a group HOME, ~/.claude/skills/shadok-secrets is a symlink to the
+  // machine-wide copy. Node resolves links in import.meta.url but not in
+  // argv[1]: a naive entry guard exited 0 having done NOTHING — a silent
+  // no-op on a write tool, which the agent cannot tell from success.
+  const { mkdtempSync, symlinkSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(path.join(tmpdir(), "secret-link-"));
+  const link = path.join(dir, "shadok-secrets");
+  symlinkSync(path.dirname(path.dirname(SCRIPT)), link);
+  const srv = await fakeCockpit(200, { names: ["A", "B"] });
+  const res = await new Promise((resolve) => {
+    const child = execFile(
+      process.execPath,
+      [path.join(link, "scripts", "secret.mjs"), "list"],
+      { env: { ...process.env, SHADOK_PORT: String(srv.port), SHADOK_AUTH: "sk_auth=tok" } },
+      (e, out, err) => resolve({ code: e ? (e.code ?? 1) : 0, out, err }),
+    );
+    child.stdin.end("");
+  });
+  await srv.close();
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.code, 0, res.err);
+  assert.equal(res.out.trim(), "A\nB", "no output through the link");
+});

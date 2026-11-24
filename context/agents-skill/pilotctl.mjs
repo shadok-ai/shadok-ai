@@ -883,8 +883,20 @@ export async function run(argv) {
   }
 }
 
-// CLI entry point — not triggered when imported by tests.
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run only as a script (the test imports the pure helpers above). Compared
+// through realpath: in a group HOME `~/.claude/skills/shadok-ai-agents` is a SYMLINK to
+// the machine-wide copy, and Node resolves links in import.meta.url but not in
+// argv[1]. A plain comparison then reads "imported", and the script exits 0
+// having done NOTHING — a silent no-op the calling agent takes for success.
+const real = (p) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+const invoked = !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url));
+if (invoked) {
   run(process.argv.slice(2))
     .then((r) => {
       console.log(JSON.stringify(r));

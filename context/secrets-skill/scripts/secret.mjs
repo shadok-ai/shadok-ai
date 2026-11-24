@@ -13,7 +13,8 @@
 // present wherever a skill runs — the image's python3 exists to build native
 // npm modules, and dropping it would have broken this in silence.
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const TIMEOUT_MS = 15_000;
 
@@ -181,8 +182,19 @@ export async function main(argv) {
   console.log("process: node ~/.claude/skills/shadok-reload/reload.mjs");
 }
 
-// Importable by the tests, executable by the agents: only run when invoked
-// directly, or importing this file would exit on a missing SHADOK_PORT.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run only as a script (the test imports the pure helpers above). Compared
+// through realpath: in a group HOME `~/.claude/skills/shadok-secrets` is a SYMLINK to
+// the machine-wide copy, and Node resolves links in import.meta.url but not in
+// argv[1]. A plain comparison then reads "imported", and the script exits 0
+// having done NOTHING — a silent no-op the calling agent takes for success.
+const real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+const invoked = !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url));
+if (invoked) {
   await main(process.argv.slice(2));
 }
