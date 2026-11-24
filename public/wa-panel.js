@@ -175,3 +175,31 @@ function phaseModel(v, now) {
       };
   }
 }
+
+/**
+ * The guest door block: shown once a number is linked, below the state. Same
+ * model as Telegram's open DMs — a restricted group and a profile, both or
+ * nothing — with one switch, because WhatsApp has no board and no owner: the
+ * door is open (`dm-only`) or shut. The group list is the server's, per
+ * caller: a group this admin is not a member of is never in it.
+ *
+ * @param {Record<string, any> | null | undefined} view `GET /whatsapp`
+ * @returns {{ show: boolean, on: boolean, group: string, profile: string, canOpen: boolean, note: string }}
+ */
+export function waGuestsModel(view) {
+  const v = view && typeof view === "object" ? view : {};
+  const linked = ["connected", "reconnecting", "halted", "logged-out"].includes(v.phase) && !!v.account;
+  const g = v.guests && typeof v.guests === "object" ? v.guests : {};
+  const groups = Array.isArray(v.guestGroups) ? v.guestGroups : [];
+  const on = g.mode === "dm-only";
+  const group = typeof g.group === "string" ? g.group : "";
+  const profile = typeof g.profile === "string" ? g.profile : "";
+  const groupName = groups.find((x) => x && x.id === group)?.name || "that group";
+  const canOpen = groups.length > 0;
+  const note = !canOpen
+    ? "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations."
+    : on
+      ? `Anyone who writes to this number gets an agent of their own on “${profile}”, in “${groupName}”. It runs under that group's own Unix user, and only its members read those conversations — you included, from this cockpit. Nothing a guest types runs as a command.`
+      : "Shut: a message to this number gets no reply and starts nothing — for new and known senders alike. Existing agents are kept and answer again once it is open.";
+  return { show: linked, on, group, profile, canOpen, note };
+}

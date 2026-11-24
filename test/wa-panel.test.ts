@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { waPanelModel, agoText } from "../public/wa-panel.js";
 
@@ -169,4 +170,51 @@ test("every block and button the model can name exists in the page", async () =>
     for (const b of m.blocks) assert.ok(html.includes(`data-wa-block="${b}"`), `block ${b}`);
     for (const a of m.actions) assert.ok(html.includes(`data-wa-action="${a}"`), `action ${a}`);
   }
+});
+
+// ── the guest door (step 2) ─────────────────────────────────────────────────
+import { waGuestsModel } from "../public/wa-panel.js";
+
+const groups = [{ id: "g1", name: "Support" }];
+const door = (o: Record<string, unknown> = {}) => ({
+  phase: "connected",
+  account: { name: "Ada's shop", phone: "33600000000" },
+  guests: { mode: "group", group: null, profile: null },
+  guestGroups: groups,
+  ...o,
+});
+
+test("waGuestsModel: shown only once a number is linked", () => {
+  assert.equal(waGuestsModel(door()).show, true);
+  assert.equal(waGuestsModel(door({ phase: "reconnecting" })).show, true);
+  assert.equal(waGuestsModel(door({ phase: "halted" })).show, true, "a halted link keeps its door settings visible");
+  for (const phase of ["unlinked", "linking", "installing", "unavailable"]) assert.equal(waGuestsModel(door({ phase, account: undefined })).show, false, phase);
+  assert.equal(waGuestsModel(null).show, false);
+});
+
+test("waGuestsModel: the open door names where strangers land and who reads them", () => {
+  const m = waGuestsModel(door({ guests: { mode: "dm-only", group: "g1", profile: "Support" } }));
+  assert.equal(m.on, true);
+  assert.equal(m.group, "g1");
+  assert.equal(m.profile, "Support");
+  assert.match(m.note, /Support/);
+  assert.match(m.note, /members/);
+});
+
+test("waGuestsModel: no restricted group → cannot open, and says what is needed", () => {
+  const m = waGuestsModel(door({ guestGroups: [] }));
+  assert.equal(m.canOpen, false);
+  assert.match(m.note, /restricted group/);
+});
+
+test("waGuestsModel: shut is silence, and the panel says so", () => {
+  const m = waGuestsModel(door({ guests: { mode: "group", group: "g1", profile: "Support" } }));
+  assert.equal(m.on, false);
+  assert.equal(m.canOpen, true);
+  assert.match(m.note, /no reply/i);
+});
+
+test("the panel no longer says messages are not handled", () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /messages are not handled yet/);
 });

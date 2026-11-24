@@ -4322,7 +4322,7 @@
       <p class="check-hint" id="waFakeNote" hidden>Test transport: no real WhatsApp behind this panel.</p>
       <div class="wa-block" data-wa-block="intro" hidden>
         <p>Linking makes this instance a <b>linked device</b> of a WhatsApp account, the way WhatsApp Web is. You scan a code with the phone that holds the number; the phone keeps working as before.</p>
-        <p class="check-hint">One number, one instance: do not link the same account to two instances — both would answer. Linking only, for now: messages are not handled yet.</p>
+        <p class="check-hint">One number, one instance: do not link the same account to two instances — both would answer. Once linked, open the door below and anyone who writes to the number gets an agent of their own.</p>
       </div>
       <p class="wa-block check-hint" id="waDownload" data-wa-block="download" hidden></p>
       <details class="fold wa-block wa-warning" data-wa-block="warning" id="waWarning" hidden>
@@ -4343,6 +4343,18 @@
       <p class="wa-block" id="waRemoved" data-wa-block="removed" hidden></p>
       <p class="wa-block" id="waReason" data-wa-block="reason" hidden></p>
       <p class="wa-block" id="waInstalling" data-wa-block="installing" hidden></p>
+      <!-- The guest door (step 2): shown once a number is linked. Same model as
+           Telegram's open DMs; public/wa-panel.js (waGuestsModel) decides. -->
+      <div class="field" id="waGuests" hidden>
+        <span class="label">Open DMs <span class="check-hint">— anyone who writes to this number gets their own agent</span></span>
+        <label class="check"><input type="checkbox" id="waGuestsOn"> <span>Open the door</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="waGuestGroup" style="flex:1;min-width:160px" title="The restricted group their agents live in"></select>
+          <select id="waGuestProfile" style="flex:1;min-width:160px" title="The profile their agents run on — this is what defines the job"></select>
+          <button id="waGuestsSave" type="button">Save</button>
+        </div>
+        <p class="check-hint" id="waGuestsNote"></p>
+      </div>
       <div class="wa-actions">
         <button id="waLink" data-wa-action="link" hidden>Link a number</button>
         <button id="waInstall" data-wa-action="install" hidden title="Download the pinned WhatsApp library with npm, then continue">Install the WhatsApp library</button>
@@ -4858,8 +4870,9 @@
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
   import { EFFORT_CHOICES, effortLabel } from "/effort-choice.js?v=__ASSET_V__";
-  import { waPanelModel } from "/wa-panel.js?v=__ASSET_V__";
+  import { waPanelModel, waGuestsModel } from "/wa-panel.js?v=__ASSET_V__";
   window.waPanelModel = waPanelModel;
+  window.waGuestsModel = waGuestsModel;
   import { bangCommands, blockCommand } from "/bang.js?v=__ASSET_V__";
   window.bangCommands = bangCommands;
   window.blockCommand = blockCommand;
@@ -5125,6 +5138,7 @@
   const BRIDGE_STUBS = {
     // Before the module lands: unavailable, never a Link button over an unknown state.
     waPanelModel: () => ({ tone: "err", status: "Loading…", blocks: [], actions: [], text: {} }),
+    waGuestsModel: () => ({ show: false, on: false, group: "", profile: "", canOpen: false, note: "" }),
     // Before the module lands, assume no update state — never a false badge.
     claudeUpdateState: () => null,
     profileBlurb: () => "",
@@ -5690,6 +5704,13 @@
     // The Telegram mark, drawn like the header's (monochrome, theme colour).
     tg.innerHTML = LineIcons.svg("telegram", 12);
     tg.title = "Mirrored to Telegram";
+    // A WhatsApp guest's agent: its own mark, where a Telegram-bound one shows
+    // Telegram's. Static markup (the header button's glyph), no script.
+    const wa = document.createElement("span");
+    wa.className = "tg wa";
+    wa.hidden = true;
+    wa.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 19.5l1.2-3.6A8 8 0 1 1 8.3 18.4z"/></svg>';
+    wa.title = "A WhatsApp conversation";
     // Shells the agent left running in the background — often a script that will
     // wake it later, sometimes one nobody will ever collect. Invisible until now.
     const shells = document.createElement("span");
@@ -5740,7 +5761,7 @@
     row1.append(name, timer, close);
     const icons = document.createElement("span");
     icons.className = "tab-icons";
-    icons.append(mute, cron, tg, shells, monitors, update, kin);
+    icons.append(mute, cron, tg, wa, shells, monitors, update, kin);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, icons, ctxNum);
@@ -5772,8 +5793,9 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, kinEl: kin,
+      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, waEl: wa, shellsEl: shells, monitorsEl: monitors, updateEl: update, kinEl: kin,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
+      whatsapp: false,   // a WhatsApp guest's agent? (never mirrored, never offered it)
       lastAtEl: lastAt,
     };
     btn._tab = tab;
@@ -5948,9 +5970,19 @@
   /** Is this channel mirrored into Telegram? `persist` false when the value
    *  already comes from the registry (restore), so we don't push it back. */
   function setMirror(tab, on, persist = true) {
+    // A WhatsApp guest's conversation is published nowhere else (the server's
+    // `isMirrored` says the same, whatever a tab asks).
+    if (tab.whatsapp) on = false;
     tab.mirror = !!on;
     tab.tgEl.hidden = !tab.mirror;
     if (persist) persistChannels();
+  }
+
+  /** A WhatsApp guest's agent: the mark on, the Telegram mirror off for good. */
+  function setWhatsApp(tab, on) {
+    tab.whatsapp = !!on;
+    if (tab.waEl) tab.waEl.hidden = !tab.whatsapp;
+    if (tab.whatsapp && tab.mirror) setMirror(tab, false, false);
   }
 
   /** What the pane says is still running. Each number shows only past one: the
@@ -6482,7 +6514,7 @@
     // The main channel (the General) is the board's home base: not un-mirrorable.
     // Admin-only, like the rest of the Telegram surface (the server refuses a
     // member's mirror write regardless; this just doesn't offer it).
-    if (!tab.isMain && me?.role === "admin") {
+    if (!tab.isMain && !tab.whatsapp && me?.role === "admin") {
       speaks.push({
         icon: "telegram",
         label: tab.mirror ? "Stop mirroring (deletes the topic)" : "Mirror to Telegram",
@@ -8159,6 +8191,7 @@
         if (typeof c.muted === "boolean" && c.muted !== !!t.muted) setMuted(t, c.muted, false);
         // A toggle made on another device (or a Telegram-born channel) lights
         // the ✈️ up here on the next pass.
+        setWhatsApp(t, !!c.whatsapp);
         const wantMirror = typeof c.mirror === "boolean" ? c.mirror : !!c.telegram;
         if (wantMirror !== !!t.mirror) setMirror(t, wantMirror, false);
         if (c.name && c.name !== t.nameEl.textContent && !t.btnEl.querySelector("input.rename")) {
@@ -8199,6 +8232,7 @@
         setCrons(nt, c.crons);
         nt.closes = c.closes || null;
         if (c.muted) setMuted(nt, true, false);
+        setWhatsApp(nt, !!c.whatsapp);
         if (typeof c.mirror === "boolean" ? c.mirror : !!c.telegram) setMirror(nt, true, false);
         if (c.name) {
           nt.customName = true;
@@ -18349,6 +18383,7 @@
     // still reachable once a number is linked.
     $("waWarning").open = view?.phase === "unlinked";
     $("waFakeNote").hidden = !view?.fake;
+    renderWaGuests(view);
     const svg = m.blocks.includes("qr") ? view.qrSvg : null;
     if (svg !== waQrShown) {
       waQrShown = svg;
@@ -18357,6 +18392,62 @@
       else $("waQr").textContent = svg ? "The code cannot be drawn in this browser." : "";
     }
   }
+  // The guest door. The panel re-renders every 2 s, so the form is repainted
+  // from the server only when the SERVER's door changed and nobody is editing
+  // it — otherwise a poll would undo a choice before Save.
+  let waGuestsShown = null;
+  let waGuestsDirty = false;
+  function renderWaGuests(view) {
+    const g = window.waGuestsModel(view);
+    $("waGuests").hidden = !g.show;
+    if (!g.show) return;
+    const key = JSON.stringify([view.guests, view.guestGroups]);
+    if (waGuestsDirty) return;
+    if (key === waGuestsShown) return;
+    waGuestsShown = key;
+    const fill = (id, items, value, empty) => {
+      const el = $(id);
+      el.innerHTML = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = empty;
+      el.appendChild(none);
+      for (const it of items) {
+        const o = document.createElement("option");
+        o.value = it.id;
+        o.textContent = it.name;
+        el.appendChild(o);
+      }
+      el.value = items.some((it) => it.id === value) ? value : "";
+    };
+    const groups = Array.isArray(view.guestGroups) ? view.guestGroups : [];
+    fill("waGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no restricted group");
+    fill(
+      "waGuestProfile",
+      (Array.isArray(profileCache) ? profileCache : [])
+        .filter((p) => p && p.name && !window.isManagedProfile(p.name))
+        .map((p) => ({ id: p.name, name: p.name })),
+      g.profile,
+      "pick a profile…",
+    );
+    $("waGuestsOn").checked = g.on;
+    $("waGuestsOn").disabled = !g.canOpen && !g.on;
+    $("waGuestsNote").textContent = g.note;
+  }
+  for (const id of ["waGuestsOn", "waGuestGroup", "waGuestProfile"]) $(id).addEventListener("change", () => { waGuestsDirty = true; });
+  $("waGuestsSave").addEventListener("click", async () => {
+    const r = await fetch("/whatsapp/guests", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: $("waGuestsOn").checked, group: $("waGuestGroup").value || null, profile: $("waGuestProfile").value || null }),
+    });
+    const body = await r.json().catch(() => ({}));
+    // A refused door bounces back to the server's state rather than looking saved.
+    if (!r.ok) alert(body.error || "update failed");
+    waGuestsDirty = false;
+    waGuestsShown = null;
+    refreshWhatsApp();
+  });
   async function refreshWhatsApp() {
     let view;
     try {
@@ -18372,6 +18463,14 @@
   }
   function openWhatsApp() {
     $("whatsappOverlay").hidden = false;
+    waGuestsDirty = false;
+    waGuestsShown = null;
+    // The profile picker needs the list; Telegram's panel fetches it the same way.
+    if (!profileCache.length)
+      fetch("/profiles").then((r) => r.json()).then((p) => {
+        if (Array.isArray(p)) profileCache = p;
+        waGuestsShown = null;
+      }).catch(() => {});
     clearInterval(waPoll);
     waPoll = setInterval(() => {
       if ($("whatsappOverlay").hidden) { clearInterval(waPoll); waPoll = null; return; }
@@ -18798,6 +18897,7 @@
         // The mirror TOO, otherwise the first persist pushes `mirror:false`
         // back and overwrites the registry — which deleted the topic of a
         // Telegram-born agent. Restoring: don't push back.
+        setWhatsApp(t, !!s.whatsapp);
         if (typeof s.mirror === "boolean" ? s.mirror : !!s.telegram) setMirror(t, true, false);
         if (s.name) {
           t.customName = true;
