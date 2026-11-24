@@ -443,3 +443,98 @@ test("an answer written while the link is down waits for the reconnect instead o
   assert.deepEqual(w.fake.sent, [{ to: LID, text: "late answer" }]);
   await w.stop();
 });
+
+// ── review fixes ────────────────────────────────────────────────────────────
+
+test("the same short text sent again in a later busy turn is preempted again, never silently dropped", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "start");
+  await tick();
+  const ws = w.server.last();
+  say(w, "ok");
+  await tick();
+  ws.emit({ type: "error", code: "busy", message: "busy" });
+  await tick();
+  ws.emit({ type: "turn-done" }); // "ok" is resubmitted
+  await tick();
+  ws.emit({ type: "turn-done" });
+  await tick();
+  say(w, "ok"); // the SAME text, a new message, during another turn
+  await tick();
+  ws.emit({ type: "error", code: "busy", message: "busy" });
+  await tick();
+  assert.equal(ws.frames.filter((f) => f.type === "key").length, 2, "preempted again");
+  ws.emit({ type: "turn-done" });
+  await tick();
+  assert.equal(ws.prompts().filter((p) => p.text === "ok").length, 4, "each send, each re-send");
+  await w.stop();
+});
+
+test("a resent preempt that meets busy again is said to be lost, not acked in silence", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "start");
+  await tick();
+  const ws = w.server.last();
+  say(w, "second");
+  await tick();
+  ws.emit({ type: "error", code: "busy", message: "busy" });
+  await tick();
+  ws.emit({ type: "turn-done" }); // resent…
+  await tick();
+  ws.emit({ type: "error", code: "busy", message: "busy" }); // …and someone else took the turn
+  await tick();
+  assert.ok(w.fake.sent.some((s) => /didn't go through/.test(s.text)), JSON.stringify(w.fake.sent));
+  assert.deepEqual(w.inbox.pending(), []);
+  await w.stop();
+});
+
+test("a burst keeps its order: one interruption, then the rest in sequence", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "A");
+  await tick();
+  const ws = w.server.last();
+  say(w, "B");
+  await tick();
+  ws.emit({ type: "error", code: "busy", message: "busy" });
+  await tick();
+  say(w, "C");
+  await tick();
+  assert.equal(ws.frames.filter((f) => f.type === "key").length, 1, "C does not interrupt again");
+  ws.emit({ type: "turn-done" });
+  await tick();
+  w.bridge.reconcile();
+  await tick();
+  ws.emit({ type: "turn-done" });
+  await tick();
+  // The first "B" frame is the one the server refused as busy: the agent reads A, B, C.
+  assert.deepEqual(ws.prompts().map((p) => p.text), ["A", "B", "B", "C"]);
+  assert.equal(ws.frames.filter((f) => f.type === "key").length, 1);
+  await w.stop();
+});
+
+test("a refused RESUME of a known sender tells them, and is not retried every few seconds", async () => {
+  const server = new FakeServer();
+  server.channels = [{ sessionId: "old", cwd: "/x", whatsapp: { account: ACCOUNT, id: LID } }];
+  server.autoReady = false;
+  const w = await world({ server, alive: () => true });
+  await w.link();
+  await tick();
+  // The reattach at start is refused (the instance left that group).
+  server.last().emit({ type: "error", code: "forbidden", message: "you are not entitled to resume this agent" });
+  await tick();
+  const n = server.sockets.length;
+  w.bridge.reconcile();
+  w.bridge.reconcile();
+  await tick();
+  assert.equal(server.sockets.length, n, "no reattach storm");
+  say(w, "hello?");
+  await tick();
+  server.last().emit({ type: "error", code: "forbidden", message: "you are not entitled to resume this agent" });
+  await tick();
+  assert.equal(w.fake.sent.length, 1, "the person is told something went wrong");
+  assert.deepEqual(w.inbox.pending(), []);
+  await w.stop();
+});

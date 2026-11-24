@@ -95,6 +95,12 @@ interface Bridge {
   awaiting: InboxEntry[];
   /** The entry held back while a running turn (or a question) is interrupted. */
   preempting?: InboxEntry;
+  /** Messages that arrived while a preempt was already under way: they wait
+   *  their turn, in order, rather than interrupt again (a burst of short texts
+   *  is ordinary WhatsApp use). */
+  held: InboxEntry[];
+  /** Opened to RESUME an existing binding (as opposed to a fresh spawn). */
+  isResume: boolean;
   preemptTimer?: NodeJS.Timeout;
   lastRetried?: string;
   /** A question is on the screen: the next message dismisses it first. */
@@ -115,6 +121,11 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
   const preemptMs = d.preemptMs ?? 20_000;
   const bridges = new Set<Bridge>();
   let stopped = false;
+  /** Agents whose resume the server refused (the instance left their group, a
+   *  sign-out): the reattach loop leaves them alone for a while instead of
+   *  opening a socket every few seconds. A person writing still retries. */
+  const refusedUntil = new Map<string, number>();
+  const REFUSED_BACKOFF_MS = 10 * 60_000;
 
   const alive = (b: Bridge) => !b.closing && b.ws.readyState <= 1;
   const short = (b: Bridge) => (b.sessionId ? b.sessionId.slice(0, 8) : "new");
@@ -168,6 +179,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
   const ack = (e: InboxEntry) => d.inbox.ack(e.id);
   const ackAll = (b: Bridge) => {
     for (const e of b.awaiting.splice(0)) ack(e);
+    for (const e of b.held.splice(0)) ack(e);
     if (b.preempting) {
       ack(b.preempting);
       b.preempting = undefined;
@@ -177,6 +189,13 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
   /** Take the hand back (a running turn, or a question on screen), then send
    *  `e` once the turn has settled — Telegram's preempt, same bound. */
   const preempt = (b: Bridge, e: InboxEntry) => {
+    // One interruption at a time: a message arriving while one is under way
+    // queues behind it — overwriting it would orphan the first and replay it
+    // later, out of order, interrupting again.
+    if (b.preempting) {
+      b.held.push(e);
+      return;
+    }
     b.preempting = e;
     b.lastRetried = e.text;
     frame(b, { type: "key", key: "escape" });
@@ -191,6 +210,14 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     b.preemptTimer.unref?.();
   };
   const promptEntry = (b: Bridge, e: InboxEntry) => {
+    // A NEW message reopens the right to interrupt (Telegram clears it the
+    // same way): kept from an earlier preempt, the same short text sent again
+    // later would meet `busy`, fail `shouldPreempt`, and be lost.
+    b.lastRetried = undefined;
+    if (b.preempting) {
+      b.held.push(e);
+      return;
+    }
     if (b.dialogUp && b.ready) {
       // Numbered answers are step 3; until then a reply to a question is a
       // new message, and the question is dismissed so it can go in.
@@ -217,15 +244,22 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       send: makeSendQueue(),
       typing: { start() {}, stop() {} },
       awaiting: [],
+      held: [],
+      isResume: !!o.resume,
       dialogUp: false,
       closing: false,
     };
-    const beat = makeTyping(() => void d.handle.setTyping(b.to, true).catch(() => {}), 8000);
+    // Typing is a frame to the person too: same guard as a text.
+    const typingTo = (on: boolean) => {
+      if (d.handle.account() !== b.account || !sendAllowed(d.channels.load(), b.account, b.to)) return;
+      void d.handle.setTyping(b.to, on).catch(() => {});
+    };
+    const beat = makeTyping(() => typingTo(true), 8000);
     b.typing = {
       start: () => beat.start(),
       stop: () => {
         beat.stop();
-        void d.handle.setTyping(b.to, false).catch(() => {});
+        typingTo(false);
       },
     };
     bridges.add(b);
@@ -293,9 +327,11 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
           // The transcript recorded a prompt: if it is one of ours, it landed.
           const said = String(m.text ?? "").trim();
           if (!said) break;
+          // Exact, or containment of a text long enough not to match by
+          // accident ("ok" must not be acked by an operator's prompt saying it).
           const i = b.awaiting.findIndex((e) => {
             const t = neutralizeCommand(e.text).trim();
-            return !!t && (said.includes(t) || t.includes(said));
+            return !!t && (said === t || (t.length >= 16 && said.includes(t)));
           });
           if (i >= 0) ack(b.awaiting.splice(i, 1)[0]);
           break;
@@ -325,6 +361,12 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
             submit(b, e);
             break;
           }
+          // What queued behind an interruption goes next, one turn each.
+          const next = b.held.shift();
+          if (next) {
+            submit(b, next);
+            break;
+          }
           b.typing.stop();
           break;
         }
@@ -342,6 +384,27 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
           if (last && shouldPreempt({ code: m.code, text: last.text, lastRetried: b.lastRetried })) {
             b.awaiting.pop();
             preempt(b, last);
+            break;
+          }
+          if (!b.ready && b.isResume) {
+            // An EXISTING binding the server will not resume (the instance
+            // left its group when the door moved, a sign-out). Not a fresh
+            // spawn: the person HAS a binding, so they are told, the message
+            // is freed rather than replayed for ever, and the reattach loop
+            // backs off. The agent itself is not ended — an inferred refusal
+            // ends nothing; closing it is the operator's act.
+            log(`whatsapp: ${short(b)} — its resume was refused (${m.code ?? "error"}): ${String(m.message ?? "").slice(0, 160)}`);
+            if (b.sessionId) refusedUntil.set(b.sessionId, Date.now() + REFUSED_BACKOFF_MS);
+            const hadMessage = b.awaiting.length > 0 || !!b.preempting || b.held.length > 0;
+            b.pending.length = 0;
+            ackAll(b);
+            if (hadMessage) notice(b, "error");
+            b.closing = true;
+            try {
+              ws.close();
+            } catch {
+              /* already closing */
+            }
             break;
           }
           if (!b.ready) {
@@ -362,7 +425,17 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
             }
             break;
           }
-          if (m.code === "busy") break; // a preempt already in flight: turn-done replays it
+          if (m.code === "busy") {
+            // A RESENT message (the one a preempt held back) met `busy` again:
+            // someone else took the turn in between. Say it is lost rather than
+            // acking it in silence at the next turn's end.
+            const lost = b.awaiting.pop();
+            if (lost) {
+              ack(lost);
+              notice(b, "preempt-failed");
+            }
+            break;
+          }
           b.typing.stop();
           const e = b.awaiting.pop();
           if (e) ack(e);
@@ -493,6 +566,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     // reaches the person. Probed only when there is no bridge (invariant 38),
     // and never for an idle agent: that would respawn every past guest.
     for (const c of waReattachList(d.channels.load(), account, hasBridge)) {
+      if ((refusedUntil.get(c.sessionId) ?? 0) > Date.now()) continue;
       if (!d.sessionAlive(c.sessionId)) continue;
       log(`whatsapp: reattaching live agent ${c.sessionId.slice(0, 8)}`);
       open({ key: c.whatsapp!.id, to: c.whatsapp!.id, account, resume: c.sessionId, profile: c.profile ?? null });
@@ -500,7 +574,9 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     // What the inbox still holds and no bridge is carrying: replay it. A
     // bridge that exists for that person already holds its entries.
     for (const e of d.inbox.pending()) {
-      const carried = [...bridges].some((b) => alive(b) && (b.awaiting.some((x) => x.id === e.id) || b.preempting?.id === e.id));
+      const carried = [...bridges].some(
+        (b) => alive(b) && (b.awaiting.some((x) => x.id === e.id) || b.preempting?.id === e.id || b.held.some((x) => x.id === e.id)),
+      );
       if (carried) continue;
       deliver(e);
     }

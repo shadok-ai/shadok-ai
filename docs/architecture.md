@@ -871,7 +871,13 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
   One send queue per person, 400 ms apart. Typing while `working`. An operator's
   prompt reaches the person labelled like on Telegram (`promptEchoLabel`), with
   attachment markers reduced to their kind so no server path leaks. A busy agent
-  is preempted as on Telegram (`shouldPreempt`). Every line the bridge says
+  is preempted as on Telegram (`shouldPreempt`, the retry mark cleared by every
+  NEW message), one interruption at a time: what arrives meanwhile queues behind
+  it (`held`) and goes in one turn each, in order; a re-sent message that meets
+  `busy` again is declared lost to the person, never acked in silence. A RESUME
+  the server refuses (the door moved and the instance left that group, a
+  sign-out) tells the person, frees the message, and backs the reattach loop off
+  for ten minutes — it ends nothing. Every line the bridge says
   about itself is `guestNotice`'s. A question is sent as its text and options
   plus the `no-keyboard` notice, and a reply while it is up dismisses it first
   (numbered answers are step 3).
