@@ -682,11 +682,35 @@ unlink it. No message is handled yet.
 - **The seam.** Everything that knows a WhatsApp library sits behind
   `WaTransport` (`src/wa-transport.ts`: `start(on)`, `logout()`, `stop()`, and the
   `qr` / `open` / `alive` / `close` events). Only `src/wa-baileys.ts` names the
-  library, loaded by a dynamic `import()` from a variable specifier — a literal
-  would make `tsc` resolve it, and the library is an **optionalDependency**. A test
-  scans `src/` for any other file naming it. The fake (`src/wa-fake.ts`) models
+  library, and it never imports it by bare name: it goes through the loader of the
+  copy installed in the data directory (below). A test scans `src/` for any other
+  file naming it. The fake (`src/wa-fake.ts`) models
   what a throwaway spike observed of the real thing and is how every rule below is
   tested — and, with `SHADOK_WA_FAKE=1`, how the panel is checked in a browser.
+- **The library is installed on demand** (`src/wa-library.ts`). The app's
+  package.json names no WhatsApp package, so `npx shadok-ai` and the auto-update
+  fetch none. `context/whatsapp-lib/` ships the one place the versions are pinned
+  (exact, `package.json`), an `npm-shrinkwrap.json` pinning the whole tree by
+  integrity (named so because npm's packer drops nested `package-lock.json`
+  files; the root `.gitignore` entry for the generated shrinkwrap is anchored to
+  the root for the same file name), and `load.mjs`, whose own `import()` resolves
+  from the directory it sits in. An admin's Link or Retry copies those three into
+  a staging directory under `~/.shadok-ai/whatsapp-lib/`, runs
+  `npm ci --omit=dev --ignore-scripts --legacy-peer-deps` there (10-minute
+  cap), checks every pinned version landed, writes a marker, and renames it to
+  `<fingerprint>/`, the fingerprint being a hash of the three shipped files. A
+  release that pins anything else therefore finds the old copy STALE and never
+  loads it, and the next install prunes it. Install scripts are off because none
+  is needed: the library's `preinstall` checks the Node version, protobufjs's
+  `postinstall` prints a warning, and the native bridge is WASM inside its JS.
+  Peers are off, which drops sharp: the library imports it lazily for image
+  thumbnails, and text, the QR and media download do not use it. Measured: 93
+  packages, 33 MB, about 3 s cold. Single-flight in-process, and staging plus
+  rename handles two servers sharing one home. Failures are worded
+  (`installFailureReason`: no network, no npm, a full disk, permission, checksum,
+  timeout). Installing is always an admin's act: a boot that finds a stored
+  session without a current library goes to `halted{library}` and installs
+  nothing.
 - **The library runs in a worker thread** (`src/wa-worker.ts`, `src/wa-worker-host.ts`).
   Its socket code runs async work outside every try of ours, and an unhandled
   rejection there would exit the whole server — with the boot resuming the stored
@@ -697,12 +721,14 @@ unlink it. No message is handled yet.
   (a test locks that), so errors from anywhere else behave exactly as before.
   A worker does not contain a NATIVE crash; the boot breaker below does.
 - **The state is a pure reducer** (`src/wa-link.ts`). Seven phases, one at a time:
-  `unavailable` (no library, or the capability gate refuses) · `unlinked` ·
+  `unavailable` (the capability gate refuses) · `unlinked` · `installing` (the
+  library is being fetched; `then` = link or resume) ·
   `linking` (the QR, rotated by the library: 60 s for the first, 20 s after) ·
   `connected` · `reconnecting` · `logged-out` (removed from the phone) ·
   `halted` (stopped, session kept, nothing retries: a permanent refusal from
   WhatsApp — 403 refused/banned, 440 connection replaced, 411, 500 —, a local
-  failure that has to be said, or a `crash`, see the breaker). Three
+  failure that has to be said, a `crash` (see the breaker), or `library`: missing,
+  stale, failed to install or to load, where the panel offers Install). Three
   rules carry the review focus: the **"restart required" close right after a scan
   stays in `linking`** (it is how linking ends, never a failure); **a QR nobody
   scans** expires back to `unlinked` after `LINK_TIMEOUT_MS`; and **a socket that
@@ -724,7 +750,9 @@ unlink it. No message is handled yet.
   `/whatsapp` reports `stored` so the panel offers Unlink whenever there is
   something to delete. The library is loaded **lazily** — only
   with a stored session or on Link — so an instance that never uses WhatsApp never
-  loads it; a load failure is `unavailable` and leaves the session on disk.
+  loads it. A load failure is `halted{library}` and leaves the session on disk;
+  Retry from there REinstalls (`force`), since an installed copy that will not load
+  is the one case a plain retry cannot fix.
 - **Permanent refusals stop.** `closeReasonOf` covers the library's whole
   `DisconnectReason`: 403/440/411/500 are `fatal` → `halted{permanent}` with a
   worded reason, never "Reconnecting". 440 matters most: the same number connected
@@ -762,7 +790,8 @@ unlink it. No message is handled yet.
   never follows a symlink out of the directory — and refuses a session directory
   that is itself a symlink, which `readdirSync` would otherwise follow.
 - **What leaves the server.** `GET /whatsapp` is admin-only; the QR is drawn
-  server-side as SVG (`qrcode`; the page's CSP allows no external image) and
+  server-side as SVG (`qrcode`, from the installed copy; the page's CSP allows no
+  external image) and
   returned only to a cookie-authenticated person — never to a caller presenting an
   agent's session key, which passes some admin GETs — and the raw payload is
   never sent at all. The number is masked for anything but a person, and in every
@@ -3242,7 +3271,8 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/wa-fake.ts` | The scripted fake transport: QR rotation, restart-required after `scan`, silent resume, `removeFromPhone`, `goSilent` (one socket) and `offline`/`online` (every socket), a logout that can fail. Unit tests, and `SHADOK_WA_FAKE=1` on a side instance. |
 | `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, the boot breaker (`RESUME_MARK`), link / retry / cancel / unlink (every phase). Invariant 75. |
 | `src/wa-worker-host.ts` / `src/wa-worker.ts` | Runs a transport in a worker thread so an error raised inside the library ends the worker, never the server: `workerTransportFactory` (one worker per transport, exactly one `close{error}` when it dies, `stop()` lets the adapter drain its writes) and `probeInWorker` (does the library load?). |
-| `src/wa-baileys.ts` | The ONLY file that names the WhatsApp library (`baileys`, an optionalDependency pinned exactly, dynamic import from a variable): `loadBaileysFactory`, `closeReasonOf`, `accountOf`, and `qrSvg` (server-side QR drawing). QR pairing only — pairing by code is broken upstream. |
+| `src/wa-baileys.ts` | The ONLY file that names the WhatsApp library. It loads it through the installed copy's `load.mjs` (`loadBaileysFactory(entryUrl)`, in a worker), never by bare name. Also `closeReasonOf`, `accountOf`, `qrLoaderFrom` and `qrSvg` (server-side QR drawing). QR pairing only, because pairing by code is broken upstream. |
+| `src/wa-library.ts` + `context/whatsapp-lib/` | The library installed ON DEMAND into `~/.shadok-ai/whatsapp-lib/<fingerprint>/`. `npm ci` of a shipped, integrity-pinned tree, with scripts and peers off, in a staging copy renamed into place once verified. `status` is ready, absent or stale, `install` is single-flight, `installFailureReason` words failures. Nothing in the app's own dependencies. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`.; per provider: `brokerStartUrl` (Google sends `areas`), `healthProviders`, `connectedGoogle`. |

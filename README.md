@@ -948,16 +948,26 @@ from the phone's *Linked devices* list too.
   *Unlinked remotely* (removed from the phone), *Stopped* with the reason (WhatsApp
   refused the number, the same number was connected elsewhere, a local failure, or
   a previous start that went down while resuming — nothing is retried on its own;
-  **Retry** or **Link again** is your call), or *Unavailable* with the reason.
+  **Retry** or **Link again** is your call), *Installing the WhatsApp library*,
+  *WhatsApp library needed* with the reason, or *Unavailable* with the reason.
   **Unlink** is offered whenever a session is stored, in every state.
 - **Multi-tenant, migrated instances only.** The stored session IS the account,
   so it must be out of every agent's reach: it lives in
   `~/.shadok-ai/whatsapp/<instance>/` (mode 0700, on the data volume, so a
   recreate does not unlink the number), and the feature is refused on a
   mono-tenant instance and until the groups migration has completed.
-- The WhatsApp library (`baileys`, plus `qrcode` for the code) is an **optional
-  dependency**: an install without it boots, serves the cockpit and runs Telegram
-  as usual, and the panel shows *Unavailable* with the reason.
+- **The WhatsApp library is installed on demand, not with shadok-ai.** Neither
+  `npx shadok-ai` nor the auto-update fetches any WhatsApp package: an instance
+  that never links a number installs nothing. The first **Link** by an admin runs
+  `npm ci` (about 35 MB on disk, a few seconds on a good connection) into
+  `~/.shadok-ai/whatsapp-lib/` on the data volume, so it survives updates and
+  recreates. The versions and the whole package tree are pinned by the release
+  (by checksum), install scripts are off, and the machine needs `npm` and access
+  to the npm registry. A failed install says why (no network, no npm, a full
+  disk) and offers **Install** again. When a release pins a new version, the old
+  copy is never used: the panel asks you to **Install** before the link
+  reconnects. The same happens when a stored session finds no library at boot,
+  because nothing is ever installed without an admin's click.
 
 ### Running in Docker
 

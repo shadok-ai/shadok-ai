@@ -2549,25 +2549,33 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
 
 <a id="inv-79"></a>
 
-75. **Only the adapter imports the WhatsApp library; a missing library is a
-    panel state, never a boot failure.** The library is an optionalDependency
-    for two reasons that are both properties of the product, not preferences: it
-    is not chosen for good (the design keeps a Go alternative behind the same
-    seam), and it is a heavy, release-candidate dependency most instances will
-    never use. So `src/wa-baileys.ts` is the one file that names it, it loads it
-    with a dynamic `import()` from a VARIABLE specifier — a literal makes `tsc`
-    resolve the module, and a build without it must pass — and it declares the
-    few library types it touches locally instead of importing them. The load is
-    lazy (only with a stored session, or on Link), and its failure becomes the
-    `unavailable` phase with the reason, leaving any stored session on disk so
-    installing the library brings the link back without a QR. Verified by
-    building and running the whole suite with `node_modules/baileys` and
-    `node_modules/qrcode` removed, and in a browser on a side instance in the
-    same state. Note that `npm ci --omit=optional` is NOT the way to check it in
-    this repo: it also strips TypeScript's own native binary, which is an
-    optional dependency of `typescript`, and `tsc` then cannot run at all.
-    `test/wa-baileys.test.ts` scans `src/` for the quoted package name (a scan
-    for `import("baileys")` alone would miss the variable specifier).
+75. **Only the adapter imports the WhatsApp library, and only from the copy an
+    admin installed; a missing library is a panel state, never a boot failure.**
+    The library is not a dependency of the app at all, for reasons that are
+    properties of the product, not preferences. It is not chosen for good (the
+    design keeps a Go alternative behind the same seam), and it is a heavy,
+    release-candidate tree most instances will never use. Shipping it as an
+    optionalDependency, the first version of this, still made every
+    `npx shadok-ai` and every auto-update fetch it. It is installed ON DEMAND
+    (`src/wa-library.ts`) into the data directory, never into the app's
+    node_modules, which the updater rewrites. What gets installed is the
+    release's decision, not the registry's: exact versions in one place
+    (`context/whatsapp-lib/package.json`), the whole tree pinned by integrity in a
+    shipped shrinkwrap, `npm ci` and never `npm install`, scripts off. A copy
+    fingerprinted for another release is stale and never loaded. Installing
+    happens only on an admin's Link or Retry. A boot that finds a stored session
+    without its library halts and says so instead of fetching code by itself.
+    `src/wa-baileys.ts` is the one file that names the library. It loads it
+    through the installed copy's `load.mjs`, never by bare name: a bare import
+    would resolve from the app's node_modules and silently use any stray copy
+    there. It declares the few library types it touches locally, since the build
+    must pass without the library. A load failure is `halted{library}` with the
+    reason, the stored session is kept, and Retry reinstalls.
+    `test/wa-baileys.test.ts` scans `src/` for the quoted package name, and
+    `test/wa-library.test.ts` checks that the app's manifest and lockfile carry
+    no WhatsApp package and that every entry of the shipped tree has an
+    integrity hash. No test reaches the network: the installer runs behind an
+    injected command.
     **And it never runs in the server's thread.** Lazy and optional covers a
     library that is ABSENT; it does nothing for one that is present and throws
     from its own async code — an unhandled rejection in its socket handling is
