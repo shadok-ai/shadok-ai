@@ -954,7 +954,12 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-media-questions.md`.
   toggles exactly the difference with what is checked, one toggle at a time
   (each waits for the server's re-broadcast of the question), then `confirm`.
   Anything else gets `dialog-again`. A multi-question form arrives as one
-  question after another (invariant 30), each its own list.
+  question after another (invariant 30), each its own list. A question stops arming the moment it is answered — here (`choose`,
+  `freetext`, `confirm`) or from the cockpit (the turn's next `working`) — so it
+  can never consume a later message; the toggles' re-broadcasts are repaints of
+  the answer in progress (`answering`), and the SAME question asked again (a
+  second, identical permission prompt, invariant 21) is shown again. Staging
+  files no pending entry claims are purged when the bridge starts.
 - **The unreadable message** (the spike's finding 3). It never enters the
   inbox nor the seen list, so the library's own resend under the same id is
   processed normally; the person gets ONE `unreadable` line per 10 minutes,

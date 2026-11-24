@@ -795,3 +795,102 @@ test("a refused spawn frees a medium still waiting for its agent: nothing staged
   assert.equal(w.server.sockets.length, n, "no respawn storm");
   await w.stop();
 });
+
+test("a socket that dies before ready does not wedge the person: the medium is replayed to a fresh one", async () => {
+  const w = await world();
+  w.server.autoReady = false;
+  await w.link();
+  photo(w, { id: "W1" });
+  await tick(60);
+  w.server.last().close(); // the server went away mid-spawn
+  await tick(60);
+  w.server.autoReady = true;
+  w.bridge.reconcile();
+  await tick(80);
+  const prompts = w.server.sockets.flatMap((s) => s.prompts().map((p) => p.text));
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /wa-W1\.jpg/);
+  await w.stop();
+});
+
+// ── review fixes (step 3) ───────────────────────────────────────────────────
+
+test("after a multiple-choice answer, the person's next message is a PROMPT, not a stale answer", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "extras?");
+  await tick();
+  const ws = w.server.last();
+  let opts = [{ n: 1, label: "Milk" }, { n: 2, label: "Sugar" }];
+  w.server.onOther = (s, f) => {
+    if (f.type !== "toggle") return;
+    opts = opts.map((o) => (o.n === f.n ? { ...o, checked: true } : o));
+    setTimeout(() => s.emit({ type: "dialog", question: "Which extras?", multi: true, options: opts }), 10);
+  };
+  ws.emit({ type: "dialog", question: "Which extras?", multi: true, options: opts });
+  await tick();
+  say(w, "1 2");
+  await new Promise((r) => setTimeout(r, 150));
+  ws.emit({ type: "working" });
+  say(w, "also check the price");
+  await tick();
+  assert.deepEqual(ws.prompts().map((p) => p.text), ["extras?", "also check the price"]);
+  assert.ok(!w.fake.sent.some((s) => s.text === guestNotice("dialog-again")));
+  await w.stop();
+});
+
+test("the same question asked AGAIN after it was answered is shown again", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "go");
+  await tick();
+  const ws = w.server.last();
+  const yesNo = { type: "dialog", question: "Do you want to proceed?", multi: false, options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] };
+  ws.emit(yesNo);
+  await tick();
+  say(w, "1");
+  await tick();
+  ws.emit(yesNo); // a second, byte-identical ask within the same turn (invariant 21)
+  await tick();
+  assert.equal(w.fake.sent.filter((s) => s.text.includes("Do you want to proceed?")).length, 2);
+  say(w, "2");
+  await tick();
+  assert.deepEqual(ws.frames.filter((f) => f.type === "choose").map((f) => f.n), [1, 2]);
+  await w.stop();
+});
+
+test("a question answered from the cockpit stops arming: the next message is a prompt", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "go");
+  await tick();
+  const ws = w.server.last();
+  ws.emit({ type: "dialog", question: "Sure?", multi: false, options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] });
+  await tick();
+  ws.emit({ type: "working" }); // the operator clicked an answer; the turn resumed
+  say(w, "thanks!");
+  await tick();
+  assert.deepEqual(ws.prompts().map((p) => p.text), ["go", "thanks!"]);
+  await w.stop();
+});
+
+test("an unreadable copy of a message already received says nothing", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "hello", { id: "S1" });
+  await tick();
+  w.fake.script.deliver({ id: "S1", chat: LID, unreadable: true });
+  await tick();
+  assert.ok(!w.fake.sent.some((s) => s.text === guestNotice("unreadable")));
+  await w.stop();
+});
+
+test("a staging file no pending entry claims is purged at start", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wa-bridge-"));
+  fs.mkdirSync(path.join(root, "state", "media"), { recursive: true });
+  fs.writeFileSync(path.join(root, "state", "media", "wa-ORPHAN.jpg"), "x");
+  const w = await world({ dir: root });
+  await tick();
+  assert.deepEqual(fs.readdirSync(path.join(root, "state", "media")), []);
+  await w.stop();
+});

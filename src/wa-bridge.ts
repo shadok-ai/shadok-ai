@@ -149,6 +149,9 @@ interface Bridge {
   awaitingFreetext?: number;
   /** Resolved by the next re-broadcast of the question (a toggle landed). */
   dialogWaiter?: () => void;
+  /** Toggles are being sent: the question's re-broadcasts are repaints of an
+   *  answer in progress, never a question to arm again. */
+  answering?: boolean;
   /** Ended for good (stopped, refused): its close is not a reason to replay. */
   closing: boolean;
 }
@@ -334,6 +337,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
    *  re-broadcast of the question, so a toggle never races the previous one —
    *  then submit the form. */
   const runToggles = async (b: Bridge, toggles: number[]) => {
+    b.answering = true;
     for (const n of toggles) {
       const landed = new Promise<void>((r) => {
         const t = setTimeout(r, 3000);
@@ -344,6 +348,16 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       b.dialogWaiter = undefined;
     }
     frame(b, { type: "confirm" });
+    b.answering = false;
+    resolved(b);
+  };
+
+  /** The question is answered: nothing of it may consume a later message, and
+   *  the SAME question asked again (invariant 21's fresh ask) is a new one. */
+  const resolved = (b: Bridge) => {
+    b.dialog = undefined;
+    b.lastDialog = undefined;
+    b.awaitingFreetext = undefined;
   };
 
   /** The person's message while a question is on screen: an ANSWER, never a prompt. */
@@ -353,7 +367,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     const r = e.media ? ({ kind: "invalid" } as const) : parseDialogReply(dlg, e.text);
     switch (r.kind) {
       case "choose":
-        b.dialog = undefined;
+        resolved(b);
         frame(b, { type: "choose", n: r.n });
         return;
       case "toggles":
@@ -361,7 +375,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
         await runToggles(b, r.toggles);
         return;
       case "freetext":
-        b.dialog = undefined;
+        resolved(b);
         frame(b, { type: "freetext", n: r.n, text: r.text });
         return;
       case "need-text":
@@ -440,8 +454,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     b.intake(async () => {
       if (b.awaitingFreetext !== undefined && !e.media) {
         const n = b.awaitingFreetext;
-        b.awaitingFreetext = undefined;
-        b.dialog = undefined;
+        resolved(b);
         ack(e);
         frame(b, { type: "freetext", n, text: e.text });
         return;
@@ -557,6 +570,9 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
         }
         case "working":
           b.typing.start();
+          // The turn runs again: any question was answered (here, or by the
+          // operator from the cockpit) and must not consume the next message.
+          if (!b.answering) resolved(b);
           break;
         case "stream-text":
           if (typeof m.text === "string" && m.text.trim()) void sendTo(b, mdToWhatsApp(m.text));
@@ -593,14 +609,16 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
             multi: m.multi === true,
             options: opts,
           };
-          b.dialog = dlg;
           // A multi-select re-sends its question on every toggle (new
-          // checkboxes): the state is taken, the message is not sent again.
+          // checkboxes): while an answer is being toggled in, that is a repaint
+          // — it releases the next toggle and arms nothing.
           const key = `${dlg.question}\u0000${opts.map((x: { label: string }) => x.label).join("\u0000")}`;
-          if (key === b.lastDialog) {
+          if (b.answering) {
             b.dialogWaiter?.();
             break;
           }
+          b.dialog = dlg;
+          if (key === b.lastDialog) break;
           b.lastDialog = key;
           b.awaitingFreetext = undefined;
           if (opts.length) void sendTo(b, dialogMessage(dlg));
@@ -738,6 +756,10 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     ws.on("close", () => {
       b.typing.stop();
       clearTimeout(b.preemptTimer);
+      // A medium waiting for `ready` on a socket that died is released (it
+      // stays pending in the inbox and the replay hands it to a fresh bridge).
+      b.closing = true;
+      for (const go of b.afterReady.splice(0)) go();
       bridges.delete(b);
     });
     ws.on("error", () => {});
@@ -804,6 +826,9 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     const now = Date.now();
     for (const j of [bareJid(m.chat), bareJid(m.chatAlt)]) if (j) recentWriters.set(j, now);
     for (const [j, at] of recentWriters) if (now - at > 60 * 60_000) recentWriters.delete(j);
+    // A stub copy of a message already received says nothing: the person was
+    // heard, and asking for a resend would only send it twice.
+    if (v.kind === "unreadable" && d.inbox.seen(m.id)) return;
     if (v.kind === "unreadable") {
       // The spike's finding 3: no content for this linked device yet. Nothing
       // is stored and the id is NOT marked seen, so if the library's own
@@ -860,7 +885,11 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       }
     }
     // In the inbox BEFORE anything else: from here a restart replays it.
-    if (!d.inbox.add(e)) return;
+    if (!d.inbox.add(e)) {
+      // A late duplicate of an id already taken: its staging copy is nobody's.
+      if (e.media?.path) fs.rmSync(e.media.path, { force: true });
+      return;
+    }
     deliver(e);
   };
 
@@ -894,6 +923,18 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       deliver(e);
     }
   };
+
+  // Staging files no pending entry claims (an unreadable inbox at boot, a crash
+  // between download and record) are purged at start: they are strangers' files.
+  try {
+    const claimed = new Set(d.inbox.pending().map((e) => e.media?.path).filter(Boolean));
+    for (const f of fs.readdirSync(d.stagingDir)) {
+      const full = path.join(d.stagingDir, f);
+      if (!claimed.has(full)) fs.rmSync(full, { force: true });
+    }
+  } catch {
+    /* no staging directory yet */
+  }
 
   const offMsg = d.handle.onMessage((m) => void onMessage(m).catch((e) => log(`whatsapp: a message could not be handled: ${(e as Error)?.message ?? e}`)));
   // Every (re)connect replays what is still pending — a restart's backlog
