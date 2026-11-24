@@ -16848,20 +16848,28 @@
       });
       btns.className = "u-actions";
       // Lost password or lost device: another admin resets, or hands a code
-      // for a new device. Both need THIS admin's passkey, right now.
-      // Recover access: three levels, by what was lost (spec 2026-10-28 § 4).
-      // The choice opens below the row; each level asks for THIS admin's passkey.
+      // for a new device. Recover access: three levels, by what was lost
+      // (spec 2026-10-28 § 4). The choice opens below the row.
+      //
+      // With two-factor OFF there is one thing to lose — the password — and no
+      // passkey to confirm with, on either side. So the row offers the single
+      // level that means something, and `tfaEnabled` is what decides whether a
+      // passkey is asked for: the exact mirror of the server's
+      // `stepUpIfTwoFactor`. Asking for one that cannot exist is how this whole
+      // panel became unusable on an instance that never turned two-factor on.
       const reset = document.createElement("button");
-      reset.textContent = "recover access…";
-      reset.title = "Lost password, lost passkey, or lost everything";
+      reset.textContent = tfaEnabled ? "recover access…" : "reset password…";
+      reset.title = tfaEnabled ? "Lost password, lost passkey, or lost everything" : "Hand them a link on which they choose a new password";
       const levels = document.createElement("div");
       levels.className = "u-recover";
       levels.hidden = true;
-      const LEVELS = [
-        [1, "lost password", "Their passkeys are kept: you get a link (48 h) on which they choose a new password, then confirm with one of their passkeys."],
-        [2, "lost passkey", "A second admin must approve; then you get a code (48 h) that lets them register a new device. Their other passkeys are kept."],
-        [3, "lost everything", "Password and passkeys are wiped — in 24 h, or as soon as a second admin approves. Anyone involved can cancel it meanwhile."],
-      ];
+      const LEVELS = tfaEnabled
+        ? [
+            [1, "lost password", "Their passkeys are kept: you get a link (48 h) on which they choose a new password, then confirm with one of their passkeys."],
+            [2, "lost passkey", "A second admin must approve; then you get a code (48 h) that lets them register a new device. Their other passkeys are kept."],
+            [3, "lost everything", "Password and passkeys are wiped — in 24 h, or as soon as a second admin approves. Anyone involved can cancel it meanwhile."],
+          ]
+        : [[1, "new password", "You get a link, valid 48 h, on which they choose a new password. Their open sessions stop working right away, and the link can be used once."]];
       for (const [level, label, what] of LEVELS) {
         const b = document.createElement("button");
         b.type = "button";
@@ -16869,7 +16877,7 @@
         b.title = what;
         b.addEventListener("click", async () => {
           if (!confirm(u.name + " — " + label + "\n\n" + what)) return;
-          const r = await tfaPost("/2fa/recover", { user: u.name, level }, true);
+          const r = await tfaPost("/2fa/recover", { user: u.name, level }, tfaEnabled);
           if (!r) { alert($("tfaErr").textContent || "refused"); return; }
           showHandover(u.name, r);
           renderUsers();
@@ -16901,11 +16909,13 @@
       (r.level === 3 ? " — or it takes effect on its own in 24 h." : "."));
     const h = r.handover;
     if (!h) return;
-    if (h.kind === "link") showInvite(name, location.origin + h.value);
+    if (h.kind === "link") showInvite(name, location.origin + h.value, r.level === 1 ? "A new password for" : "A fresh start for");
     else showTfaCode({ code: h.value, expiresAt: h.expiresAt }, "for " + name);
   }
-  function showInvite(name, url) {
-    $("inviteWho").textContent = "Invitation for " + name + " — valid 48 hours";
+  function showInvite(name, url, what) {
+    // A reset hands over the same kind of link as an invitation, and the person
+    // is already a member: "Invitation for ada" is the one thing it is not.
+    $("inviteWho").textContent = (what || "Invitation for") + " " + name + " — valid 48 hours";
     $("inviteUrl").textContent = url;
     $("inviteCopy").textContent = "Copy";
     $("inviteBox").hidden = false;

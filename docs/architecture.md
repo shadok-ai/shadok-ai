@@ -1480,12 +1480,19 @@ Design and threat model: `docs/superpowers/specs/2026-10-21-passkey-2fa-design.m
   enrollment code (8 chars, 10 min, single use) minted by a verified session —
   yours (*add another device*) or an admin's (*device code*, *reset access*,
   and a redeemed invitation, which vouches the same way).
-- **Actions that could undo the second factor for someone** — reset, a code for
+- **Actions that could undo the second factor for someone** — a code for
   another person, switching 2FA on/off, removing another's passkey — require a
   FRESH passkey assertion from the actor (`stepUpOk`), not just a session. So
   do the plain account writes while 2FA is on — inviting, deleting an account,
   changing a role (`stepUpIfTwoFactor`): a ridden admin session could otherwise
   invite an accomplice as admin.
+  **A recovery belongs to the second group, not the first**
+  (`/2fa/recover` → `stepUpIfTwoFactor`). With the factor off there is no factor
+  to undo and no passkey to assert — the bootstrap admin can never hold one —
+  so demanding it refused every level and left a forgotten password with no
+  remedy at all. See invariant 78; the client mirrors the same `tfaEnabled`
+  condition, since a dialog that cannot be answered is a dead end before the
+  request leaves.
 - **A reset ends the sessions opened before it.** The cookie carries its issue
   time; `Account.sessionsAfter` refuses any older one (`sessionAlive`, read in
   `cookieAccount`). Set by a reset, a removed passkey (usually a lost device,
@@ -1519,6 +1526,12 @@ Design and threat model: `docs/superpowers/specs/2026-10-21-passkey-2fa-design.m
   (`invite.reason: "password"`) sets a password and then asks for one of them,
   through the login page's ordinary passkey step. A handover (link, code) is
   shown only to the two admins involved.
+  **With two-factor off, that level-1 link IS the password-reset feature** —
+  the one level of the three that means anything there, so the row offers it
+  alone, as *reset password…*. The link page tells the two apart: a reset reads
+  *Hello again* and "choose a new password", where an invitation says *Welcome*
+  and "join this cockpit" — the same form, the one sentence a person who is
+  already a member knows to be false.
 - **Only a person manages accounts while it is on**: `accountAdmin` and the
   `/2fa/*` routes read `cookieAccount`, which never accepts an agent's session
   key or a peer (an agent is a member principal anyway, never an admin).

@@ -1389,9 +1389,12 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     account and `/2fa` route goes through `cookieAccount`, which accepts neither
     a session key nor a peer — otherwise an agent (or a prompt injection
     driving one) could reset anyone. Actions that would undo the factor for
-    someone (reset, a code for another person, switching on/off) also need a
-    FRESH passkey assertion, not a session: a session can be ridden, a
-    biometric cannot. Switching it on kills every session issued before (the
+    someone (a code for another person, switching on/off, removing another's
+    passkey) also need a FRESH passkey assertion, not a session: a session can
+    be ridden, a biometric cannot. **While the factor is ON** — demanded
+    unconditionally, that same assertion bricked the recovery of an instance
+    that never turned two-factor on, where no admin can hold a passkey at all
+    (invariant 78). Switching it on kills every session issued before (the
     cookie's `mfa` field). And the rest stays true: anything running as the
     machine's user can read the account file — soft isolation, as invariant 26.
     Verified end to end in Chromium with a CDP virtual authenticator.
@@ -2627,3 +2630,35 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     (`connectionOrigin`), so no client can get under it, and a future bridge
     bug that forgets to neutralise fails closed instead of handing a stranger
     the terminal. Any new stranger-facing origin must join that refusal.
+
+<a id="inv-82"></a>
+
+78. **A gate must be satisfiable in every mode it guards — a second factor
+    demanded where none can exist is not a stronger door, it is a bricked one.**
+    `POST /2fa/recover` asked the acting admin for a FRESH passkey assertion
+    (`stepUpOk`) whatever the instance's two-factor setting, and that reads as
+    the careful choice: a recovery is exactly the act a ridden session must not
+    perform. But a passkey only exists where two-factor is ON — registering one
+    is a step TOWARDS turning it on, not a consequence of it — and the bootstrap
+    admin, which is who "the admin" is until named accounts exist, can never
+    hold one at all (invariant 46). So on an instance with two-factor off every
+    level of every recovery answered `403 confirm with your passkey first`, and
+    a forgotten password had no remedy short of hand-editing
+    `~/.shadok-ai/users/<key>.json`. Measured on a clean build, same admin,
+    two-factor off: levels 1, 2, 3 and the v1 `/2fa/reset`, all 403. The fix is
+    one word — `stepUpIfTwoFactor`, the gate the sibling account writes
+    (`POST /users`, `DELETE /users`, `/users/role`) already used — and it
+    changes nothing where the factor is on. What remains with it off is an
+    admin, signed in, from a same-origin browser (`tfaPerson`): the bar
+    `DELETE /users` clears, and that one destroys a private space for good. The
+    routes that could undo the factor FOR someone (`/2fa/enabled`,
+    `/2fa/passkey/delete`, `/2fa/enroll-code`) keep the unconditional
+    assertion, where it is both askable and the point. **The client owes the
+    same condition**, or the dead end simply moves earlier: `tfaEnabled`
+    decides whether a passkey is asked for, and with the factor off the row
+    offers the single level that means something (*reset password…* → *new
+    password*) instead of three about a factor nobody turned on. Both halves
+    are locked by a source scan in `test/twofactor.test.ts` — `stepUpOk` is the
+    obvious spelling in a `/2fa` route, and a later "harmonise these" pass
+    would restore it without noticing it removes the only remedy for a lost
+    password.

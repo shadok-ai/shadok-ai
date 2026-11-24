@@ -1166,6 +1166,15 @@ know before opening it up:
   the cockpit renews it — or 30 days after the sign-in at the latest), the open tab
   returns you to the login screen on its next request instead of failing in
   place — a paste that would not send, an agent list that would not refresh.
+- **Someone forgot their password.** An admin opens *reset password…* on that
+  person's row in the **Users** panel and hands over the link it shows — valid
+  48 hours, single use, and they choose the new password themselves, so the
+  admin never types or sees it. Their open sessions stop working right away,
+  including a stolen one. Nobody can reset themselves: ask another admin. The
+  instance password (`admin`) is not an account and is not reset here — change
+  `--password` / `SHADOK_GUI_PASSWORD` and restart. With **two-factor** on that
+  same row reads *recover access…* and offers the three levels below, each
+  confirmed with the acting admin's own passkey.
 - **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
   with a named account can register a passkey on their device — the
   fingerprint / face / PIN unlock of the phone or laptop (WebAuthn, user

@@ -1756,8 +1756,11 @@ interface LoginView {
   agent?: string | null;
   /** `og:*` tags for a shared link's preview (`previewMeta`). */
   meta?: string;
-  /** The invitation variant: a greeting, no user field, a new password. */
-  invite?: { name: string; token: string };
+  /** The invitation variant: a greeting, no user field, a new password.
+   *  `reset` is the level-1 link (`invite.reason === "password"`): the same
+   *  form, but the person is already a member — "Welcome … to join this
+   *  cockpit" would be the one sentence they know to be false. */
+  invite?: { name: string; token: string; reset?: boolean };
 }
 
 /**
@@ -1776,9 +1779,11 @@ function loginHtml(v: LoginView): string {
   const e = escapeXml;
   const accent = accentFor(v.theme);
   const name = v.instance || "Shadok-AI";
-  const heading = v.invite ? `Welcome, ${e(v.invite.name)}` : e(name);
+  const heading = v.invite ? `${v.invite.reset ? "Hello again" : "Welcome"}, ${e(v.invite.name)}` : e(name);
   const sub = v.invite
-    ? "Choose a password to join this cockpit."
+    ? v.invite.reset
+      ? "Choose a new password. The old one no longer works."
+      : "Choose a password to join this cockpit."
     : v.agent
       ? `Sign in to open <b>${e(v.agent)}</b>.`
       : "Sign in to continue.";
@@ -1787,7 +1792,7 @@ function loginHtml(v: LoginView): string {
   const pw = v.invite
     ? '<input id=pw type=password placeholder="Choose a password (8+ characters)" autofocus autocomplete=new-password>'
     : '<input id=pw type=password placeholder="Password" autofocus autocomplete=current-password>';
-  const title = v.invite ? `${e(name)} — choose a password` : `${e(name)} — sign in`;
+  const title = v.invite ? `${e(name)} — ${v.invite.reset ? "new password" : "choose a password"}` : `${e(name)} — sign in`;
   return `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
 <meta name=robots content="noindex,nofollow"><link rel=icon href="/icons/icon-192.png">
 <title>${title}</title>${v.meta ? "\n" + v.meta : ""}
@@ -1912,8 +1917,8 @@ function sendLogin(req: express.Request, res: express.Response, agentId?: string
 /** The page an invited person lands on: the login shell, pointed at the
  *  redemption route. Same CSP and same nonce — a page that exempted itself from
  *  the policy protecting every other page would be a strange message. */
-function invitePage(name: string, token: string): string {
-  return loginHtml({ ...brandView(), invite: { name, token } });
+function invitePage(name: string, token: string, reset = false): string {
+  return loginHtml({ ...brandView(), invite: { name, token, reset } });
 }
 
 /** This server's same-origin guard (see `originAllowed`). */
@@ -2380,7 +2385,8 @@ app.get("/invite/:token", (req, res) => {
   const acct = loadAccounts().find((a) => a.invite?.token === token);
   const v = inviteVerdict(acct, token, Date.now());
   if (!v.ok) return res.status(400).type("text").send(v.error);
-  return sendAuthPage(res, invitePage(acct!.name, token), 200);
+  // A level-1 reset link wears the same form with a different sentence.
+  return sendAuthPage(res, invitePage(acct!.name, token, acct!.invite?.reason === "password"), 200);
 });
 
 app.post("/invite/:token", async (req, res) => {
@@ -7372,7 +7378,8 @@ function askRequest(me: { name: string; role: Role }, kind: RequestKind, target:
  *  2 lost passkey, password known: two admins, then a device code.
  *  3 lost everything: a full reset, effective in 24 h or at a second admin's approval.
  * With two-factor OFF, levels 2 and 3 have nothing to protect and act at once
- * (a device code / the v1 reset), like before.
+ * (a device code / the v1 reset), like before — and no level asks the issuing
+ * admin for a passkey, since there are none to assert there.
  */
 app.post("/2fa/recover", async (req, res) => {
   const me = tfaPerson(req, res, true);
@@ -7382,7 +7389,26 @@ app.post("/2fa/recover", async (req, res) => {
   if (![1, 2, 3].includes(level)) return res.status(400).json({ error: "level must be 1, 2 or 3" });
   const v = resetVerdict({ actor: me, target, accounts: loadAccounts() });
   if (!v.ok) return res.status(400).json({ error: v.error });
-  if (!(await stepUpOk(req, res, me))) return;
+  // A FRESH passkey, but only while two-factor is ON — `stepUpIfTwoFactor`, the
+  // same gate as inviting or deleting an account.
+  //
+  // Unconditional, this route could not run at all on an instance with
+  // two-factor off: nobody there HAS a passkey (registering one is what turning
+  // it on requires, not the reverse), and the bootstrap admin — the instance
+  // password, which is who an admin is until named accounts exist — cannot hold
+  // one by construction (invariant 46). So every level answered "confirm with
+  // your passkey first", and a lost password had no remedy short of editing the
+  // account file by hand. The comment above this handler already described the
+  // intent ("with two-factor OFF, levels 2 and 3 ... act at once"); the gate
+  // contradicted it.
+  //
+  // What remains when it is off: an admin, signed in, from a same-origin
+  // browser (`tfaPerson(req, res, true)`) — exactly the bar `DELETE /users`
+  // clears, and that one destroys a private space irreversibly. The assertion
+  // defends the SECOND FACTOR, so it is worth demanding only where there is one;
+  // the routes that could undo it for someone (`/2fa/enabled`,
+  // `/2fa/passkey/delete`, `/2fa/enroll-code`) keep it unconditionally.
+  if (!(await stepUpIfTwoFactor(req, res, me))) return;
   const now = Date.now();
   if (level === 1) {
     if (!loadAccounts().find((a) => a.name === target)?.passwordHash)
