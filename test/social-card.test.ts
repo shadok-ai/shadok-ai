@@ -379,15 +379,15 @@ test("All of Drive: offered only when the broker names it, unticked by default, 
   const row = accountRowModel(gaccount({ areas: ["calendar", "drive_all"], policies: { mail: "approve", calendar: "approve", drive: "autonomous" } }), NOW);
   assert.deepEqual(row.areas.at(-1), { key: "drive_all", label: "All of Drive", granted: true });
   assert.deepEqual(row.areas.find((a: { key: string }) => a.key === "drive"), { key: "drive", label: "Drive files", granted: true }, "the whole Drive includes the cockpit's own files");
-  assert.equal(row.policyText, "Mail: with approval · Events: with approval · Drive edits: automatic");
+  assert.equal(row.policyText, "Mail: with approval · Events: with approval · Drive edits: automatic · Sharing: with approval");
 });
 
-test("the Drive edits setting: a third row only on an account that holds a Drive area, with its own confirmation", () => {
+test("the Drive edits and Sharing settings: two more rows only on an account that holds a Drive area, with their own confirmation", () => {
   assert.deepEqual(googlePolicyRows(gaccount()).map((r: { key: string }) => r.key), ["mail", "calendar"]);
-  assert.deepEqual(googlePolicyRows(gaccount({ areas: ["drive"] })).map((r: { key: string }) => r.key), ["mail", "calendar", "drive"], "bin, move and rename reach the cockpit's own files");
+  assert.deepEqual(googlePolicyRows(gaccount({ areas: ["drive"] })).map((r: { key: string }) => r.key), ["mail", "calendar", "drive", "share"], "bin, move and rename reach the cockpit's own files");
   assert.match(googlePolicyRows(gaccount({ areas: ["drive"] }))[2].hint, /moved to the bin, moved or renamed/);
   const rows = googlePolicyRows(gaccount({ areas: ["drive_all"], policies: { mail: "approve", calendar: "approve" } }));
-  assert.deepEqual(rows.map((r: { key: string; label: string }) => [r.key, r.label]), [["mail", "Mail"], ["calendar", "Events"], ["drive", "Drive edits"]]);
+  assert.deepEqual(rows.map((r: { key: string; label: string }) => [r.key, r.label]), [["mail", "Mail"], ["calendar", "Events"], ["drive", "Drive edits"], ["share", "Sharing"]]);
   assert.deepEqual(rows[2].choices, [{ key: "approve", label: "Ask before editing", checked: true }, { key: "autonomous", label: "Edit on its own", checked: false }], "a missing setting reads as asking");
   assert.equal(
     googleAutonomousConfirmText(gaccount(), "drive", []),

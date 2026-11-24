@@ -31,7 +31,9 @@ const USAGE = `usage: google.mjs <command>
   drive untrash   --account <id> --id <file id>                                    (out of the bin, back where it was)
   drive comments  --account <id> --id <file id> [--page <token>]
   drive reply     --account <id> --id <file id> --comment <comment id> [--resolve] [--stdin]   (stdin: the reply; --resolve alone only resolves)
-  drive access    --account <id> --id <file id>                                    (who can reach it — read only)
+  drive access    --account <id> --id <file id>                                    (who can reach it)
+  drive share     --account <id> --id <file id> (--with <email> | --group <email>)... [--role viewer|commenter|editor] [--no-notify] [--stdin]   (stdin: a note in Google's email)
+  drive unshare   --account <id> --id <file id> [--with <email>]... [--group <email>]... [--anyone]   (takes access away)
   get             --account <id> --url <https://…googleapis.com/…>                 (one read-only GET on a Google API)
   slides create   --account <id> --title <t>
   slides read     --account <id> --id <deck id>
@@ -105,7 +107,7 @@ async function accounts() {
   for (const a of mine) {
     const areas = Array.isArray(a.areas) ? a.areas.join(",") : "";
     const p = a.policies ?? {};
-    console.log(`${String(a.id).slice(0, 8)}  ${a.label}  areas=${areas || "none"}  mail=${p.mail ?? "approve"}  events=${p.calendar ?? "approve"}  drive-edits=${p.drive ?? "approve"}  reconnect-by=${day(a.expiresAt)}${a.status === "expired" ? "  EXPIRED" : ""}`);
+    console.log(`${String(a.id).slice(0, 8)}  ${a.label}  areas=${areas || "none"}  mail=${p.mail ?? "approve"}  events=${p.calendar ?? "approve"}  drive-edits=${p.drive ?? "approve"}  sharing=${p.share ?? "approve"}  reconnect-by=${day(a.expiresAt)}${a.status === "expired" ? "  EXPIRED" : ""}`);
   }
 }
 
@@ -120,6 +122,7 @@ const FLAGS = {
   meet: "flag", repeat: "one", series: "flag", "add-attendee": "list", "remove-attendee": "list", "replace-attendees": "flag", response: "one",
   with: "list", minutes: "num", "day-start": "one", "day-end": "one", weekends: "flag",
   formulas: "flag", slide: "one", size: "one",
+  group: "list", role: "one", "no-notify": "flag", anyone: "flag",
 };
 
 function parse(args, lists = []) {
@@ -156,12 +159,13 @@ const ACTIONS = {
   "drive download": "drive.download", "drive delete": "drive.delete", "drive trash": "drive.delete", "drive move": "drive.move", "drive rename": "drive.rename", "drive copy": "drive.copy",
   "drive upload": "drive.upload", "drive mkdir": "drive.mkdir", "drive untrash": "drive.untrash", "drive restore": "drive.untrash",
   "drive comments": "drive.comments", "drive reply": "drive.reply", "drive access": "drive.access", "api get": "api.get",
+  "drive share": "drive.share", "drive unshare": "drive.unshare",
 };
 
 // Asked for by name, these get a plain answer instead of the usage text.
-const NEVER = /^(drive|doc|sheet|file) (share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash)$/;
+const NEVER = /^(drive|doc|sheet|file) (permission|permissions|publish|transfer|owner|purge|destroy|erase|emptytrash|empty-trash)$/;
 const NEVER_SENTENCE =
-  "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
+  "Not available to agents: making a Drive file public or open to anyone with the link, changing its owner, and deleting one for good or emptying the bin. `drive share` gives named people access, `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 const NEVER_MAIL = /^gmail (delete|purge|destroy|erase|batchdelete|emptytrash|empty-trash|spam|filter|filters|forwarding|settings)$/;
 const NEVER_MAIL_SENTENCE =
   "Not available to agents: deleting mail for good, reporting spam, and changing Gmail's settings (filters, forwarding). `gmail trash` moves a message to the bin, where the person can restore it for 30 days — the rest is for the person to do in Gmail.";
@@ -236,7 +240,7 @@ function printDrive(r) {
   if (r.kind === "access") {
     const out = [fileLine(r.file ?? {}), ...(r.access ?? []).map((x) => `  ${x.role}  ${x.type}  ${x.who}${x.pendingOwner ? "  (pending owner)" : ""}${x.expires ? `  until ${x.expires}` : ""}`)];
     console.log(fenced(out, "FILE"));
-    console.log(`${(r.access ?? []).length} entr${(r.access ?? []).length === 1 ? "y" : "ies"}${r.truncated ? " (more not shown)" : ""}. Changing who has access is not available to agents — the person does it in Drive.`);
+    console.log(`${(r.access ?? []).length} entr${(r.access ?? []).length === 1 ? "y" : "ies"}${r.truncated ? " (more not shown)" : ""}. \`drive share\` gives named people access, \`drive unshare\` takes it away.`);
     return;
   }
   if (r.kind === "api") {
@@ -371,6 +375,11 @@ function print(action, out) {
       printCreated(out.result?.created, "Once applied, it creates");
       return;
     }
+    if (action === "drive.share") {
+      console.log(`The share is waiting for approval in the cockpit (draft ${out.draftId}): the person sees who would get access and with which role, next to who has it now. Nobody has been given access yet. Do not say it is shared until you are told.`);
+      printUntouched(out.result);
+      return;
+    }
     if (action === "drive.upload") {
       console.log(`The upload is waiting for approval in the cockpit (draft ${out.draftId}): the file is in the person's Drive, at the top, seen by nobody else, until they approve putting it into the shared folder (Discard bins it). Do not say it is in the folder until you are told.`);
       return;
@@ -416,6 +425,11 @@ function print(action, out) {
     console.log(`${what}: ${r.id}${r.link ? ` ${r.link}` : ""} — ${r.private ? "only the person can see it: it is the cockpit's own, edited without asking." : "other people can see it (its folder is shared), so changing it follows the drive-edits setting."}`);
   } else if (action === "drive.untrash") {
     console.log("Restored from the bin, back where it was.");
+  } else if (action === "drive.share") {
+    console.log(`Shared with ${(r.shared ?? []).join(", ") || "nobody new"}.`);
+    printUntouched(r);
+  } else if (action === "drive.unshare") {
+    console.log(`Access removed: ${(r.removed ?? []).join(", ")}.`);
   } else if (action === "drive.reply") {
     console.log(r.status === "resolved" ? "Done — the comment is resolved." : "Reply posted.");
   } else if (action === "drive.copy") {
@@ -444,6 +458,12 @@ function print(action, out) {
   } else if (action === "calendar.delete") {
     console.log("Event deleted.");
   }
+}
+
+/** A share leaves alone who already had that role, and owners / managers. */
+function printUntouched(r) {
+  if (r?.unchanged?.length) console.log(`Already had that role (unchanged): ${r.unchanged.join(", ")}.`);
+  if (r?.kept?.length) console.log(`Owner or manager (never changed by a share): ${r.kept.join(", ")}.`);
 }
 
 const TRIAGE = ["gmail.archive", "gmail.mark", "gmail.star", "gmail.label", "gmail.trash"];
@@ -516,6 +536,15 @@ async function run(group, verb, rest) {
   } else if (action === "drive.untrash" || action === "drive.access" || action === "drive.comments") {
     if (!o.id) die(`drive ${verb} needs --id <file id> (see \`drive search\`).`);
     args = { id: o.id, ...(action === "drive.comments" && o.page ? { pageToken: o.page } : {}) };
+  } else if (action === "drive.share") {
+    if (!o.id) die("drive share needs --id <file id> (see `drive search`).");
+    if (!o.with && !o.group) die("drive share needs --with <email> (a person) or --group <email> (a Google group), repeatable. Only named addresses: never \"anyone with the link\".");
+    if (o["no-notify"] && text?.trim()) die("The --stdin note goes in Google's notification email: it cannot go with --no-notify.");
+    args = { id: o.id, ...(o.with ? { users: o.with } : {}), ...(o.group ? { groups: o.group } : {}), ...(o.role ? { role: o.role } : {}), ...(o["no-notify"] ? { notify: false } : {}), ...(text?.trim() ? { message: text } : {}) };
+  } else if (action === "drive.unshare") {
+    if (!o.id) die("drive unshare needs --id <file id> (see `drive access`).");
+    if (!o.with && !o.group && !o.anyone) die("drive unshare needs --with <email> / --group <email> (repeatable) or --anyone (the link sharing).");
+    args = { id: o.id, ...(o.with ? { users: o.with } : {}), ...(o.group ? { groups: o.group } : {}), ...(o.anyone ? { anyone: true } : {}) };
   } else if (action === "drive.reply") {
     if (!o.id || !o.comment) die("drive reply needs --id <file id> and --comment <comment id> (see `drive comments`).");
     if (!o.stdin && !o.resolve) die("drive reply needs --stdin (the reply, read from stdin) or --resolve (only resolve the comment), or both.");

@@ -313,12 +313,12 @@ test("a new Google account starts with both settings on approve; a reconnect kee
   const { policies: _p, ...incoming } = gacct();
   void _p;
   const first = upsertAccount([], incoming, 5);
-  assert.deepEqual(first.account.policies, { mail: "approve", calendar: "approve", drive: "approve" });
-  const chosen = { ...first.account, policies: { mail: "autonomous" as const, calendar: "approve" as const, drive: "approve" as const }, share: sh({ everyone: true }) };
+  assert.deepEqual(first.account.policies, { mail: "approve", calendar: "approve", drive: "approve", share: "approve" });
+  const chosen = { ...first.account, policies: { mail: "autonomous" as const, calendar: "approve" as const, drive: "approve" as const, share: "approve" as const }, share: sh({ everyone: true }) };
   const again = upsertAccount([chosen], { ...incoming, token: "NEW", refreshToken: "NEW-R", scopes: ["openid", GOOGLE_AREA_SCOPES.drive], refreshExpiresAt: 2_000_000 }, 9);
   assert.equal(again.list.length, 1);
   assert.equal(again.account.id, first.account.id);
-  assert.deepEqual(again.account.policies, { mail: "autonomous", calendar: "approve", drive: "approve" }, "a reconnect never resets a setting");
+  assert.deepEqual(again.account.policies, { mail: "autonomous", calendar: "approve", drive: "approve", share: "approve" }, "a reconnect never resets a setting");
   assert.equal(again.account.share.everyone, true);
   assert.deepEqual(again.account.scopes, ["openid", GOOGLE_AREA_SCOPES.drive]);
   assert.equal(again.account.token, "NEW");
@@ -332,7 +332,7 @@ test("what an agent is told about an account carries no token, and the deadline 
   const v = agentAccountView(gacct(), 5_000);
   assert.deepEqual(v, {
     id: "g0000001", label: "ann@example.org", provider: "google", kind: "member",
-    policies: { mail: "approve", calendar: "approve", drive: "approve" }, areas: ["calendar", "gmail"], expiresAt: 900_000, status: "ok",
+    policies: { mail: "approve", calendar: "approve", drive: "approve", share: "approve" }, areas: ["calendar", "gmail"], expiresAt: 900_000, status: "ok",
   });
   assert.doesNotMatch(JSON.stringify(v), /SECRET|token|scopes/i);
   const li = agentAccountView(acct(sh({ personal: true })), 5);
@@ -341,24 +341,29 @@ test("what an agent is told about an account carries no token, and the deadline 
 });
 
 test("policy patch: Google takes policies.mail / policies.calendar one at a time; LinkedIn takes policy; neither takes the other's", () => {
-  assert.deepEqual(policyPatch(gacct(), { policies: { mail: "autonomous" } }), { ok: true, patch: { policies: { mail: "autonomous", calendar: "approve", drive: "approve" } } });
-  assert.deepEqual(policyPatch(gacct({ policies: { mail: "autonomous", calendar: "approve", drive: "approve" } }), { policies: { calendar: "autonomous", drive: "approve" } }), {
-    ok: true, patch: { policies: { mail: "autonomous", calendar: "autonomous", drive: "approve" } },
+  assert.deepEqual(policyPatch(gacct(), { policies: { mail: "autonomous" } }), { ok: true, patch: { policies: { mail: "autonomous", calendar: "approve", drive: "approve", share: "approve" } } });
+  assert.deepEqual(policyPatch(gacct({ policies: { mail: "autonomous", calendar: "approve", drive: "approve", share: "approve" } }), { policies: { calendar: "autonomous", drive: "approve", share: "approve" } }), {
+    ok: true, patch: { policies: { mail: "autonomous", calendar: "autonomous", drive: "approve", share: "approve" } },
   });
   assert.equal(policyPatch(gacct(), { policy: "autonomous" }).ok, false, "a Google account never reads `policy`");
   assert.equal(policyPatch(gacct(), { policies: { mail: "always" } }).ok, false);
   const whole = gacct({ scopes: ["openid", GOOGLE_AREA_SCOPES.drive_all] });
-  assert.deepEqual(policyPatch(whole, { policies: { drive: "autonomous" } }), { ok: true, patch: { policies: { mail: "approve", calendar: "approve", drive: "autonomous" } } });
-  assert.deepEqual(policyPatch(gacct(), { policies: { drive: "autonomous" } }), { ok: false, reason: "Drive edits can be made automatic only on an account connected with a Drive area." }, "not ahead of the grant");
-  assert.equal(policyPatch(gacct({ scopes: ["openid", GOOGLE_AREA_SCOPES.drive] }), { policies: { drive: "autonomous" } }).ok, true, "bin / move / rename of the cockpit's own files follow it too");
-  assert.equal(policyPatch(gacct(), { policies: { drive: "approve" } }).ok, true);
-  assert.equal(policyPatch(gacct(), { policies: { files: "autonomous" } }).ok, false, "there is no fourth setting");
+  assert.deepEqual(policyPatch(whole, { policies: { drive: "autonomous", share: "approve" } }), { ok: true, patch: { policies: { mail: "approve", calendar: "approve", drive: "autonomous", share: "approve" } } });
+  assert.deepEqual(policyPatch(gacct(), { policies: { drive: "autonomous", share: "approve" } }), { ok: false, reason: "Drive edits can be made automatic only on an account connected with a Drive area." }, "not ahead of the grant");
+  assert.equal(policyPatch(gacct({ scopes: ["openid", GOOGLE_AREA_SCOPES.drive] }), { policies: { drive: "autonomous", share: "approve" } }).ok, true, "bin / move / rename of the cockpit's own files follow it too");
+  assert.equal(policyPatch(gacct(), { policies: { drive: "approve", share: "approve" } }).ok, true);
+  assert.equal(policyPatch(gacct(), { policies: { files: "autonomous" } }).ok, false, "there is no other setting");
+  // Sharing: its own setting, never ahead of a Drive grant, raised by the owner alone.
+  assert.deepEqual(policyPatch(whole, { policies: { share: "autonomous" } }), { ok: true, patch: { policies: { mail: "approve", calendar: "approve", drive: "approve", share: "autonomous" } } });
+  assert.deepEqual(policyPatch(gacct(), { policies: { share: "autonomous" } }), { ok: false, reason: "Sharing can be made automatic only on an account connected with a Drive area." });
+  assert.equal(patchRaisesAutonomy(whole, { policies: { mail: "approve", calendar: "approve", drive: "approve", share: "autonomous" } }), true, "switching sharing to automatic is the owner's alone");
   // An account stored before the Drive setting existed: the missing key reads as approve.
   const old = gacct({ policies: { mail: "autonomous", calendar: "approve" } as never });
-  assert.deepEqual(googlePolicies(old), { mail: "autonomous", calendar: "approve", drive: "approve" });
-  assert.deepEqual(policyPatch(old, { policies: { calendar: "autonomous" } }), { ok: true, patch: { policies: { mail: "autonomous", calendar: "autonomous", drive: "approve" } } });
-  assert.equal(patchRaisesAutonomy(old, { policies: { mail: "autonomous", calendar: "approve", drive: "autonomous" } }), true, "switching Drive edits to automatic is the owner's alone");
+  assert.deepEqual(googlePolicies(old), { mail: "autonomous", calendar: "approve", drive: "approve", share: "approve" });
+  assert.deepEqual(policyPatch(old, { policies: { calendar: "autonomous" } }), { ok: true, patch: { policies: { mail: "autonomous", calendar: "autonomous", drive: "approve", share: "approve" } } });
+  assert.equal(patchRaisesAutonomy(old, { policies: { mail: "autonomous", calendar: "approve", drive: "autonomous", share: "approve" } }), true, "switching Drive edits to automatic is the owner's alone");
   assert.equal(publicView(old).policies?.drive, "approve");
+  assert.equal(publicView(old).policies?.share, "approve", "an account stored before sharing existed asks");
   assert.equal(policyPatch(gacct(), { policies: {} }).ok, false);
   assert.equal(policyPatch(gacct(), { policies: [] }).ok, false);
   assert.deepEqual(policyPatch(gacct(), {}), { ok: true, patch: null });

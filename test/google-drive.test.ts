@@ -222,14 +222,15 @@ test("the whole Drive is its own area: Drive files alone opens neither search no
 
 test("what no agent may do in a Drive is refused by name, whatever the account holds or allows", () => {
   const all = acct([S.drive, S.drive_all], { drive: "autonomous" });
-  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash"]) {
+  for (const a of ["drive.publish", "drive.transfer", "drive.owner", "drive.permissions", "drive.purge", "drive.emptytrash"]) {
     assert.deepEqual(actionVerdict(all, a), { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE }, a);
   }
-  assert.match(DRIVE_REFUSED_SENTENCE, /shared with.*for good or emptying the bin/);
+  assert.match(DRIVE_REFUSED_SENTENCE, /public or open to anyone with the link, changing its owner.*for good or emptying the bin/);
   assert.equal((actionVerdict(all, "drive.frobnicate") as { status: number }).status, 400, "anything else is simply unknown");
-  // …and nothing in the table shares or deletes for good. (A copy exists —
-  // `drive.copy` — and never carries the original's sharing.)
-  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge/.test(k)), false);
+  // …and nothing in the table makes a file public, changes its owner or
+  // deletes for good. Sharing with NAMED people is `drive.share` (tested in
+  // google-drive-share.test.ts).
+  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /public|publish|owner|transfer|permission|purge/.test(k)), false);
 });
 
 // ---- own vs someone else's file --------------------------------------------

@@ -186,7 +186,7 @@ const card = (payload: FilePayload): Pick<Draft, "payload"> => ({ payload });
 
 // ---- the table ----------------------------------------------------------------
 
-test("the new actions: classes, areas, audit; permission changes are still refused by name", () => {
+test("the new actions: classes, areas, audit; raw permission edits are still refused by name", () => {
   assert.deepEqual(GOOGLE_ACTIONS["drive.upload"], { class: "file-copy", area: "drive" });
   assert.deepEqual(GOOGLE_ACTIONS["drive.mkdir"], { class: "file-copy", area: "drive" });
   assert.deepEqual(GOOGLE_ACTIONS["drive.untrash"], { class: "file-manage", area: "drive" });
@@ -197,7 +197,7 @@ test("the new actions: classes, areas, audit; permission changes are still refus
   }
   for (const a of ["drive.upload", "drive.mkdir", "drive.untrash", "drive.reply"] as const) assert.equal(actionSetting(acct(), a), "approve", `${a} follows the Drive setting`);
   assert.equal(actionSetting(acct([S.drive], { drive: "autonomous", mail: "approve" }), "drive.reply"), "autonomous");
-  for (const name of ["drive.share", "drive.permissions", "drive.permission", "file.unshare"]) {
+  for (const name of ["drive.permissions", "drive.permission", "file.publish", "drive.transfer"]) {
     assert.deepEqual(actionVerdict(acct(), name), { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE });
   }
   // The passthrough's area is the URL's: no area check at the door.

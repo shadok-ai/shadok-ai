@@ -2531,6 +2531,8 @@ whether an approval setting applies, and which:
 | read, audited | `api.get` (area from the URL, `passthroughPlan`) | never — but logged: the URL; never the answer |
 | file-manage | `drive.delete` (to the bin), `drive.untrash`, `drive.move`, `drive.rename`, `drive.reply` | always `policies.drive`, the cockpit's own files included |
 | file-copy | `drive.copy`, `drive.upload`, `drive.mkdir` | `policies.drive` only when the new item lands where others can see it (copy: another folder than the original's; upload / folder: a folder whose `permissionIds` are not the owner alone) |
+| share | `drive.share` | `policies.share` — its own setting, never `policies.drive` |
+| unshare | `drive.unshare` | never — but always logged by who lost access |
 | mailbox | `gmail.archive`, `gmail.mark`, `gmail.star`, `gmail.label`, `gmail.trash` (area `gmail_modify`) | never — but always logged by message ids |
 | mail | `gmail.send`, `gmail.forward` | `policies.mail` |
 | calendar | `calendar.create`, `calendar.update`, `calendar.delete`, `calendar.respond` (with or without attendees) | `policies.calendar` |
@@ -2591,8 +2593,33 @@ it under `<agent cwd>/drive-downloads/` through `writeNewAsUserArgv`
 (`group-exec.ts`) — `sh` + `dd conv=excl` as the agent's OS user in
 multi-tenant (invariant 60), so it lands only where the agent could write and
 never over an existing name or through a symlink. `actionVerdict` still
-refuses share / permissions / purge by NAME (`DRIVE_REFUSED_SENTENCE`) —
-none exists in the table.
+refuses public sharing, a change of owner, raw permissions and purge by NAME
+(`DRIVE_REFUSED_SENTENCE`) — none exists in the table.
+
+**Sharing** (`drive.share`, class `share`; `drive.unshare`, class `unshare`)
+was refused by name until a person asked for it. It is the one Drive change
+that cannot be taken back: once someone has opened the file, removing the
+access does not undo what they read — and it is exactly what a prompt
+injection in a mail or a shared document would ask for. So it gets its OWN
+setting, `policies.share` (ask first by default, automatic only for the
+account's owner and only with a Drive area, like `policies.drive`), instead of
+riding on Drive edits, and a closed vocabulary: named users and groups
+(`shareTargetsVerdict`, 20 at most), as reader / commenter / writer
+(`shareRoleVerdict`). "Anyone with the link", a domain and an owner are not
+expressible at all. `sharePlan` (pure) turns the request into grants against
+the file's permissions: a new address is created, a different role is
+changed (`from` on the card), the same role or an owner / organizer is left
+alone — and the same plan is recomputed at apply time against the
+permissions as they are THEN, so an approval never undoes a change made since
+the card. The card shows who has access now (`permissions.list`), who gets
+what, whether Google emails them (`sendNotificationEmail`, with the agent's
+note as `emailMessage`); like the other file-manage cards it is applied only
+if the file still has the name and folder it showed. Taking access away
+(`unsharePlan` + `removeAccess`) only narrows the audience, so it never asks;
+it refuses — before deleting anything — an owner's access, the account's own
+(it would lock the cockpit out) and an address whose access comes through a
+group or the domain. A share does not touch `ownFiles`: a file the cockpit
+created stays its own once the person chooses to share it.
 
 `drive.copy` (class `file-copy`, `files.copy`) was refused by name too until a
 real need came up: duplicating a formatted Doc to translate it, which a
@@ -3461,7 +3488,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
 | `src/google-passthrough.ts` | The read-only passthrough behind `api.get`: `PASSTHROUGH_ROUTES` (host + path prefix → area), `passthroughPlan` (refuses anything off the list or ambiguous, before a token), `passthroughGet` (GET, no redirect, JSON/text only, 2 MB cap). Pure over an injected fetch, tested. |
-| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / file-copy / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
+| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / file-copy / share / unshare / mailbox / mail / calendar), `actionSetting` (which of the four settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
 | `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only), `editPlan` (the requests plus what a Slides batch creates — `duplicate_slide` copies, custom-layout `add_slide`, `add_shape` / `add_table`), `translateEditError`; the formatting ops (text styles, lists, links, Docs table cells/rows, Sheets sort/filter/freeze/borders/merge/conditional formats/dropdowns, Slides notes/shapes/moves/images) and the state they need (`DocState.tables`, a slide element's geometry, a slide's speaker notes). Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/github.ts` | GitHub client for connected GitHub accounts: `GithubTokens` (refresh through the broker with the ROTATING refresh token — one in flight per account, the new refresh token persisted before the access token is used, `invalid_grant` → expired; `needsKeepalive` for the hourly renewal), `fetchUser` / `fetchInstallations`, `noreplyEmail`, `githubGitEnv` (the credential helper's name in the spawn env, never a token), `pickGithubAccount`. Pure over an injected fetch, tested. |

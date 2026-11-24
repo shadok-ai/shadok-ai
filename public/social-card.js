@@ -125,10 +125,13 @@ const FILE_OPS = {
   "drive.mkdir": { head: "Create a folder inside a shared Drive folder", go: "Create the folder", done: "Folder created", what: "A new, empty folder, seen by whoever the folder around it is shared with" },
   "drive.untrash": { head: "Restore a Drive file from the bin", go: "Restore the file", done: "File restored", what: "Back where it was before the bin, seen again by whoever can see that folder" },
   "drive.reply": { head: "Reply to a comment on a Drive file", go: "Post the reply", done: "Reply posted", what: "A reply, read by everyone who can see this file's comments" },
+  "drive.share": { head: "Share a Drive file", go: "Share the file", done: "File shared", what: "These people get access to the file — once they have opened it, taking the access back does not undo what they saw" },
 };
+/** Drive's own words for a role, as its sharing dialog says them. */
+const ROLE_WORDS = { reader: "viewer", commenter: "commenter", writer: "editor", owner: "owner", organizer: "manager", fileOrganizer: "content manager" };
 /** A reply that only resolves: its own head and button. */
 const FILE_RESOLVE = { head: "Resolve a comment on a Drive file", go: "Resolve the comment", done: "Comment resolved", what: "Marks the comment resolved, for everyone who can see this file's comments" };
-const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.untrash", "drive.reply"];
+const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.untrash", "drive.reply", "drive.share"];
 
 function fileSize(n) {
   return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " kB" : n + " B";
@@ -243,6 +246,22 @@ function googleCardModel(d) {
       fields.push({ label: "New folder", value: typeof f.newName === "string" ? f.newName : "" });
     } else if (f.op === "drive.untrash") {
       fields.push({ label: "Returns to", value: f.parentName ? String(f.parentName) : f.parentId ? String(f.parentId) : "(its folder is unknown)" });
+    } else if (f.op === "drive.share") {
+      // Who has it now, then exactly who gets what — the note is the body.
+      const access = strs(f.access);
+      fields.push({ label: "Has access now", value: access.length ? access.join("\n") : "(unknown)" });
+      const grants = Array.isArray(f.grants) ? f.grants.filter((g) => g && typeof g.email === "string") : [];
+      fields.push({
+        label: "Gets access",
+        value: grants.map((g) => `${g.email}${g.type === "group" ? " (group)" : ""} — ${ROLE_WORDS[g.role] || String(g.role)}${g.from ? ` (now ${ROLE_WORDS[g.from] || String(g.from)})` : ""}`).join("\n"),
+      });
+      // Google emails only people NEW to the file; a changed role sends nothing.
+      const fresh = grants.filter((g) => !g.from).length;
+      const note = typeof f.text === "string" && f.text ? ", with the note below" : "";
+      fields.push({
+        label: "Google emails them",
+        value: f.notify === false ? "no — they are not told" : !fresh ? "no — Google sends no email for a changed role" : "yes" + (fresh < grants.length ? " (the people new to the file)" : "") + note,
+      });
     } else if (f.op === "drive.reply") {
       // The comment answered — someone else's words, shown as text — then the reply as the body.
       fields.push({ label: "Comment by", value: typeof f.commentAuthor === "string" ? f.commentAuthor : "unknown" });
@@ -259,7 +278,7 @@ function googleCardModel(d) {
       if (f.op === "drive.rename") fields.push({ label: "New name", value: typeof f.newName === "string" ? f.newName : "" });
     } else if (f.op !== "doc.append") fields.push({ label: "Range", value: f.range ? String(f.range) : "after the last row" });
     fields.push({ label: "Change", value: op.what });
-    text = f.op === "drive.reply" ? (typeof f.text === "string" ? f.text : "") : manage ? "" : f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
+    text = f.op === "drive.reply" || f.op === "drive.share" ? (typeof f.text === "string" ? f.text : "") : manage ? "" : f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
     go = op.go;
     wait = manage
       ? "Waiting for approval — the file stays as it is until someone approves it. Other people may have access to this file."
@@ -396,12 +415,13 @@ export function autonomousConfirmText(account, groups) {
 
 /**
  * The sentence a person confirms before switching one of a Google account's
- * three settings to automatic. `setting` is `mail`, `calendar` or `drive`.
+ * settings to automatic. `setting` is `mail`, `calendar`, `drive` or `share`.
  */
 export function googleAutonomousConfirmText(account, setting, groups) {
   const a = account || {};
   const who = a.label || "this account";
   const scope = scopeText(a.share, groups);
+  if (setting === "share") return `Agents in ${scope} will be able to give anyone they name access to files in ${who}'s Drive — as viewer, commenter or editor — without asking anyone. Once someone has opened a file, taking the access back does not undo what they saw.`;
   if (setting === "drive") return `Agents in ${scope} will be able to edit, rename, move and bin files in ${who}'s Drive — files shared with other people included — without asking anyone.`;
   return setting === "calendar"
     ? `Agents in ${scope} will be able to add, change and delete events in ${who}'s calendar without asking anyone.`
@@ -430,7 +450,10 @@ export function googlePolicyRows(account) {
     row("mail", "Mail", "Whether a person approves each email on a card in the chat", "Ask before sending", "Send on its own"),
     row("calendar", "Events", "Whether a person approves each event added, changed or deleted", "Ask before changing", "Change on its own"),
     ...(wholeDrive
-      ? [row("drive", "Drive edits", "Whether a person approves each file moved to the bin, moved or renamed — and each edit to a file the cockpit did not create", "Ask before editing", "Edit on its own")]
+      ? [
+          row("drive", "Drive edits", "Whether a person approves each file moved to the bin, moved or renamed — and each edit to a file the cockpit did not create", "Ask before editing", "Edit on its own"),
+          row("share", "Sharing", "Whether a person approves each new person given access to a Drive file (taking access away never asks)", "Ask before sharing", "Share on its own"),
+        ]
       : []),
   ];
 }
@@ -547,7 +570,9 @@ export function accountRowModel(account, now = Date.now(), groups = []) {
     shareText: "Shared with " + scopeText(a.share, groups),
     policyText: google
       ? `Mail: ${pol.mail === "autonomous" ? "automatic" : "with approval"} · Events: ${pol.calendar === "autonomous" ? "automatic" : "with approval"}` +
-        (granted.includes("drive_all") || granted.includes("drive") ? ` · Drive edits: ${pol.drive === "autonomous" ? "automatic" : "with approval"}` : "")
+        (granted.includes("drive_all") || granted.includes("drive")
+          ? ` · Drive edits: ${pol.drive === "autonomous" ? "automatic" : "with approval"} · Sharing: ${pol.share === "autonomous" ? "automatic" : "with approval"}`
+          : "")
       : a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
     // Google: which areas the person granted (they may untick one on Google's
     // own screen), and — while the app is in Testing — the weekly deadline.

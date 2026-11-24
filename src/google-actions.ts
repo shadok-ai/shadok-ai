@@ -62,6 +62,15 @@ import {
   getComment,
   getFileState,
   listAccess,
+  listPermissions,
+  permissionWho,
+  sharePlan,
+  shareRoleVerdict,
+  shareTargetsVerdict,
+  shareMessageVerdict,
+  applyShare,
+  unsharePlan,
+  removeAccess,
   listComments,
   replyTextVerdict,
   replyToComment,
@@ -148,11 +157,20 @@ import {
  *   keeps a message 30 days; nothing deletes for good). An approval card for
  *   "mark as read" would train the person to click through cards — the very
  *   habit the cards that DO reach other people depend on not forming.
+ * - `share`: gives named people or groups access to a Drive file, or changes
+ *   the role they hold (`drive.share`) — the account's SHARE setting. Only
+ *   viewer / commenter / editor, only named addresses: "anyone with the link",
+ *   a whole domain and a change of owner are not in the vocabulary, so no
+ *   setting reaches them. A file that is shared cannot be un-read, which is
+ *   why this has its own setting instead of riding on DRIVE edits.
+ * - `unshare`: takes access away (`drive.unshare`). Never asks, always logged:
+ *   it only narrows who can see the file. Never an owner's access, never the
+ *   account's own (it would lock the cockpit out).
  * - `mail`: sends email (a forward too) — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
  */
-export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "file-copy" | "mailbox" | "mail" | "calendar";
+export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "file-copy" | "share" | "unshare" | "mailbox" | "mail" | "calendar";
 
 export const GOOGLE_ACTIONS = {
   "calendar.list": { class: "read", area: "calendar" },
@@ -181,6 +199,8 @@ export const GOOGLE_ACTIONS = {
   "drive.comments": { class: "read", area: "drive", audit: true },
   "drive.reply": { class: "file-manage", area: "drive" },
   "drive.access": { class: "read", area: "drive", audit: true },
+  "drive.share": { class: "share", area: "drive" },
+  "drive.unshare": { class: "unshare", area: "drive" },
   // The read-only passthrough: its area depends on the URL, checked per call
   // (`passthroughPlan`) before any token is fetched.
   "api.get": { class: "read", area: "url", audit: true },
@@ -223,6 +243,7 @@ export function actionSetting(account: Pick<ConnectedAccount, "policies">, actio
   const c: GoogleActionClass = GOOGLE_ACTIONS[action].class;
   // A copy's setting applies only when it leaves the original's folder —
   // decided in `runGoogleAction`, which knows where the original is.
+  if (c === "share") return p.share;
   return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-manage" || c === "file-copy" || (c === "file-write" && foreign) ? p.drive : null;
 }
 
@@ -264,9 +285,9 @@ export function writesForeignFile(account: Pick<ConnectedAccount, "scopes" | "id
 
 /** What no agent may do in a Drive, whatever the account allows: asked for by
  *  name, it gets this sentence rather than "unknown action". */
-const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash)$/;
+const REFUSED = /^(drive|doc|sheet|file)\.(permission|permissions|publish|transfer|owner|purge|destroy|erase|emptytrash|empty-trash)$/;
 export const DRIVE_REFUSED_SENTENCE =
-  "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
+  "Not available to agents: making a Drive file public or open to anyone with the link, changing its owner, and deleting one for good or emptying the bin. `drive share` gives named people access, `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
 /** The mail twin: nothing deletes mail for good, whatever the account holds. */
 const MAIL_REFUSED = /^gmail\.(delete|purge|destroy|erase|batchdelete|emptytrash|empty-trash|spam|filter|filters|forwarding|settings)$/;
@@ -334,8 +355,16 @@ export function eventSummary(op: EventPayload["op"], e: Pick<EventFields, "title
   return `${op} "${e.title}" ${e.start} → ${e.end}${zone}`;
 }
 
-export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows" | "toId" | "toName" | "newName" | "bytes" | "convert" | "commentId" | "resolve">): string {
+/** A Drive role as Drive's own sharing dialog names it. */
+export const ROLE_WORD: Record<string, string> = { reader: "viewer", commenter: "commenter", writer: "editor", owner: "owner", organizer: "manager", fileOrganizer: "content manager" };
+const roleWord = (r: string) => ROLE_WORD[r] ?? r;
+
+export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows" | "toId" | "toName" | "newName" | "bytes" | "convert" | "commentId" | "resolve" | "grants" | "notify">): string {
   const where = `"${p.name}" (${p.fileId})`;
+  if (p.op === "drive.share") {
+    const who = (p.grants ?? []).map((g) => `${g.email} (${roleWord(g.role)}${g.from ? `, was ${roleWord(g.from)}` : ""})`).join(", ");
+    return `share ${where} with ${who}${p.notify === false ? " without notifying them" : ""}`;
+  }
   if (p.op === "drive.upload") return `upload "${p.name}" (${p.bytes ?? 0} bytes${p.convert ? `, as a Google ${p.convert}` : ""}) into folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
   if (p.op === "drive.mkdir") return `create folder "${p.newName ?? ""}" in ${where}`;
   if (p.op === "drive.untrash") return `restore ${where} from the bin`;
@@ -429,7 +458,7 @@ function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: 
   return { op: action, ...(given ? {} : { range: rangeOk(args.range) }), rows };
 }
 
-type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName" | "commentId" | "resolve">;
+type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName" | "commentId" | "resolve" | "grants" | "notify">;
 
 async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string; copy?: DriveFileMeta & { private: boolean } }> {
   if (e.op === "drive.copy") return { copy: await copyFile(token, fileId, e.newName, e.toId, f) };
@@ -438,6 +467,7 @@ async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: Fetc
   // The upload waited, private, at the top of the Drive: approving moves it in.
   if (e.op === "drive.upload") return moveFile(token, fileId, e.parentId, e.toId ?? "", f).then(() => ({}));
   if (e.op === "drive.untrash") return restoreFile(token, fileId, f).then(() => ({}));
+  if (e.op === "drive.share") return applyShare(token, fileId, e.grants ?? [], { notify: e.notify !== false, ...(e.text ? { message: e.text } : {}) }, f).then(() => ({}));
   if (e.op === "drive.reply") return replyToComment(token, fileId, e.commentId ?? "", { ...(e.text ? { text: e.text } : {}), ...(e.resolve ? { resolve: true } : {}) }, f).then(() => ({}));
   if (e.op === "drive.delete") return trashFile(token, fileId, f).then(() => ({}));
   if (e.op === "drive.rename") return renameFile(token, fileId, e.newName ?? "", f).then(() => ({}));
@@ -863,6 +893,58 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
         return { kind: "result", result: { id: st.id, status: "restored" }, log: { summary, ...(st.link ? { link: st.link } : {}) } };
       }
       return { kind: "pending", action: "drive.untrash", payload, summary };
+    }
+    case "drive.share": {
+      const id = fileIdVerdict(args.id);
+      const targets = shareTargetsVerdict(args.users, args.groups);
+      const role = shareRoleVerdict(args.role);
+      const notify = args.notify !== false;
+      const message = shareMessageVerdict(args.message);
+      if (message && !notify) throw new GoogleInputError("A message goes in Google's notification email — it cannot go with --no-notify.");
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      const { permissions, truncated } = await listPermissions(token, meta.id, f);
+      const plan = sharePlan(permissions, targets, role);
+      const untouched = { ...(plan.unchanged.length ? { unchanged: plan.unchanged } : {}), ...(plan.kept.length ? { kept: plan.kept } : {}) };
+      if (!plan.grants.length) {
+        throw new GoogleInputError(`Nothing to change: ${[...plan.unchanged.map((e) => `${e} is already ${roleWord(role)}`), ...plan.kept.map((e) => `${e} is an owner or manager`)].join("; ")}.`);
+      }
+      // Who can reach it now — what the person weighs the new access against.
+      const access = permissions.slice(0, 30).map((x) => `${permissionWho(x)} — ${roleWord(x.role)}`);
+      if (truncated || permissions.length > 30) access.push(`… and more (${permissions.length}${truncated ? "+" : ""} in all)`);
+      const payload: FilePayload = {
+        kind: "file", op: "drive.share", fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners,
+        ...(meta.parentId ? { parentId: meta.parentId } : {}),
+        grants: plan.grants, notify, access,
+        ...(message ? { text: message } : {}),
+      };
+      const summary = fileEditSummary(payload);
+      if (setting === "autonomous") {
+        const r = await applyShare(token, meta.id, plan.grants, { notify, ...(message ? { message } : {}) }, f);
+        return { kind: "result", result: { id: meta.id, status: "shared", shared: r.applied.map((g) => `${g.email} (${roleWord(g.role)})`), ...untouched }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+      }
+      return { kind: "pending", action: "drive.share", payload, summary, ...(Object.keys(untouched).length ? { result: untouched } : {}) };
+    }
+    case "drive.unshare": {
+      const id = fileIdVerdict(args.id);
+      const named = args.users === undefined && args.groups === undefined;
+      const emails = named ? [] : shareTargetsVerdict(args.users, args.groups).map((t) => t.email);
+      const anyone = args.anyone === true;
+      if (!emails.length && !anyone) throw new GoogleInputError("Give the addresses to remove (--with <email>) or --anyone for the link sharing.");
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      const { permissions } = await listPermissions(token, meta.id, f);
+      // Narrowing who sees a file never asks; it is logged by who lost access.
+      const gone = unsharePlan(permissions, emails, anyone, account.label);
+      await removeAccess(token, meta.id, gone, f);
+      const removed = gone.map((x) => permissionWho(x));
+      return {
+        kind: "result",
+        result: { id: meta.id, status: "removed", removed },
+        log: { summary: `remove ${removed.join(", ")} from "${meta.name.slice(0, 200)}" (${meta.id})`, ...(meta.link ? { link: meta.link } : {}) },
+      };
     }
     case "drive.comments":
     case "drive.access": {
@@ -1316,7 +1398,9 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     // moved since, the person approved something else.
     // So is an upload waiting at the top of the Drive (renamed or moved there
     // by the person since, it is theirs now), and a file to bring back.
-    const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename" || p.op === "drive.upload" || p.op === "drive.untrash";
+    // A share is for the file the card named, in the folder it showed (a
+    // folder's own audience is part of what the person weighed).
+    const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename" || p.op === "drive.upload" || p.op === "drive.untrash" || p.op === "drive.share";
     if (manage && (file.name !== p.name || (file.parentId ?? "") !== (p.parentId ?? ""))) throw new GoogleInputError(FILE_CHANGED_SENTENCE);
     const r = await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
     if (r.copy) {

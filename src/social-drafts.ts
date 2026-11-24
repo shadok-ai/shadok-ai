@@ -88,7 +88,7 @@ export interface EventPayload {
  *  for a file the cockpit did not create — its own files are edited at once. */
 export interface FilePayload {
   kind: "file";
-  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename" | "drive.copy" | "drive.upload" | "drive.mkdir" | "drive.reply" | "drive.untrash";
+  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename" | "drive.copy" | "drive.upload" | "drive.mkdir" | "drive.reply" | "drive.untrash" | "drive.share";
   fileId: string;
   /** The file's name and folder WHEN THE CARD WAS MADE; a bin / move / rename
    *  is applied only if both are still the same. */
@@ -114,6 +114,12 @@ export interface FilePayload {
   commentText?: string;
   /** drive.reply: the reply also resolves the comment. */
   resolve?: boolean;
+  /** drive.share: who gets access and with which role (`from` = the role
+   *  they held before), whether Google emails them (`text` is the note in
+   *  that email), and who could reach the file when the card was made. */
+  grants?: { email: string; type: "user" | "group"; role: "reader" | "commenter" | "writer"; from?: string }[];
+  notify?: boolean;
+  access?: string[];
   /** sheet.*: the range asked for (absent = the sheet's end) and the rows. */
   range?: string;
   rows?: (string | number | boolean)[][];
@@ -139,7 +145,7 @@ export interface EditPayload {
 
 export type DraftPayload = MailPayload | EventPayload | FilePayload | EditPayload;
 export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | "calendar.respond" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
-const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.reply", "drive.untrash", "slides.edit", "doc.edit", "sheet.edit"];
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "drive.copy", "drive.upload", "drive.mkdir", "drive.reply", "drive.untrash", "drive.share", "slides.edit", "doc.edit", "sheet.edit"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {
@@ -609,6 +615,9 @@ function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "eve
         ...(p.commentAuthor ? { commentAuthor: p.commentAuthor } : {}),
         ...(p.commentText !== undefined ? { commentText: p.commentText } : {}),
         ...(p.resolve ? { resolve: true } : {}),
+        ...(p.grants ? { grants: p.grants.map((g) => ({ ...g })) } : {}),
+        ...(p.notify !== undefined ? { notify: p.notify } : {}),
+        ...(p.access ? { access: [...p.access] } : {}),
       },
     };
   }
