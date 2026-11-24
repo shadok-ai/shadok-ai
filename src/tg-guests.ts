@@ -229,7 +229,19 @@ export function guestPatchFlow(input: {
   groups: readonly Group[];
   profileExists: (name: string) => boolean;
   hasOwner: boolean;
-}): { ok: false; status: number; error: string } | { ok: true; setup: GuestSetup; groups: Group[] } {
+  /**
+   * The OTHER bridge's setup (WhatsApp's when this is Telegram's, and the
+   * reverse). The instance's membership of a group is shared by both doors:
+   * it leaves a group only when neither still targets it. A membership this
+   * flow would take back while the other open door still points at that group
+   * is KEPT, and `handOver` tells the caller to give the other setup `joined`,
+   * so the last door to close is the one that takes it back. Absent → the
+   * flow is exactly what it was with one bridge.
+   */
+  other?: GuestSetup;
+}):
+  | { ok: false; status: number; error: string }
+  | { ok: true; setup: GuestSetup; groups: Group[]; handOver?: true } {
   const want = normalizeGuestSetup(input.want);
   const error = guestEnableRefusal({
     mode: input.mode,
@@ -245,7 +257,12 @@ export function guestPatchFlow(input: {
   const ours = guestsOpen(input.previous) && input.previous.joined === true && old ? old : null;
   const target = guestsOpen(want) ? want.group : null;
   const setup: GuestSetup = { mode: want.mode, group: want.group, profile: want.profile };
-  if (ours && ours !== target) groups = withInstanceMember(groups, ours, false);
+  const otherTarget = input.other && guestsOpen(normalizeGuestSetup(input.other)) ? input.other.group?.trim() || null : null;
+  let handOver = false;
+  if (ours && ours !== target) {
+    if (ours === otherTarget) handOver = true;
+    else groups = withInstanceMember(groups, ours, false);
+  }
   if (target) {
     if (target === ours) setup.joined = true;
     else {
@@ -256,7 +273,7 @@ export function guestPatchFlow(input: {
       }
     }
   }
-  return { ok: true, setup, groups };
+  return { ok: true, setup, groups, ...(handOver ? { handOver: true as const } : {}) };
 }
 
 /** What a `start` frame carrying the guest marker amounts to. */
