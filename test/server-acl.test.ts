@@ -373,9 +373,30 @@ test("server: GET /accounts is a names-only roster for any signed-in account", (
   const body = SERVER.slice(at, SERVER.indexOf("\napp.", at + 5));
   assert.ok(/currentAccount\(req\)/.test(body), "requires a signed-in caller");
   assert.ok(!/accountAdmin\(/.test(body), "a member may read it: not admin-only");
-  assert.ok(/loadAccounts\(\)\.map\(\(a\) => a\.name\)/.test(body), "maps accounts to names");
+  assert.ok(/pickerAccountNames\(\)/.test(body), "answers with the picker's name list");
+  // The names come from ONE helper, shared with `/peers/names`, so the two
+  // halves of a roster picker judge the same namespace (invariant 81).
+  const hat = SERVER.indexOf("function pickerAccountNames()");
+  assert.ok(hat >= 0, "the helper exists");
+  const helper = SERVER.slice(hat, SERVER.indexOf("\n}\n", hat));
+  assert.ok(/loadAccounts\(\)\.map\(\(a\) => a\.name\)/.test(helper), "maps accounts to names");
   for (const leak of ["hash", "sessionsAfter", ".role", "passkeys"]) {
-    assert.ok(!body.includes(leak), `names only: the handler never touches ${leak}`);
+    assert.ok(!body.includes(leak) && !helper.includes(leak), `names only: never touches ${leak}`);
+  }
+});
+
+test("server: GET /peers/names is the AGENT half of the picker — names only, same gate", () => {
+  const at = SERVER.indexOf('app.get("/peers/names"');
+  assert.ok(at >= 0, "the route exists");
+  const body = SERVER.slice(at, SERVER.indexOf("\n});\n", at));
+  assert.ok(/currentAccount\(req\)/.test(body), "requires a signed-in caller");
+  assert.ok(!/accountAdmin\(/.test(body), "a roster is managed by its MEMBERS: not admin-only");
+  assert.ok(/peerGroupCandidates\(/.test(body), "the offerable set is the pure function's");
+  assert.ok(/canSeeGroup\(/.test(body), "a roster is read only for a group the caller may see");
+  assert.ok(/loadGroups\(\)/.test(body), "the roster comes from the server's own group list");
+  assert.ok(!/req\.body/.test(body), "a caller that could name its own roster could unhide a row");
+  for (const leak of ["ticket", "salt", "note", "Token"]) {
+    assert.ok(!body.includes(leak), `no credential material: never touches ${leak}`);
   }
 });
 

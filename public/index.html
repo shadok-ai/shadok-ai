@@ -1290,6 +1290,11 @@
     font-weight: 600; font-size: 18px; color: #fff; box-shadow: inset 0 0 0 2px transparent;
     transition: box-shadow .12s, filter .12s; filter: grayscale(.35) brightness(.82); }
   .member-nm { font-size: 12px; color: var(--text-dim); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .12s; }
+  /* An invited agent is a MACHINE in a list of people: squared avatar + a label,
+     because a roster that cannot be read at a glance is a roster someone grants
+     by accident. */
+  .member-tile.agent .member-av { border-radius: 12px; }
+  .member-kind { font-size: 10px; letter-spacing: .04em; color: var(--amber); text-transform: lowercase; }
   .member-tile[aria-pressed="true"] .member-av,
   .member-tile.me .member-av { box-shadow: inset 0 0 0 2px var(--amber), 0 0 0 3px color-mix(in srgb, var(--amber) 22%, transparent); filter: none; }
   .member-tile[aria-pressed="true"] .member-nm,
@@ -4182,7 +4187,7 @@
       <div class="ib-url" id="inviteUrl"></div>
     </div>
     <hr class="peers-sep">
-    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. <b>restricted</b> (the default) only touches the agents it spawns; <b>member</b> acts like a user — it sees and drives the whole cockpit; <b>admin</b> also sees every group and may rewrite a profile's prompt. None of them can manage accounts, invite agents or change a profile's guardrails. You can change an agent's access below at any time — it keeps its key.</p>
+    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. <b>restricted</b> (the default) only touches the agents it spawns; <b>member</b> acts like a user — it sees and drives the agents of the groups it belongs to; <b>admin</b> is a member that may also rewrite a profile's prompt. None of them can manage accounts, invite agents or change a profile's guardrails. <b>None of them is a key to a Private group either</b>: an invited agent reaches one the way a person does, once a member adds it to that group (the group's gear ▸ members) — and even then it cannot administer the group. You can change an agent's access below at any time — it keeps its key.</p>
     <ul id="peersList"></ul>
     <form id="peersAdd">
       <input id="peerName" placeholder="peer name (e.g. brasdroit1)" autocomplete="off" spellcheck="false">
@@ -4190,7 +4195,7 @@
       <!-- restricted FIRST, so the selected-by-default option is the narrow one:
            handing over the whole cockpit is a choice you make, never one you
            forget to unmake. -->
-      <select id="peerScope" title="restricted: only the agents it spawns. member: acts like a user (whole cockpit). admin: member, plus every group and profile prompts.">
+      <select id="peerScope" title="restricted: only the agents it spawns. member: acts like a user, in the groups it belongs to. admin: member, plus profile prompts. A Private group is reached by being added to it, never by scope.">
         <option value="restricted">restricted (own agents)</option>
         <option value="member">member (whole cockpit)</option>
         <option value="admin">admin (+ profile prompts)</option>
@@ -14441,19 +14446,29 @@
     return MEMBER_PALETTE[h % MEMBER_PALETTE.length];
   }
   function memberInitial(name) { return ([...String(name)][0] || "?").toUpperCase(); }
-  /** Render the grid into `container`. `lockedSelf` (or null) is the current
-   *  account: always selected, not clickable. `onChange` fires on each toggle. */
-  function renderMemberGrid(container, { accounts, selected, lockedSelf, onChange }) {
+  /**
+   * Render the grid into `container`. `lockedSelf` (or null) is the current
+   * account: always selected, not clickable. `onChange` fires on each toggle.
+   *
+   * `accounts` are the names offered and `agents` says which of them are
+   * INVITED AGENTS rather than people — a roster is one namespace
+   * (`Group.members` holds bare names), so the two kinds sit in one grid and
+   * are told apart ON the tile, never by which list they came from.
+   */
+  function renderMemberGrid(container, { accounts, selected, lockedSelf, onChange, agents }) {
     container.textContent = "";
     const sel = new Set(selected || []);
+    const bots = new Set(Array.isArray(agents) ? agents : []);
     const names = (Array.isArray(accounts) ? accounts : []).filter((n) => n !== lockedSelf);
     const all = lockedSelf ? [lockedSelf, ...names] : names;
     for (const name of all) {
       const isSelf = name === lockedSelf;
+      const isAgent = bots.has(name);
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "member-tile" + (isSelf ? " me" : "");
+      b.className = "member-tile" + (isSelf ? " me" : "") + (isAgent ? " agent" : "");
       b.dataset.name = name;
+      if (isAgent) b.title = name + " — an invited agent, not a person: in a group it is a member like anyone else, and it can never change the group itself";
       if (isSelf) { b.setAttribute("aria-disabled", "true"); b.setAttribute("aria-pressed", "true"); }
       else b.setAttribute("aria-pressed", String(sel.has(name)));
       const av = document.createElement("div");
@@ -14468,6 +14483,12 @@
       nm.className = "member-nm";
       nm.textContent = isSelf ? name + " (you)" : name;
       b.append(av, nm);
+      if (isAgent) {
+        const kind = document.createElement("div");
+        kind.className = "member-kind";
+        kind.textContent = "agent";
+        b.append(kind);
+      }
       if (!isSelf) b.addEventListener("click", () => {
         b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
         if (onChange) onChange();
@@ -14482,6 +14503,35 @@
     // returned as a pick — otherwise creation re-adds the creator and the panel's
     // save-diff POSTs a redundant add of the owner on every save.
     return [...container.querySelectorAll('.member-tile[aria-pressed="true"]:not(.me)')].map((b) => b.dataset.name);
+  }
+  /**
+   * Who a group's roster may hold: the ACCOUNTS, and the INVITED AGENTS
+   * (`/peers/names`). One namespace, two sources — `Group.members` stores bare
+   * names — so the grid shows both and marks the machines.
+   *
+   * The agent half degrades on its own: `/peers/names` failing (or an older
+   * server with no such route) leaves a people-only picker instead of an empty
+   * one. Agents already in the roster then show as ordinary tiles, which loses
+   * a marker and nothing else.
+   *
+   * `groupId` is passed through so the server can keep listing an agent the
+   * group already holds even if its scope was narrowed since — the roster comes
+   * from the server's own group list, never from here.
+   */
+  async function rosterCandidates(groupId) {
+    const r = await fetch("/accounts");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const accounts = await r.json();
+    let agents = [];
+    try {
+      const q = groupId == null ? "" : "?group=" + encodeURIComponent(groupId);
+      const ar = await fetch("/peers/names" + q);
+      if (ar.ok) agents = await ar.json();
+    } catch { /* people-only picker */ }
+    return {
+      accounts: Array.isArray(accounts) ? accounts : [],
+      agents: (Array.isArray(agents) ? agents : []).map((a) => a && a.name).filter((n) => typeof n === "string"),
+    };
   }
   async function currentAccountName() {
     if (!me) { try { me = await (await fetch("/me")).json(); } catch { me = null; } }
@@ -14532,13 +14582,20 @@
         return false;
       };
       let names = [];
+      let agents = [];
       try {
-        const r = await fetch("/accounts");
-        names = r.ok ? await r.json() : [];
+        const cand = await rosterCandidates(g.id);
+        names = cand.accounts;
+        agents = cand.agents;
       } catch { /* grid shows only the members we know */ }
       // The owner comes from the group itself, so the lock never depends on /me.
       const self = g.owner || (await currentAccountName());
-      const accounts = [...new Set([...(Array.isArray(names) ? names : []), ...members])];
+      const accounts = [...new Set([...(Array.isArray(names) ? names : []), ...agents, ...members])];
+      // Say what an agent tile GRANTS — and only when there is one, or it is
+      // noise. A machine credential joining a walled group deserves the
+      // sentence: it co-owns the group's vault, which is the part nobody guesses.
+      if (agents.length)
+        note("A tile marked “agent” is an invited agent, not a person. Added here it is a member like anyone else: it sees and drives this group's agents, starts more under the group's own Unix user, and reads and writes this group's secrets. It can never change the group or who belongs to it.");
       const grid = document.createElement("div");
       grid.id = "gpGrid";
       grid.className = "member-grid";
@@ -14552,7 +14609,7 @@
         return { add: now.filter((n) => !current.includes(n)), remove: current.filter((n) => !now.includes(n)) };
       };
       const refresh = () => { const d = diff(); save.disabled = !d.add.length && !d.remove.length; };
-      renderMemberGrid(grid, { accounts, selected: current, lockedSelf: self, onChange: refresh });
+      renderMemberGrid(grid, { accounts, selected: current, lockedSelf: self, onChange: refresh, agents });
       refresh();
       save.addEventListener("click", async () => {
         const d = diff();
@@ -18711,10 +18768,10 @@
   async function loadGroupAccounts() {
     const pick = $("groupMembersPick");
     try {
-      const r = await fetch("/accounts");
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const names = await r.json();
-      renderMemberGrid(pick, { accounts: names, selected: [], lockedSelf: await currentAccountName() });
+      // No group id: there is no roster yet, so only offerable agents are listed.
+      const { accounts, agents } = await rosterCandidates(null);
+      const all = [...new Set([...accounts, ...agents])];
+      renderMemberGrid(pick, { accounts: all, selected: [], lockedSelf: await currentAccountName(), agents });
     } catch (e) {
       groupCreateError("Could not load accounts: " + e.message);
     }

@@ -106,11 +106,29 @@ test("Private is gated on the capability mode", () => {
   assert.match(s, /\.nature-card/);
 });
 
-test("choosing Private reveals a picker sourced from GET /accounts", () => {
+test("choosing Private reveals a picker sourced from the roster candidates", () => {
   const s = createFormScript();
-  assert.match(s, /fetch\("\/accounts"/);
+  // One loader for both halves of the roster — the accounts AND the invited
+  // agents (`rosterCandidates`), so a picker can never offer people only.
+  assert.match(s, /rosterCandidates\(/);
   assert.match(s, /groupMembersField/);
   assert.match(createFormBlock(), /id="groupMembersField"/);
+});
+
+test("rosterCandidates asks for BOTH halves: the accounts and the invited agents", () => {
+  // A group's roster holds bare principal names, so an invited agent joins one
+  // exactly like a person (invariant 81). Fetching only `/accounts` is what made
+  // that capability unreachable from the UI.
+  assert.match(html, /fetch\("\/accounts"\)/);
+  assert.match(html, /fetch\("\/peers\/names"/);
+  const m = html.match(/async function rosterCandidates\([\s\S]*?\n  \}\n/);
+  assert.ok(m, "rosterCandidates defined");
+  // The agent half degrades on its own: a failing route leaves a people-only
+  // picker rather than an empty one.
+  assert.match(m![0], /catch \{[^\n]*\}/);
+  // And the grid is TOLD which names are machines, or the two kinds are
+  // indistinguishable on screen.
+  assert.match(html, /renderMemberGrid\([^)]*agents/);
 });
 
 test("submitGroupCreate has an early in-flight guard", () => {
@@ -137,8 +155,8 @@ test("member list + add/remove exist only in the restricted branch", () => {
   assert.match(s, /nature === "restricted"/);
   const priv = s.match(/nature === "private"[\s\S]*?(?=nature === "restricted"|$)/);
   assert.ok(priv);
-  assert.doesNotMatch(priv![0], /gpAdd|gpMembers|\/accounts/);
-  assert.match(s, /fetch\("\/accounts"/);
+  assert.doesNotMatch(priv![0], /gpAdd|gpMembers|\/accounts|rosterCandidates/);
+  assert.match(s, /rosterCandidates\(g\.id\)/);
 });
 
 test("private shows a sealed only-you state with no add control", () => {

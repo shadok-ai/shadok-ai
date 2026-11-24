@@ -2763,3 +2763,42 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     stays read-only there: writing a public group's secret needs
     `canWriteSecretGroup`, which a member of the walled group does not clear —
     the row names the group it comes from instead, which is where to edit it.
+
+
+<a id="inv-85"></a>
+
+81. **A principal a roster can HOLD must appear in that roster's picker — an
+    identity no selector shows is an access nobody can grant.** An invited agent
+    (a peer, `src/peers.ts`) authenticates under its own NAME and resolves to
+    `{name, role}` — a person-shaped viewer, `agentGroup` undefined. A group's
+    wall is `memberOf(g, name)` with no admin override (operator decision
+    2026-11-03), so an invited agent reaches a restricted group exactly the way a
+    person does: by being in its roster. That half already worked — nothing in
+    `src/groups.ts` mentions peers, and `POST /groups/members` never asked
+    whether a name was an account. What did not exist was any way to *use* it:
+    the member grid is built from `GET /accounts`, so an invited agent appeared
+    in no picker at all, and the invitation panel told the operator that an
+    `admin`-scope agent "also sees every group" (so did `agentInvitePrompt`, in
+    the text the invitee itself reads). Both sentences pointed at the scope
+    selector, which is not where group access lives: widening a peer to admin to
+    reach a walled group gave it nothing, and said nothing. Reported as *"in a
+    multi-user instance an invited agent has no access to a restricted group — it
+    should be selectable"*, which is precisely the shape of the gap.
+    Two halves to keep. **Offerability**: every principal a roster can hold needs
+    a list the picker can read — here `GET /peers/names`, the agent half of
+    `/accounts`, gated the same way (membership is member-only, not admin-only,
+    so an admin-only route would hide the agents from exactly the people who
+    manage rosters). And **one namespace**: a roster stores bare names, so an
+    account and an invited agent must never collide (`principalClashRefusal`, at
+    both creation paths) — one entry would otherwise grant two principals, and
+    revoking one would leave the other. `peerGroupCandidates` keeps a
+    `restricted`-scope peer out of the picker (it is not a principal: a
+    membership would grant it nothing) while still listing one a group already
+    holds, so a narrowing cannot strand a member nobody can remove.
+    The grant is deliberately a full membership, and the panel says so: a member
+    of a walled group co-owns its secret vault (`canWriteSecretGroup` →
+    `memberOf`), so adding a machine credential there hands it the group's
+    secrets, and its own spawns run under the group's Unix user. What it still
+    cannot do is administer the group — every group write is browser-only and
+    `requestFromBrowser` refuses any request carrying a peer token, so
+    `canAdministerGroup` returning true for a peer viewer opens nothing.
