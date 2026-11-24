@@ -131,5 +131,10 @@ test("attachments: the media directory is granted to the agent with --add-dir", 
   const at = src.indexOf("...mediaAddDirArgs(mediaDirArg),");
   assert.ok(at > 0, "makePilot passes the media dir");
   assert.ok(at < src.indexOf("...permissionModeArgs(permissionMode),", at), "before the other flags");
+  // ...and PRE-TRUSTED, for both the server's HOME and a dropped agent's: an
+  // untrusted --add-dir dir blocks the spawn on a trust screen whose default is
+  // "No, exit" (verified on a real interactive claude 2.1.331).
+  assert.match(src, /if \(mediaDirArg\) ensureProjectTrusted\(mediaDirArg\);/);
+  assert.match(src, /seedGroupAgentHome\(user, home, cwd, mediaDirArg \? \[mediaDirArg\] : \[\]\)/);
   assert.match(src, /try \{\n    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" \? mediaDirForGroupId\(group \?\? null\) : mediaDirForSession\(null\);\n  \} catch/);
 });

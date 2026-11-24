@@ -9855,8 +9855,8 @@ function ensureTierStateDir(user: string, home: string): void {
   }
 }
 
-function seedGroupAgentHome(user: string, home: string, cwd: string): void {
-  const cwds = new Set<string>([cwd]);
+function seedGroupAgentHome(user: string, home: string, cwd: string, extraTrusted: readonly string[] = []): void {
+  const cwds = new Set<string>([cwd, ...extraTrusted]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
@@ -10033,6 +10033,14 @@ function makePilot(
   } catch (e) {
     console.warn(`media: no --add-dir for ${id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)})`);
   }
+  // An `--add-dir` directory Claude Code has never seen opens a BLOCKING
+  // "Adding a new directory … do you trust it?" screen at spawn, with "No, exit"
+  // preselected — every agent stopped there, and one Enter ended it (the first
+  // version of this shipped without the seed and was reverted). It reads the
+  // same `projects[<dir>].hasTrustDialogAccepted` a worktree's trust does, so
+  // seed it the same way: here for an agent running as the server user, and in
+  // `seedGroupAgentHome` below for a dropped one, which reads its own HOME.
+  if (mediaDirArg) ensureProjectTrusted(mediaDirArg);
   const spawnModel = resolveSpawnModel({
     requested: model,
     profileModel: resolvedProfile?.model,
@@ -10089,7 +10097,7 @@ function makePilot(
   // the per-HOME onboarding/trust state needs seeding into the group user's HOME.
   // The group also gets its OWN SSH identity (one key per group).
   if (user && home) {
-    seedGroupAgentHome(user, home, cwd);
+    seedGroupAgentHome(user, home, cwd, mediaDirArg ? [mediaDirArg] : []);
     ensureAgentSshKey(user, home);
   }
   // Isolated groups share the subscription token, injected in the forced-last
