@@ -110,18 +110,3 @@ export function mediaServable(
   if (st.isSymbolicLink || !st.isFile) return false;
   return !multiTenant || st.uid === serverUid;
 }
-
-/**
- * The `--add-dir` pair that lets an agent READ its attachments without a
- * permission prompt. A pasted or Telegram file lands in the media directory,
- * which is outside the agent's working directory, so Claude Code asked before
- * every read of a file the person had just handed over. Writing attachments
- * into the cwd instead was rejected: it litters every worktree (and a worktree
- * holding untracked files is no longer pruned on close, invariant 5) and risks
- * a commit of someone's screenshot. Empty when there is no directory to add —
- * `--add-dir` refuses a path that does not exist, and a refused flag must never
- * cost the spawn.
- */
-export function mediaAddDirArgs(dir: string | null | undefined): string[] {
-  return dir ? ["--add-dir", dir] : [];
-}
