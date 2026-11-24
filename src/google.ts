@@ -2036,7 +2036,7 @@ export async function readDriveFile(token: string, o: { id?: unknown; range?: un
   return none("This is a binary file: files are not downloaded — only its details are shown.");
 }
 
-// ---- bin, move, rename (never a permanent delete, never a share) ----------
+// ---- bin, move, rename (never a permanent delete) ----------------------------
 
 const fileUrl = (id: string, extra: Record<string, string> = {}) => `${DRIVE}/${pathId("file", id)}?${new URLSearchParams({ supportsAllDrives: "true", fields: "id", ...extra })}`;
 
@@ -2360,28 +2360,227 @@ export interface DriveAccess {
   expires?: string;
 }
 
-/** Who can reach a file (`permissions.list`) — READ only: nothing here, or
- *  anywhere in the cockpit, changes a permission. */
-export async function listAccess(token: string, id: string, fetchFn: FetchFn): Promise<{ access: DriveAccess[]; truncated: boolean }> {
-  const access: DriveAccess[] = [];
+/** One permission of a file, as the sharing code needs it. */
+export interface DrivePermission {
+  id: string;
+  /** user / group / domain / anyone */
+  type: string;
+  /** owner / organizer / fileOrganizer / writer / commenter / reader */
+  role: string;
+  /** lowercased; users and groups only */
+  email?: string;
+  domain?: string;
+  displayName?: string;
+  deleted?: boolean;
+  pendingOwner?: boolean;
+  expirationTime?: string;
+}
+
+/** Every permission of a file (`permissions.list`, 5 pages of 100 at most). */
+export async function listPermissions(token: string, id: string, fetchFn: FetchFn): Promise<{ permissions: DrivePermission[]; truncated: boolean }> {
+  const out: DrivePermission[] = [];
   let page: string | undefined;
   for (let i = 0; i < 5; i++) {
     const p = new URLSearchParams({ supportsAllDrives: "true", pageSize: "100", fields: "nextPageToken,permissions(id,type,role,emailAddress,domain,displayName,deleted,pendingOwner,expirationTime)" });
     if (page) p.set("pageToken", page);
-    const j = await getJson<{ permissions?: { type?: string; role?: string; emailAddress?: string; domain?: string; displayName?: string; deleted?: boolean; pendingOwner?: boolean; expirationTime?: string }[]; nextPageToken?: string }>(
+    const j = await getJson<{ permissions?: { id?: string; type?: string; role?: string; emailAddress?: string; domain?: string; displayName?: string; deleted?: boolean; pendingOwner?: boolean; expirationTime?: string }[]; nextPageToken?: string }>(
       "access listing",
       `${DRIVE}/${pathId("file", id)}/permissions?${p}`,
       token,
       fetchFn,
     );
     for (const x of j.permissions ?? []) {
-      const name = x.type === "anyone" ? "anyone with the link" : x.type === "domain" ? `everyone at ${x.domain ?? "?"}` : who(x);
-      access.push({ type: x.type ?? "", role: x.role ?? "", who: x.deleted ? `${name} (deleted account)` : name, ...(x.pendingOwner ? { pendingOwner: true } : {}), ...(x.expirationTime ? { expires: x.expirationTime } : {}) });
+      out.push({
+        id: x.id ?? "",
+        type: x.type ?? "",
+        role: x.role ?? "",
+        ...(x.emailAddress ? { email: x.emailAddress.toLowerCase() } : {}),
+        ...(x.domain ? { domain: x.domain } : {}),
+        ...(x.displayName ? { displayName: x.displayName } : {}),
+        ...(x.deleted ? { deleted: true } : {}),
+        ...(x.pendingOwner ? { pendingOwner: true } : {}),
+        ...(x.expirationTime ? { expirationTime: x.expirationTime } : {}),
+      });
     }
     page = j.nextPageToken;
-    if (!page) return { access, truncated: false };
+    if (!page) return { permissions: out, truncated: false };
   }
-  return { access, truncated: true };
+  return { permissions: out, truncated: true };
+}
+
+/** How a person reads one permission: "anyone with the link", "everyone at
+ *  example.org", or the name and address. */
+export function permissionWho(x: Pick<DrivePermission, "type" | "email" | "domain" | "displayName" | "deleted">): string {
+  const name = x.type === "anyone" ? "anyone with the link" : x.type === "domain" ? `everyone at ${x.domain ?? "?"}` : who({ displayName: x.displayName, emailAddress: x.email });
+  return x.deleted ? `${name} (deleted account)` : name;
+}
+
+/** Who can reach a file — a READ (`drive access`). Changing it is
+ *  `sharePlan` / `applyShare` / `removeAccess`, each behind its own action. */
+export async function listAccess(token: string, id: string, fetchFn: FetchFn): Promise<{ access: DriveAccess[]; truncated: boolean }> {
+  const r = await listPermissions(token, id, fetchFn);
+  const access = r.permissions.map((x) => ({ type: x.type, role: x.role, who: permissionWho(x), ...(x.pendingOwner ? { pendingOwner: true } : {}), ...(x.expirationTime ? { expires: x.expirationTime } : {}) }));
+  return { access, truncated: r.truncated };
+}
+
+// ---- sharing ------------------------------------------------------------------
+//
+// Only NAMED people and groups, as viewer, commenter or editor. Never "anyone
+// with the link", never a whole domain, never a change of owner: those are not
+// in the vocabulary at all, so no setting can reach them. Removing access is
+// the other direction and lives in `removeAccess`.
+
+export const SHARE_ROLES = ["reader", "commenter", "writer"] as const;
+export type ShareRole = (typeof SHARE_ROLES)[number];
+export const MAX_SHARE_ADDRESSES = 20;
+export const MAX_SHARE_MESSAGE_CHARS = 1000;
+const SHARE_EMAIL_RE = /^[^\s@<>(),;:"[\]\\]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$/;
+/** Roles above editor: such a permission is never changed by a share. */
+const HIGH_ROLES = new Set(["owner", "organizer", "fileOrganizer"]);
+
+export function shareRoleVerdict(v: unknown): ShareRole {
+  if (v === undefined || v === null || v === "") return "reader";
+  const alias: Record<string, ShareRole> = { reader: "reader", viewer: "reader", view: "reader", commenter: "commenter", comment: "commenter", writer: "writer", editor: "writer", edit: "writer" };
+  const r = typeof v === "string" ? alias[v.toLowerCase()] : undefined;
+  if (!r) throw new GoogleInputError("--role must be viewer, commenter or editor (an owner is never changed by an agent).");
+  return r;
+}
+
+export interface ShareTarget {
+  email: string;
+  type: "user" | "group";
+}
+
+/** The people (`users`) and groups (`groups`) to share with: plain addresses,
+ *  lowercased, each once, 20 at most. */
+export function shareTargetsVerdict(users: unknown, groups: unknown): ShareTarget[] {
+  const out: ShareTarget[] = [];
+  const seen = new Set<string>();
+  const take = (raw: unknown, type: ShareTarget["type"]) => {
+    if (raw === undefined || raw === null) return;
+    if (!Array.isArray(raw) || !raw.every((x) => typeof x === "string")) throw new GoogleInputError("The addresses must be a list of email addresses.");
+    for (const x of raw as string[]) {
+      const email = x.trim().toLowerCase();
+      if (!SHARE_EMAIL_RE.test(email)) throw new GoogleInputError(`'${x.slice(0, 80)}' is not an email address. Only named people and groups can be given access — never "anyone with the link" or a whole domain.`);
+      if (seen.has(email)) continue;
+      seen.add(email);
+      out.push({ email, type });
+    }
+  };
+  take(users, "user");
+  take(groups, "group");
+  if (!out.length) throw new GoogleInputError("Give at least one address to share with (--with <email>, or --group <email> for a Google group).");
+  if (out.length > MAX_SHARE_ADDRESSES) throw new GoogleInputError(`At most ${MAX_SHARE_ADDRESSES} addresses per share.`);
+  return out;
+}
+
+/** The note Google puts in its notification email; absent = none. */
+export function shareMessageVerdict(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v !== "string") throw new GoogleInputError("The message must be text.");
+  const t = v.replace(/\r\n?/g, "\n").trim();
+  if (!t) return undefined;
+  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(t)) throw new GoogleInputError("The message contains control characters.");
+  if ([...t].length > MAX_SHARE_MESSAGE_CHARS) throw new GoogleInputError(`The message is over ${MAX_SHARE_MESSAGE_CHARS} characters.`);
+  return t;
+}
+
+/** One change a share makes: a new permission, or (with `from`) a changed role. */
+export interface ShareGrant {
+  email: string;
+  type: "user" | "group";
+  role: ShareRole;
+  /** The role this address held before — present when it already had access. */
+  from?: string;
+}
+
+/**
+ * What sharing with `targets` as `role` would change on a file whose
+ * permissions are `current`. An address that already holds that role is left
+ * out (`unchanged`); one that is owner / organizer is never touched (`kept`).
+ * Pure: computed for the card, and computed AGAIN at apply time against the
+ * permissions as they are then.
+ */
+export function sharePlan(current: readonly DrivePermission[], targets: readonly ShareTarget[], role: ShareRole): { grants: ShareGrant[]; unchanged: string[]; kept: string[] } {
+  const grants: ShareGrant[] = [];
+  const unchanged: string[] = [];
+  const kept: string[] = [];
+  for (const t of targets) {
+    const have = current.find((p) => (p.type === "user" || p.type === "group") && p.email === t.email);
+    if (have && HIGH_ROLES.has(have.role)) kept.push(t.email);
+    else if (have && have.role === role) unchanged.push(t.email);
+    else grants.push({ email: t.email, type: t.type, role, ...(have ? { from: have.role } : {}) });
+  }
+  return { grants, unchanged, kept };
+}
+
+/** Delete a permission. A permission already gone is not an error. */
+async function deletePermission(token: string, fileId: string, permissionId: string, fetchFn: FetchFn): Promise<void> {
+  const url = `${DRIVE}/${pathId("file", fileId)}/permissions/${pathId("permission", permissionId)}?${new URLSearchParams({ supportsAllDrives: "true" })}`;
+  let res: Response;
+  try {
+    res = await fetchFn(url, { method: "DELETE", headers: bearer(token), signal: deadline() });
+  } catch {
+    throw new GoogleOutcomeUnknownError();
+  }
+  if (res.status === 404) return;
+  if (!res.ok) throw await failure("access removal", res);
+}
+
+/**
+ * Apply a share: the permissions are read AGAIN and the plan recomputed, so a
+ * change made since the card (someone already added, a role raised) is never
+ * undone — a share only ever gives `role` to the addresses the card named.
+ * Google emails each new person unless `notify` is false.
+ */
+export async function applyShare(token: string, fileId: string, grants: readonly ShareGrant[], o: { notify: boolean; message?: string }, fetchFn: FetchFn): Promise<{ applied: ShareGrant[] }> {
+  const { permissions } = await listPermissions(token, fileId, fetchFn);
+  const applied: ShareGrant[] = [];
+  for (const g of grants) {
+    const plan = sharePlan(permissions, [{ email: g.email, type: g.type }], g.role);
+    const step = plan.grants[0];
+    if (!step) continue;
+    const have = permissions.find((p) => (p.type === "user" || p.type === "group") && p.email === g.email);
+    if (have) {
+      const url = `${DRIVE}/${pathId("file", fileId)}/permissions/${pathId("permission", have.id)}?${new URLSearchParams({ supportsAllDrives: "true", fields: "id" })}`;
+      await sendJson("access change", "PATCH", url, token, { role: g.role }, fetchFn, true);
+    } else {
+      const q = new URLSearchParams({ supportsAllDrives: "true", fields: "id", sendNotificationEmail: o.notify ? "true" : "false" });
+      if (o.notify && o.message) q.set("emailMessage", o.message);
+      await sendJson("share", "POST", `${DRIVE}/${pathId("file", fileId)}/permissions?${q}`, token, { type: g.type, role: g.role, emailAddress: g.email }, fetchFn, true);
+    }
+    applied.push(step);
+  }
+  return { applied };
+}
+
+/**
+ * Which permissions taking access away from `emails` (and, with `anyone`, the
+ * "anyone with the link" access) removes. Refused, before anything is changed:
+ * an owner, the account itself (it would lock the cockpit out of the file), an
+ * address with no access of its own (it may come through a group or a domain).
+ */
+export function unsharePlan(current: readonly DrivePermission[], emails: readonly string[], anyone: boolean, self: string): DrivePermission[] {
+  const out: DrivePermission[] = [];
+  const me = self.toLowerCase();
+  for (const e of emails) {
+    if (e === me) throw new GoogleInputError("That is this account's own access: removing it would lock the cockpit out of the file.");
+    const have = current.find((p) => (p.type === "user" || p.type === "group") && p.email === e);
+    if (!have) throw new GoogleInputError(`${e} has no access of its own to that file (it may come through a group or the whole domain) — run \`drive access\` to see who has what.`);
+    if (HIGH_ROLES.has(have.role)) throw new GoogleInputError(`${e} is an owner or organizer of that file: that access is for the person to change in Drive.`);
+    out.push(have);
+  }
+  if (anyone) {
+    const links = current.filter((p) => p.type === "anyone");
+    if (!links.length) throw new GoogleInputError("That file is not shared with anyone who has the link.");
+    out.push(...links);
+  }
+  if (!out.length) throw new GoogleInputError("Give the addresses to remove (--with <email>) or --anyone for the link sharing.");
+  return out;
+}
+
+export async function removeAccess(token: string, fileId: string, permissions: readonly DrivePermission[], fetchFn: FetchFn): Promise<void> {
+  for (const p of permissions) await deletePermission(token, fileId, p.id, fetchFn);
 }
 
 // ---- download ---------------------------------------------------------------

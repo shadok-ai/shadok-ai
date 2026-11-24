@@ -205,7 +205,7 @@ test("a connected Google account: email as label, sub as identity, GRANTED scope
   assert.equal(a.label, "ana@example.org");
   assert.equal(a.externalId, "1098");
   assert.deepEqual(a.scopes, ["openid", "email", "https://www.googleapis.com/auth/calendar.events"], "what Google granted, not what was asked");
-  assert.deepEqual(a.policies, { mail: "approve", calendar: "approve", drive: "approve" });
+  assert.deepEqual(a.policies, { mail: "approve", calendar: "approve", drive: "approve", share: "approve" });
   assert.equal(a.refreshToken, "RT");
   assert.equal(a.expiresAt, 1_000 + 3_599_000, "the access token's expiry");
   assert.equal(a.refreshExpiresAt, 1_000 + 7 * 24 * 3600_000, "Testing: 7 days from connect");

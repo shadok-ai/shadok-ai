@@ -91,18 +91,20 @@ export function profileAllowed(share: ShareScope, profile: string | null | undef
 export type AccountProvider = "linkedin" | "google" | "github";
 export type AccountPolicy = "approve" | "autonomous";
 
-/** A Google account's three approval settings: sending mail; any calendar
- *  event creation, update or deletion; and an edit to a Drive file the cockpit
- *  did not create (one other people may see). Each governs only its own class. */
+/** A Google account's four approval settings: sending mail; any calendar
+ *  event creation, update or deletion; an edit to a Drive file the cockpit
+ *  did not create (one other people may see); and giving someone access to a
+ *  Drive file (`share`). Each governs only its own class. */
 export interface GooglePolicies {
   mail: AccountPolicy;
   calendar: AccountPolicy;
   drive: AccountPolicy;
+  share: AccountPolicy;
 }
-export const GOOGLE_POLICY_KEYS = ["mail", "calendar", "drive"] as const;
+export const GOOGLE_POLICY_KEYS = ["mail", "calendar", "drive", "share"] as const;
 
 export function defaultGooglePolicies(): GooglePolicies {
-  return { mail: "approve", calendar: "approve", drive: "approve" };
+  return { mail: "approve", calendar: "approve", drive: "approve", share: "approve" };
 }
 
 /** The account's settings, whole: one stored before a setting existed reads
@@ -177,7 +179,7 @@ export interface ConnectedAccount {
   share: ShareScope;
   /** LinkedIn's posting policy. A Google account never reads it (`policies`). */
   policy: AccountPolicy;
-  /** Google only: the two approval settings. */
+  /** Google only: the approval settings (`GooglePolicies`). */
   policies?: GooglePolicies;
   /** Google only: the scopes Google granted, from the token response. */
   scopes?: string[];
@@ -483,7 +485,7 @@ export function policyPatch(
   // protection, required reviews) is the guardrail. Nothing to set.
   if (a.provider === "github") return { ok: false, reason: "A GitHub account has no approval setting: protect the repositories on GitHub (branch protection, required reviews)." };
   if (a.provider === "google") {
-    if (policy !== undefined) return { ok: false, reason: "A Google account has three settings: policies.mail, policies.calendar and policies.drive." };
+    if (policy !== undefined) return { ok: false, reason: "A Google account has four settings: policies.mail, policies.calendar, policies.drive and policies.share." };
     if (!policies || typeof policies !== "object" || Array.isArray(policies)) return { ok: false, reason: "invalid policies" };
     const p = policies as Record<string, unknown>;
     const keys = Object.keys(p);
@@ -493,6 +495,9 @@ export function policyPatch(
     // already speaks of every file of the Drive, shared ones included.)
     if (p.drive === "autonomous" && !grantedAreas(a).some((k) => k === "drive" || k === "drive_all")) {
       return { ok: false, reason: "Drive edits can be made automatic only on an account connected with a Drive area." };
+    }
+    if (p.share === "autonomous" && !grantedAreas(a).some((k) => k === "drive" || k === "drive_all")) {
+      return { ok: false, reason: "Sharing can be made automatic only on an account connected with a Drive area." };
     }
     return { ok: true, patch: { policies: { ...googlePolicies(a), ...(p as Partial<GooglePolicies>) } } };
   }

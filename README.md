@@ -779,7 +779,13 @@ Enter to skip; you can add it later from the web UI).
   `drive comments` and `drive access` list a file's comments and who can reach
   it (logged, untrusted); `drive reply` answers or resolves a comment, which
   everyone who sees the comments reads — a *Drive edits* card with the comment
-  and the exact reply. Changing who has access stays impossible. For any other
+  and the exact reply. `drive share` gives NAMED people or groups access
+  (viewer, commenter or editor; Google emails them unless told not to) under a
+  fourth setting, **Sharing** — *ask first* by default, with a card showing who
+  has access now and who would get what; `drive unshare` takes access away at
+  once (never an owner's, never the account's own). Making a file public or
+  open to anyone with the link, a whole domain and a change of owner stay
+  impossible. For any other
   READ, `get --url` is a generic, read-only passthrough: one GET on Gmail
   (`gmail_read`), Calendar, Drive, Docs, Sheets or Slides API URLs the account's
   areas cover — never a redirect, a binary or a body, 2 MB at most, every URL
@@ -826,11 +832,11 @@ Enter to skip; you can add it later from the web UI).
   chips as LinkedIn, and **its own settings** instead of one posting policy:
   **Mail** (sending email), **Events** (any event added, changed or
   deleted, with or without attendees) and — on an account that holds a Drive
-  area — **Drive edits**, each *ask first* (the default) or *on
+  area — **Drive edits** and **Sharing**, each *ask first* (the default) or *on
   its own* — only the account's owner can switch one to automatic, after a
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
-  `drive list|search|read|download|delete|move|rename`, `doc create|read|append|edit`, `sheet create|read|append|update|edit`, `slides create|read|edit`,
+  `drive list|search|read|download|delete|move|rename|share|unshare`, `doc create|read|append|edit`, `sheet create|read|append|update|edit`, `slides create|read|edit`,
   `gmail search|read|attachment|draft|send|forward|labels|archive|mark|star|label|trash`,
   `calendar respond|free` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
