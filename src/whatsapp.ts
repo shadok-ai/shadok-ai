@@ -32,7 +32,7 @@ import { waAccountKey, type WaInbound } from "./wa-guests.js";
  *
  * Step 2 carries messages: inbound ones go to the listeners (`onMessage` —
  * the bridge, `wa-bridge.ts`, is the one consumer), and `sendText` /
- * `setTyping` / `resolveLid` go through the CURRENT transport, only while it
+ * `setTyping` / `markRead` / `resolveLid` go through the CURRENT transport, only while it
  * is connected — a send never reaches a socket that is being replaced.
  */
 
@@ -62,6 +62,7 @@ export interface WhatsAppHandle {
   account(): string | null;
   sendText(to: string, text: string): Promise<void>;
   setTyping(to: string, on: boolean): Promise<void>;
+  markRead(chat: string, id: string): Promise<void>;
   resolveLid(pn: string): Promise<string | null>;
   downloadMedia(id: string): Promise<Uint8Array>;
   sendFile(to: string, file: WaOutFile): Promise<void>;
@@ -528,6 +529,9 @@ export function startWhatsApp(o: {
     },
     async setTyping(to, on) {
       await live().setTyping(to, on);
+    },
+    async markRead(chat, id) {
+      await live().markRead(chat, id);
     },
     async resolveLid(pn) {
       return live().resolveLid(pn);

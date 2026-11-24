@@ -128,7 +128,7 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
     w.on("error", (e) => died(`the WhatsApp library failed: ${oneLine(e)}`));
     w.on("exit", (code) => died(`the WhatsApp library stopped unexpectedly (exit ${code})`));
 
-    const call = (cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid" | "downloadMedia" | "sendFile", args?: unknown[]) =>
+    const call = (cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "markRead" | "resolveLid" | "downloadMedia" | "sendFile", args?: unknown[]) =>
       new Promise<unknown>((resolve, reject) => {
         if (dead) return reject(new Error("the WhatsApp worker is gone"));
         const id = ++seq;
@@ -144,6 +144,7 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
       logout: () => call("logout").then(() => {}),
       sendText: (to, text) => call("sendText", [to, text]).then(() => {}),
       setTyping: (to, on) => call("setTyping", [to, on]).then(() => {}),
+      markRead: (chat, id) => call("markRead", [chat, id]).then(() => {}),
       resolveLid: async (pn) => {
         const v = await call("resolveLid", [pn]);
         return typeof v === "string" ? v : null;

@@ -171,6 +171,7 @@ interface LibSocket {
   logout(msg?: string): Promise<void>;
   sendMessage(jid: string, content: Record<string, unknown>): Promise<unknown>;
   sendPresenceUpdate(type: string, jid?: string): Promise<void>;
+  readMessages(keys: { remoteJid: string; id: string; fromMe: boolean }[]): Promise<void>;
   signalRepository?: { lidMapping?: { getLIDForPN(pn: string): Promise<string | null> } };
   updateMediaMessage?: (m: unknown) => Promise<unknown>;
   end(err: Error | undefined): void;
@@ -293,6 +294,13 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
     async setTyping(to, on) {
       if (!sock || !live) throw new Error("not connected");
       await sock.sendPresenceUpdate(on ? "composing" : "paused", to);
+    },
+    async markRead(chat, id) {
+      if (!sock || !live) throw new Error("not connected");
+      // `readMessages` reads the account's privacy setting itself and sends a
+      // `read-self` receipt when read receipts are off: never more than the
+      // phone's owner chose to show.
+      await sock.readMessages([{ remoteJid: chat, id, fromMe: false }]);
     },
     async downloadMedia(id) {
       const m = raw.get(id);

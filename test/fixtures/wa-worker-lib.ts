@@ -7,6 +7,7 @@ import type { WaTransportFactory } from "../../src/wa-transport.js";
 const STUB_MESSAGING = {
   async sendText() {},
   async setTyping() {},
+  async markRead() {},
   async resolveLid() {
     return null;
   },
@@ -32,6 +33,9 @@ export async function loadGood(): Promise<WaTransportFactory> {
         emit?.({ type: "message", msg: { id: "echo", chat: to, fromMe: true, live: true, unreadable: false, text: `sent:${text}`, at: 0 } });
       },
       async setTyping() {},
+      async markRead(chat, id) {
+        emit?.({ type: "message", msg: { id: "read", chat, fromMe: true, live: true, unreadable: false, text: `read:${id}`, at: 0 } });
+      },
       async resolveLid(pn) {
         return pn === "33611111111@s.whatsapp.net" ? "100000000000001@lid" : null;
       },

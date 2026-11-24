@@ -68,14 +68,16 @@ test("no process-level handler is installed: errors from elsewhere behave as bef
   assert.doesNotMatch(src, /process\.on\(\s*["'](unhandledRejection|uncaughtException)/);
 });
 
-test("sendText, setTyping and resolveLid cross the worker boundary, with their answers", async () => {
+test("sendText, setTyping, markRead and resolveLid cross the worker boundary, with their answers", async () => {
   const { t, seen } = await run("loadGood", 300);
   await t.sendText("100000000000001@lid", "hi there");
   await t.setTyping("100000000000001@lid", true);
+  await t.markRead("33611111111@s.whatsapp.net", "M7");
   assert.equal(await t.resolveLid("33611111111@s.whatsapp.net"), "100000000000001@lid");
   assert.equal(await t.resolveLid("33622222222@s.whatsapp.net"), null);
   // The stand-in echoes what it was asked to send as an event, to prove the call arrived.
   assert.ok(seen.some((e) => e.type === "message" && (e as { msg: { text?: string } }).msg.text === "sent:hi there"));
+  assert.ok(seen.some((e) => e.type === "message" && (e as { msg: { chat: string; text?: string } }).msg.text === "read:M7" && (e as { msg: { chat: string } }).msg.chat === "33611111111@s.whatsapp.net"));
   await t.stop();
 });
 

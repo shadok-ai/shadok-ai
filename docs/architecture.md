@@ -818,8 +818,8 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
 - **The seam's message half.** `WaTransport` gains an inbound `message` event
   (already reduced to the library-neutral `WaInbound` by `inboundOf` in the
   adapter: `remoteJid` / `remoteJidAlt`, stub type 2 = unreadable, `notify` =
-  live, a disappearing message unwrapped), `sendText`, `setTyping` and
-  `resolveLid` (the library's LID↔PN store). They cross the worker as calls with
+  live, a disappearing message unwrapped), `sendText`, `setTyping`, `markRead`
+  and `resolveLid` (the library's LID↔PN store). They cross the worker as calls with
   answers. The handle (`whatsapp.ts`) hands messages to its listeners, counts one
   as a sign of life, sends only through the CURRENT transport while `connected`,
   and offers `whenConnected(ms)` / `onConnected` so an answer waits out a dropped
@@ -875,7 +875,14 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
 - **Answers.** `mdToWhatsApp`: `*bold*`, `_italic_`, `~strike~`, code kept,
   headings → bold lines, links → `text (url)`, tables → `a · b` lines, `* item`
   → `- item`; no HTML. `waChunks` cuts at paragraph boundaries (4,000 chars).
-  One send queue per person, 400 ms apart. Typing while `working`. An operator's
+  One send queue per person, 400 ms apart. Typing while `working`. The read
+  receipt ("seen") goes when the agent TAKES a message (`taken`: its
+  `prompt-id`, the turn's end, or a consumed dialog answer), never on receipt
+  and never on a refusal path — "seen" claims someone read it, and a shut door
+  stays silent. It names the chat the message ARRIVED on (`InboxEntry.chat`),
+  which may be the phone address while the agent is keyed by the LID; the
+  adapter goes through the library's `readMessages`, which downgrades to
+  `read-self` when the phone has read receipts off. An operator's
   prompt reaches the person labelled like on Telegram (`promptEchoLabel`), with
   attachment markers reduced to their kind so no server path leaks. A busy agent
   is preempted as on Telegram (`shouldPreempt`, the retry mark cleared by every

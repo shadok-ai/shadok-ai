@@ -243,6 +243,48 @@ test("the door shut is silence: no socket, nothing sent, nothing queued — for 
   await tick();
   assert.deepEqual(w.server.last().prompts().map((p) => p.text), ["hello"]);
   assert.deepEqual(w.fake.sent, []);
+  assert.deepEqual(w.fake.reads, [], "a shut door never shows \"seen\" either");
+  await w.stop();
+});
+
+test("a message is marked seen once its agent TOOK it (prompt-id), not on receipt — and only once", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "hello there", { id: "M1" });
+  await tick();
+  assert.deepEqual(w.fake.reads, [], "received is not read: the agent has not taken it yet");
+  const ws = w.server.last();
+  ws.emit({ type: "prompt-id", msgId: "u1", text: "hello there" });
+  await tick();
+  assert.deepEqual(w.fake.reads, [{ chat: LID, id: "M1" }]);
+  ws.emit({ type: "turn-done" });
+  await tick();
+  assert.equal(w.fake.reads.length, 1, "the turn's end does not mark it a second time");
+  await w.stop();
+});
+
+test("the receipt names the chat the message ARRIVED on, even when the agent is keyed by the LID", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "from my phone number", { id: "P1", chat: PN, chatAlt: LID });
+  await tick();
+  const ws = w.server.last();
+  assert.equal(ws.start.guestKey, LID);
+  ws.emit({ type: "turn-done" });
+  await tick();
+  assert.deepEqual(w.fake.reads, [{ chat: PN, id: "P1" }]);
+  await w.stop();
+});
+
+test("a message refused before it reached the agent is never marked seen", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "please", { id: "R1" });
+  await tick();
+  w.server.last().emit({ type: "pace-blocked" });
+  await tick();
+  assert.deepEqual(w.inbox.pending(), []);
+  assert.deepEqual(w.fake.reads, []);
   await w.stop();
 });
 
@@ -720,10 +762,11 @@ test("a question is a numbered list; the number answers it", async () => {
   ws.emit(dlg);
   await tick();
   assert.match(w.fake.sent.at(-1)!.text, /Which day\?\n\n1\. Monday\n2\. Tuesday\n3\. Type something\./);
-  say(w, "2");
+  say(w, "2", { id: "A2" });
   await tick();
   assert.deepEqual(ws.frames.filter((f) => f.type === "choose"), [{ type: "choose", n: 2 }]);
   assert.equal(ws.prompts().length, 1, "an answer is not a prompt");
+  assert.deepEqual(w.fake.reads, [{ chat: LID, id: "A2" }], "an answer was read: it is marked seen");
   assert.deepEqual(w.inbox.pending().map((e) => e.text), ["book me"]);
   await w.stop();
 });
