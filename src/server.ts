@@ -93,6 +93,8 @@ import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, migratedIsolationRefusal, probeCanProvision } from "./capability.js";
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp.js";
 import { waGuestWorkDirName } from "./wa-guests.js";
+import { startWaBridge, type WaBridge } from "./wa-bridge.js";
+import { openInbox, waStateDir } from "./wa-inbox.js";
 import { waSessionDir } from "./wa-transport.js";
 import { linkView } from "./wa-link.js";
 import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "./wa-baileys.js";
@@ -7804,6 +7806,7 @@ async function telegramState(viewer: Viewer | null = null) {
 // "session" in a directory of its own so it can never touch a real one.
 const waFake = process.env.SHADOK_WA_FAKE === "1" ? makeFakeTransport() : null;
 let waHandleRef: WhatsAppHandle | null = null;
+let waBridgeRef: WaBridge | null = null;
 const waHandle = (): WhatsAppHandle | null => waHandleRef;
 let waLibRef: WaLibrary | null = null;
 const waLib = (): WaLibrary | null => waLibRef;
@@ -7831,6 +7834,24 @@ function startWhatsAppHandle(): void {
     refusal: () => migratedIsolationRefusal(DEPLOYMENT_MODE, groupsMigrated),
     loadFactory: waFake ? async () => waFake.factory : async () => loadBaileysFactory(lib.entryUrl()),
     library: lib,
+  });
+  // Step 2: the bridge — one loopback socket per person who writes, each
+  // proving the WhatsApp bridge secret, so the server derives the `whatsapp`
+  // origin and the WhatsApp guest door from the CONNECTION (invariant 61).
+  const handle = waHandleRef;
+  const stateDir = waStateDir(os.homedir(), instanceKey());
+  waBridgeRef = startWaBridge({
+    handle,
+    connect: () => {
+      const cookie = tgCookie();
+      return new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, {
+        headers: { ...(cookie ? { cookie } : {}), "x-shadok-wa-bridge": WHATSAPP_BRIDGE_SECRET },
+      });
+    },
+    setup: () => waGuestSetupForCwd(loadConfig(), process.cwd()),
+    channels: { load: loadChannels, upsert: upsertChannel },
+    inbox: openInbox(path.join(waFake ? `${stateDir}-fake` : stateDir, "inbox.json")),
+    sessionAlive: (id) => tmuxHasSession("sk-" + id),
   });
 }
 
@@ -7868,7 +7889,13 @@ app.get("/whatsapp", async (req, res) => {
   out.guestGroups = guestGroupChoices(loadGroups(), viewerFor(currentAccount(req))).map((g) => ({ id: g.id, name: g.name }));
   // Before the first Link: the panel says that Link downloads the library.
   out.library = waLib()?.status();
-  if (waFake) out.fake = true;
+  if (waFake) {
+    out.fake = true;
+    // What the fake "phone" received — the side instance's only way to read
+    // the bridge's answers. Fake mode only: a real instance never echoes a
+    // guest's conversation through this route.
+    out.fakeSent = waFake.sent.slice(-20);
+  }
   res.json(out);
 });
 app.post("/whatsapp/link", (req, res) => {
@@ -7945,13 +7972,24 @@ app.put("/whatsapp/guests", (req, res) => {
   res.json({ guests: waGuestSetupForCwd(loadConfig(), cwd) });
 });
 
-const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal"] as const;
+const WA_FAKE_ACTIONS = ["scan", "drop", "goSilent", "removeFromPhone", "rotateQr", "ping", "offline", "online", "fatal", "deliver", "mapLid"] as const;
 app.post("/whatsapp/fake/:action", (req, res) => {
   if (!waFake) return res.status(404).json({ error: "not found" });
   if (!accountAdmin(req, res, true, "drive the fake WhatsApp transport")) return;
   const action = String(req.params.action) as (typeof WA_FAKE_ACTIONS)[number];
   if (!WA_FAKE_ACTIONS.includes(action)) return res.status(400).json({ error: "unknown action" });
-  (waFake.script as FakeScript)[action]();
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string) : undefined);
+  if (action === "deliver") {
+    // Someone "writes" to the fake number: the side-instance stand-in for a phone.
+    const chat = str("chat");
+    if (!chat) return res.status(400).json({ error: "chat is required" });
+    waFake.script.deliver({ chat, chatAlt: str("chatAlt"), text: str("text"), pushName: str("pushName"), id: str("id") });
+  } else if (action === "mapLid") {
+    const pn = str("pn"), lid = str("lid");
+    if (!pn || !lid) return res.status(400).json({ error: "pn and lid are required" });
+    waFake.script.mapLid(pn, lid);
+  } else (waFake.script as FakeScript)[action]();
   res.json({ ok: true });
 });
 
