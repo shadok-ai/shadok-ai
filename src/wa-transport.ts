@@ -13,8 +13,8 @@ import type { WaInbound } from "./wa-guests.js";
  * may import the library itself; a test scans for it.
  *
  * Step 2 adds the message-carrying half: inbound `message` events (already
- * reduced to the library-neutral `WaInbound`), `sendText`, `setTyping` and
- * `resolveLid`. Files (`sendFile`) arrive with step 3.
+ * reduced to the library-neutral `WaInbound`), `sendText`, `setTyping`, `markRead`
+ * and `resolveLid`. Files (`sendFile`) arrive with step 3.
  */
 
 export type WaTransportEvent =
@@ -42,6 +42,10 @@ export interface WaTransport {
   sendText(to: string, text: string): Promise<void>;
   /** Show (or stop showing) "typing…" in that person's chat. */
   setTyping(to: string, on: boolean): Promise<void>;
+  /** Mark one received message as read (the person's "seen" ticks), in the
+   *  chat it ARRIVED on. Follows the linked account's own read-receipt
+   *  privacy setting: with receipts off on the phone, nothing blue is shown. */
+  markRead(chat: string, id: string): Promise<void>;
   /** The LID the transport knows for a phone-number address, or null — what
    *  lets a PN-only message find a person already bound under their LID. */
   resolveLid(pn: string): Promise<string | null>;

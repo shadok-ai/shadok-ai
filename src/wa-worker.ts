@@ -19,7 +19,7 @@ interface Spec {
   sessionDir?: string;
   probe?: boolean;
 }
-type Cmd = { id: number; cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid" | "downloadMedia" | "sendFile"; args?: unknown[] };
+type Cmd = { id: number; cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "markRead" | "resolveLid" | "downloadMedia" | "sendFile"; args?: unknown[] };
 
 const port = parentPort!;
 const spec = workerData as Spec;
@@ -41,6 +41,8 @@ if (spec.probe) {
             ? t.sendText(String(a[0]), String(a[1]))
             : m.cmd === "setTyping"
               ? t.setTyping(String(a[0]), a[1] === true)
+              : m.cmd === "markRead"
+                ? t.markRead(String(a[0]), String(a[1]))
               : m.cmd === "resolveLid"
                 ? t.resolveLid(String(a[0]))
                 : m.cmd === "downloadMedia"

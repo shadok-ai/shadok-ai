@@ -23,6 +23,10 @@ export interface InboxEntry {
   id: string;
   /** The canonical sender (`senderKey`): who the prompt goes to. */
   sender: string;
+  /** The chat the message ARRIVED on (its `remoteJid`), which the read receipt
+   *  must name — it may be the phone address while `sender` is the LID.
+   *  Absent on entries written before receipts existed: `sender` stands in. */
+  chat?: string;
   /** Their phone digits and display name, when known — what a FRESH spawn
    *  binds and names the channel with. */
   phone?: string;

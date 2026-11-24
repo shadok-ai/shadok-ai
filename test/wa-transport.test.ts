@@ -239,16 +239,19 @@ test("fake: a message sent while away is held, then delivered after the next ope
   assert.equal(fake.held, 0);
 });
 
-test("fake: sendText and setTyping are recorded, and refused while not connected", async () => {
+test("fake: sendText, setTyping and markRead are recorded, and refused while not connected", async () => {
   const d = path.join(tmp(), "s");
   ensureSessionDir(d);
   const { fake, t } = await connected(d);
   await t.sendText("100000000000001@lid", "hi");
   await t.setTyping("100000000000001@lid", true);
+  await t.markRead("100000000000001@lid", "M1");
   assert.deepEqual(fake.sent, [{ to: "100000000000001@lid", text: "hi" }]);
   assert.deepEqual(fake.typing, [{ to: "100000000000001@lid", on: true }]);
+  assert.deepEqual(fake.reads, [{ chat: "100000000000001@lid", id: "M1" }]);
   await t.stop();
   await assert.rejects(t.sendText("100000000000001@lid", "late"), /not connected/);
+  await assert.rejects(t.markRead("100000000000001@lid", "M2"), /not connected/);
 });
 
 test("fake: resolveLid answers from what it was told", async () => {

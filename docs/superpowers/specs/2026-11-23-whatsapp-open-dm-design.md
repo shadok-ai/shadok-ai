@@ -283,6 +283,9 @@ guests are named after theirs.
   transcribed with the existing transcription and marked as spoken. A video
   goes through the existing video path. A caption rides with its file.
 - Typing shows while the agent works.
+- A message is marked read ("seen") once its agent has taken it in — not on
+  receipt, never with the door shut, and within the phone's own read-receipt
+  setting.
 - **An unreadable first message** (finding 3) gets ONE plain line asking the
   person to send it again — which is also what makes their next message
   readable. At most once per person per few minutes, so it can never loop. If

@@ -132,6 +132,23 @@ test("writes keep landing across a restart-required close (the creds that finish
   assert.ok(fs.existsSync(path.join(dir, "creds.json")), "the pairing's creds must be saved, not dropped by the close");
 });
 
+test("markRead sends ONE read receipt for that message, in the chat it arrived on — through the library's privacy-aware call", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wa-read-")), "s");
+  ensureSessionDir(dir);
+  const { lib } = lateWritingLib();
+  const reads: unknown[] = [];
+  const make = lib.default;
+  // `readMessages` (not a raw `sendReceipt`): it is the call that downgrades
+  // to `read-self` when the phone's owner turned read receipts off.
+  lib.default = ((cfg: never) => Object.assign(make(cfg), { readMessages: async (keys: unknown[]) => void reads.push(keys) })) as never;
+  const t = makeBaileysTransport(lib as never, dir);
+  await t.start(() => {});
+  await t.markRead("33611111111@s.whatsapp.net", "M1");
+  assert.deepEqual(reads, [[{ remoteJid: "33611111111@s.whatsapp.net", id: "M1", fromMe: false }]]);
+  await t.stop();
+  await assert.rejects(t.markRead("33611111111@s.whatsapp.net", "M2"), /not connected/);
+});
+
 import { pathToFileURL } from "node:url";
 import { loadBaileysFactory, qrLoaderFrom, qrSvg } from "../src/wa-baileys.js";
 import type { WaTransportEvent } from "../src/wa-transport.js";

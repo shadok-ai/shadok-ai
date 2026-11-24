@@ -45,7 +45,7 @@ export interface WsLike {
 export interface WaBridgeDeps {
   handle: Pick<
     WhatsAppHandle,
-    "onMessage" | "onConnected" | "account" | "sendText" | "setTyping" | "resolveLid" | "whenConnected" | "downloadMedia" | "sendFile"
+    "onMessage" | "onConnected" | "account" | "sendText" | "setTyping" | "markRead" | "resolveLid" | "whenConnected" | "downloadMedia" | "sendFile"
   >;
   /** A loopback socket to our own /ws, proving the WhatsApp bridge secret. */
   connect: () => WsLike;
@@ -291,6 +291,18 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
         /* a leftover is harmless: the next ack or purge removes it */
       }
   };
+  /**
+   * The agent TOOK the message (its prompt landed, or it answered the question
+   * on screen): acknowledged, and the person's "seen" ticks turn blue. Only
+   * here — never on receipt, and never for a message that was refused or
+   * dropped: "seen" says someone read it, and a shut door stays silent.
+   * Best-effort: a receipt lost to a dropped link changes nothing else.
+   */
+  const taken = (b: Bridge, e: Entry) => {
+    ack(e);
+    if (d.handle.account() !== b.account) return;
+    void d.handle.markRead(e.chat ?? e.sender, e.id).catch(() => {});
+  };
   const ackAll = (b: Bridge) => {
     for (const e of b.awaiting.splice(0)) ack(e);
     for (const e of b.held.splice(0)) ack(e);
@@ -363,7 +375,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
   /** The person's message while a question is on screen: an ANSWER, never a prompt. */
   const answer = async (b: Bridge, e: Entry) => {
     const dlg = b.dialog!;
-    ack(e); // consumed as an answer, whatever it says
+    taken(b, e); // consumed as an answer, whatever it says
     const r = e.media ? ({ kind: "invalid" } as const) : parseDialogReply(dlg, e.text);
     switch (r.kind) {
       case "choose":
@@ -462,7 +474,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       if (b.awaitingFreetext !== undefined && !e.media) {
         const n = b.awaitingFreetext;
         resolved(b);
-        ack(e);
+        taken(b, e);
         frame(b, { type: "freetext", n, text: e.text });
         return;
       }
@@ -602,7 +614,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
             const t = (e.sent ?? neutralizeCommand(e.text)).trim();
             return !!t && (said === t || (t.length >= 16 && said.includes(t)));
           });
-          if (i >= 0) ack(b.awaiting.splice(i, 1)[0]);
+          if (i >= 0) taken(b, b.awaiting.splice(i, 1)[0]);
           break;
         }
         case "dialog": {
@@ -636,7 +648,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
           b.lastDialog = undefined;
           b.awaitingFreetext = undefined;
           // Whatever was submitted before this turn ended has been taken in.
-          for (const e of b.awaiting.splice(0)) ack(e);
+          for (const e of b.awaiting.splice(0)) taken(b, e);
           if (b.preempting) {
             const e = b.preempting;
             b.preempting = undefined;
@@ -857,6 +869,7 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
     const e: InboxEntry = {
       id: m.id,
       sender,
+      chat: m.chat,
       ...(v.pn ? { phone: digits(v.pn) } : {}),
       ...(cleanName(m.pushName) ? { name: cleanName(m.pushName) } : {}),
       text: v.kind === "text" ? v.text : v.caption ?? "",

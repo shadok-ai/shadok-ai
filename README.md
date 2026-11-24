@@ -972,6 +972,10 @@ from the phone's *Linked devices* list too.
   someone who has (a schedule, a notification, you from the cockpit).
 - **Nothing is lost across a restart.** A message received while an agent was
   being started, or while the server was updating, is answered once it is back.
+- **"Seen" means the agent has it.** A message's ticks turn blue once its
+  agent has actually taken it in (or it answered a question on screen) — not
+  when the server merely received it, and never with the door shut. If the
+  linked phone has read receipts turned off, nothing turns blue, as on the phone.
 - **Closing a guest's agent in the cockpit** ends that conversation: their next
   message starts a new agent. A link that drops ends nothing.
 - **Pictures, documents, voice notes and videos** reach the person's agent the

@@ -71,6 +71,8 @@ export function makeFakeTransport(): {
   held: number;
   sent: { to: string; text: string }[];
   typing: { to: string; on: boolean }[];
+  /** Read receipts sent, in order: the chat and the message id. */
+  reads: { chat: string; id: string }[];
   files: { to: string; name: string; mime: string; image: boolean; size: number; caption?: string }[];
 } {
   const mediaBytes = new Map<string, Uint8Array>();
@@ -80,6 +82,7 @@ export function makeFakeTransport(): {
   const held: WaInbound[] = [];
   const sent: { to: string; text: string }[] = [];
   const typing: { to: string; on: boolean }[] = [];
+  const reads: { chat: string; id: string }[] = [];
   const lids = new Map<string, string>();
   let stops = 0;
   let qrSeq = 0;
@@ -136,6 +139,10 @@ export function makeFakeTransport(): {
       async setTyping(to, on) {
         if (!mine || current !== mine || !isOpen()) throw new Error("fake: not connected");
         typing.push({ to, on });
+      },
+      async markRead(chat, id) {
+        if (!mine || current !== mine || !isOpen()) throw new Error("fake: not connected");
+        reads.push({ chat, id });
       },
       async resolveLid(pn) {
         return lids.get(pn) ?? null;
@@ -226,6 +233,7 @@ export function makeFakeTransport(): {
     },
     sent,
     typing,
+    reads,
     files,
   };
 }
