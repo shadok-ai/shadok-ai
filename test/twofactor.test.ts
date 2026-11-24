@@ -215,3 +215,52 @@ test("the Telegram bridge's cookie is minted as the server's own (mfa)", () => {
   // authenticates as itself (src/agent-principal.ts).
   assert.doesNotMatch(src, /env\.SHADOK_AUTH\s*=/);
 });
+
+/**
+ * A scan test, same reason as the one above: the wiring lives in `server.ts`.
+ *
+ * Why it earns one: `stepUpOk` is the obvious spelling here — this route is in
+ * the `/2fa` family and a recovery is exactly the act a stolen session must not
+ * perform. It is also the spelling that made the whole panel dead on an
+ * instance with two-factor OFF, where nobody can hold a passkey at all and the
+ * bootstrap admin never can (invariant 46). A later cleanup "harmonising the
+ * /2fa routes" would restore it without noticing that it removes the only
+ * remedy for a lost password.
+ */
+test("recovery asks the issuing admin for a passkey only while two-factor is on", () => {
+  const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "server.ts"), "utf8");
+  const start = src.indexOf('app.post("/2fa/recover"');
+  assert.ok(start > 0, "POST /2fa/recover must exist");
+  const body = src.slice(start, start + src.slice(start + 10).search(/\napp\.(get|put|post|delete|use)\(/) + 10);
+  assert.match(body, /await stepUpIfTwoFactor\(req, res, me\)/);
+  assert.doesNotMatch(body, /await stepUpOk\(/);
+  // And the gate still comes BEFORE anything is written, whichever level runs.
+  const gate = body.indexOf("stepUpIfTwoFactor");
+  for (const effect of ["updateAccount(", "applyRequest(", "askRequest("]) {
+    const at = body.indexOf(effect);
+    if (at >= 0) assert.ok(gate < at, `the step-up must run before ${effect}`);
+  }
+  // The routes that could undo the second factor FOR someone keep the
+  // unconditional assertion: there, a passkey is both askable and the point.
+  for (const p of ["/2fa/enabled", "/2fa/passkey/delete", "/2fa/enroll-code"]) {
+    const s = src.indexOf(`app.post("${p}"`);
+    assert.ok(s > 0, `POST ${p} must exist`);
+    const b = src.slice(s, s + src.slice(s + 10).search(/\napp\.(get|put|post|delete|use)\(/) + 10);
+    assert.match(b, /await stepUpOk\(/, `${p} must keep the unconditional step-up`);
+  }
+});
+
+/** The client half of the same rule. Asking the browser for a passkey the
+ *  person cannot have is a dead end BEFORE the request leaves, so the mirror
+ *  matters as much as the server's gate. */
+test("the users panel asks for a passkey only while two-factor is on", () => {
+  const html = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "index.html"),
+    "utf8",
+  );
+  assert.match(html, /tfaPost\("\/2fa\/recover", \{ user: u\.name, level \}, tfaEnabled\)/);
+  // The three levels are about a factor that is not on: with it off the row
+  // offers the one that means something, and says so.
+  assert.match(html, /const LEVELS = tfaEnabled/);
+  assert.match(html, /"reset password…"/);
+});

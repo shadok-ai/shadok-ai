@@ -440,6 +440,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **77.** A bridge with no command dispatcher still owes the command refusal: the WhatsApp bridge neutralises a leading `/name`, and the server refuses a bare slash command from the `whatsapp` origin (`command-refused`) — the guarantee is the server's. · [detail](docs/invariants.md#inv-81)
 
+- **78.** A gate must be satisfiable in every mode it guards: `/2fa/recover` demanded the acting admin's passkey unconditionally, so on an instance with two-factor OFF — where nobody can hold one and the bootstrap admin never can — every recovery answered 403 and a forgotten password had no remedy at all. `stepUpIfTwoFactor`, like the `/users` writes; the routes that defend the factor itself keep the unconditional assertion, and the client mirrors the condition or the dead end just moves earlier. · [detail](docs/invariants.md#inv-82)
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
