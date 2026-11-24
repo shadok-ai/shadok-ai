@@ -41,7 +41,7 @@ test("sections: partition by the server's source tag, scoped to the selected gro
   const s = secretSections(secrets, "comex");
   assert.deepEqual(s.own.map((x) => x.name), ["B"]);
   assert.deepEqual(s.sharedIn.map((x) => x.name), ["D"]);
-  assert.deepEqual(s.inheritedMain.map((x) => x.name), ["A"]);
+  assert.deepEqual(s.commons.map((x) => x.name), ["A"]);
 });
 
 test("sections: shared-in is shown to the group it was lent to only when the group is a recipient", () => {
@@ -60,8 +60,8 @@ test("sections: no selected group shows every own secret", () => {
 
 test("sections: garbage in gives empty sections, never a throw", () => {
   const s = secretSections(undefined, "x");
-  assert.deepEqual(s, { own: [], sharedIn: [], inheritedMain: [] });
-  assert.deepEqual(secretSections([null, { name: "Z", source: "weird" }], "x"), { own: [], sharedIn: [], inheritedMain: [] });
+  assert.deepEqual(s, { own: [], sharedIn: [], commons: [] });
+  assert.deepEqual(secretSections([null, { name: "Z", source: "weird" }], "x"), { own: [], sharedIn: [], commons: [] });
 });
 
 test("panelGroupOptions: restricted/private listed individually, public groups collapsed into one bucket, Main dropped", () => {
@@ -115,10 +115,10 @@ test("sections: an editable Main secret is own in Public groups, inherited elsew
   ];
   const bucket = secretSections(secrets, PUBLIC_BUCKET, [main]);
   assert.deepEqual(bucket.own.map((x: { name: string }) => x.name), ["MW"]);
-  assert.deepEqual(bucket.inheritedMain.map((x: { name: string }) => x.name), ["MR"]);
+  assert.deepEqual(bucket.commons.map((x: { name: string }) => x.name), ["MR"]);
   const other = secretSections(secrets, "comex", [main]);
   assert.deepEqual(other.own, []);
-  assert.deepEqual(other.inheritedMain.map((x: { name: string }) => x.name), ["MW", "MR"]);
+  assert.deepEqual(other.commons.map((x: { name: string }) => x.name), ["MW", "MR"]);
 });
 
 test("sections: the Public-groups bucket aggregates every public group's own secrets", () => {
@@ -138,6 +138,32 @@ test("sections: the Public-groups bucket aggregates every public group's own sec
   assert.deepEqual(secretSections(secrets, PUBLIC_BUCKET, groups).own.map((x) => x.name).sort(), ["P1", "P2"]);
   // A concrete restricted group still scopes to itself.
   assert.deepEqual(secretSections(secrets, "comex", groups).own.map((x) => x.name), ["X"]);
+});
+
+test("sections: a walled group INHERITS every public group's secrets, not only Main's", () => {
+  const groups = [
+    { id: "main", name: "main", nature: "public" },
+    { id: "pub1", name: "group 1", nature: "public" },
+    { id: "comex", name: "COMEX", nature: "restricted" },
+    { id: "perso", name: "bob", nature: "private" },
+  ];
+  const secrets = [
+    { name: "A", source: "main" },
+    { name: "P1", source: "own", ownerGroup: "pub1", sharedWith: [], profiles: ["Dev"] },
+    { name: "X", source: "own", ownerGroup: "comex" },
+  ];
+  // `commonsGroupIds` (src/connected-accounts.ts) resolves P1 for an agent in
+  // ANY group, so the panel must show it — it used to vanish from all three
+  // sections here, reporting a denial that did not exist.
+  for (const walled of ["comex", "perso"]) {
+    const s = secretSections(secrets, walled, groups);
+    assert.deepEqual(s.commons.map((x) => x.name).sort(), ["A", "P1"], walled);
+    assert.deepEqual(s.own.map((x) => x.name), walled === "comex" ? ["X"] : [], walled);
+  }
+  // Unchanged where it is already shown as editable: the Public bucket.
+  const bucket = secretSections(secrets, PUBLIC_BUCKET, groups);
+  assert.deepEqual(bucket.own.map((x) => x.name), ["P1"]);
+  assert.deepEqual(bucket.commons.map((x) => x.name), ["A"]);
 });
 
 test("keyGroups: one key per group, Main last-resort only when it is all there is", () => {

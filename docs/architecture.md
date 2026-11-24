@@ -3176,7 +3176,9 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
 
 - **Secrets** (`secrets.ts`): one vault per group. Another group's secret is
   reachable only by explicit share-by-reference (`PUT /secrets/share`), and a name
-  resolves own → shared-in → Main (`resolveSecretValues`). `/secrets` is scoped
+  resolves own → shared-in → **the commons** (`resolveSecretValues`), the commons
+  being Main *and every public group* (`commonsGroupIds`) — a public group is
+  visible to all, so its secrets reach every agent exactly like Main's. `/secrets` is scoped
   to the caller's group; `PUT /secrets/profiles` and the panel's profile editor
   follow it; the profile editor is read-only for a group that does not own the
   profile. Values still travel only in the child's env (invariant 36).
@@ -3196,7 +3198,11 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
   admin or a Main member) gets Main's secrets tagged `editable` with their
   profiles, and edits them there; everyone else still sees them as the
-  read-only "Inherited from Main" tier. A commons-owned secret offers no
+  read-only **Inherited from Public** tier — which holds the whole commons, Main
+  AND every public group's own secrets (`secretSections`' `commons`). Naming that
+  section after Main alone is what hid a public group's secret from a walled
+  group's view entirely, since the server tags it `own` for everyone
+  (`secretOwnGroupIds`) and it then matched no section at all: invariant 80. A commons-owned secret offers no
   "Shared with" targets — it already resolves for every agent.
   On an existing secret's card both chip rows **write as they are ticked**
   (`secretControls`, no Save): `secretChipPick` (pure, `public/secrets-panel.js`)

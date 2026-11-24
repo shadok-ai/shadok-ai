@@ -4226,7 +4226,7 @@
     <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
     <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
     <div class="field"><span class="label">Thinking effort <span class="check-hint">— how hard agents of this role think before answering; higher costs more tokens</span></span><select id="profEffort"></select></div>
-    <div class="field"><span class="label">Secrets injected <span class="check-hint">— read-only: values resolve per group when an agent starts (its own group's, then shared with it, then Main's)</span></span><ul id="profSecretsList" class="prof-secrets-ro"></ul><button type="button" class="linkish" id="profToSecrets">→ Manage secrets</button></div>
+    <div class="field"><span class="label">Secrets injected <span class="check-hint">— read-only: values resolve per group when an agent starts (its own group's, then shared with it, then the public ones' — Main included)</span></span><ul id="profSecretsList" class="prof-secrets-ro"></ul><button type="button" class="linkish" id="profToSecrets">→ Manage secrets</button></div>
     <div class="field"><span class="label">MCP servers (JSON, optional) <span class="check-hint">— passed to its agents at spawn; write a secret as <code>${NAME}</code> and tick NAME above, never its value</span></span><textarea id="profMcp" rows="4" spellcheck="false" placeholder='{ "matomo": { "type": "http", "url": "https://…", "headers": { "Authorization": "Bearer ${MATOMO_TOKEN}" } } }'></textarea></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button id="profSave" class="primary">Save profile</button>
@@ -5158,7 +5158,7 @@
     chanOverflowItems: () => [],
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
-    secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
+    secretSections: () => ({ own: [], sharedIn: [], commons: [] }),
     panelGroupOptions: () => [],
     publicWriteTarget: () => null,
     keyGroups: () => [],
@@ -13605,6 +13605,10 @@
   const PUBLIC_BUCKET = "__public__";
   function groupName(id) {
     if (String(id) === PUBLIC_BUCKET) return "Public";
+    // The commons row says "from Public", never "from main": the selector has no
+    // Main entry (it folds into the bucket), so the internal id would be the one
+    // name on screen nothing else uses.
+    if (String(id) === "main") return "Public";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     if (!g) return String(id);
     // Match the rail + the selector: a private group is the sealed "Personal"
@@ -13903,7 +13907,10 @@
     };
     section("Own — " + groupName(panelGroup), sec.own, false, "no secret of its own yet");
     section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
-    section("Inherited from Main", sec.inheritedMain, true, "nothing in Main");
+    // Main AND every public group: one commons, the tier `commonsGroupIds`
+    // resolves from. Naming it "Main" hid every public group's secret from a
+    // walled group's view (see `secretSections`).
+    section("Inherited from Public", sec.commons, true, "nothing in the public groups");
   }
   $("secretsGroup").addEventListener("change", () => { panelGroup = $("secretsGroup").value; renderSecrets(); });
 

@@ -69,11 +69,26 @@ export function secretsPanelMode(groups) {
  * Partition the server's tagged list into the three sections. `selectedGroupId`
  * scopes the OWN section to one group (null = every own secret). Unknown or
  * malformed rows are dropped rather than guessed into a section.
+ *
+ * `commons` is the READ-ONLY tier a walled group inherits, and it is Main AND
+ * every public group — the same set `commonsGroupIds` resolves values from
+ * (src/connected-accounts.ts), because "public = commun" means a public group's
+ * secret reaches every agent on the instance exactly like Main's.
+ *
+ * It used to be Main alone (the field was called `inheritedMain`), so a public
+ * group's secret, tagged `own` by the server for everyone, matched neither the
+ * selected group nor the bucket in a walled group's view and was dropped from
+ * ALL THREE sections. The panel then showed a restricted group an empty vault
+ * while its agents were in fact receiving those values — a denial that did not
+ * exist, which is the worst direction for an access panel to be wrong in: it
+ * invites someone to copy a credential into a second group to "fix" it.
  */
 export function secretSections(secrets, selectedGroupId, groups) {
-  const out = { own: [], sharedIn: [], inheritedMain: [] };
+  const out = { own: [], sharedIn: [], commons: [] };
   if (!Array.isArray(secrets)) return out;
   const pubIds = new Set(publicGroupIds(groups));
+  // A concrete non-public group: a real sealed vault, which inherits the commons.
+  const walled = selectedGroupId != null && selectedGroupId !== PUBLIC_BUCKET;
   for (const s of secrets) {
     if (!s || typeof s.name !== "string") continue;
     if (s.source === "own") {
@@ -81,15 +96,18 @@ export function secretSections(secrets, selectedGroupId, groups) {
       // The "Public groups" view aggregates every public group's own secrets;
       // a concrete group view scopes to that id; null shows all own secrets.
       const inBucket = selectedGroupId === PUBLIC_BUCKET && pubIds.has(owner);
-      const inGroup =
-        selectedGroupId != null && selectedGroupId !== PUBLIC_BUCKET && owner === String(selectedGroupId);
+      const inGroup = walled && owner === String(selectedGroupId);
       if (selectedGroupId == null || inBucket || inGroup) out.own.push(s);
+      // Seen from a walled group, a public group's secret is the commons tier —
+      // read there, edited in the "Public" view (`canWriteSecretGroup` would
+      // refuse a write from a member of the walled group anyway).
+      else if (walled && pubIds.has(owner)) out.commons.push(s);
     } else if (s.source === "shared") out.sharedIn.push(s);
     else if (s.source === "main") {
       // In "Public groups", a Main secret the caller may write is one of its
       // own (Main is public); everywhere else it is the inherited tier.
       if (selectedGroupId === PUBLIC_BUCKET && s.editable === true) out.own.push(s);
-      else out.inheritedMain.push(s);
+      else out.commons.push(s);
     }
   }
   return out;
