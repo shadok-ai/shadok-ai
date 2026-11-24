@@ -257,6 +257,7 @@ import {
   mediaDirSpec,
   mediaDirTrusted,
   mediaServable,
+  mediaAddDirArgs,
 } from "./media-scope.js";
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
 import { HOME_SKILLS_BASE, missingHomeSkillLinks, rewriteSkillsBase } from "./skill-paths.js";
@@ -10022,6 +10023,16 @@ function makePilot(
   // and only for a dropped agent, so a mono-tenant/root spawn stays byte-for-byte
   // as before. See `resolveSpawnModel`.
   const resolvedProfile = effectiveProfile(profile);
+  // The directory this agent's attachments are written to (its group's in
+  // multi-tenant, invariant 60), granted as an extra working directory so
+  // reading a file the person just pasted asks for no permission. Best-effort:
+  // a group that vanished keeps the old behaviour (a prompt), never a failed spawn.
+  let mediaDirArg: string | null = null;
+  try {
+    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" ? mediaDirForGroupId(group ?? null) : mediaDirForSession(null);
+  } catch (e) {
+    console.warn(`media: no --add-dir for ${id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)})`);
+  }
   const spawnModel = resolveSpawnModel({
     requested: model,
     profileModel: resolvedProfile?.model,
@@ -10032,6 +10043,9 @@ function makePilot(
   // (src/prompt-args.ts), which silently dropped the role and the pilot prompt.
   const fullArgs = mergeAppendedPrompts([
     ...args,
+    // A flag+value pair placed early: `--add-dir` is variadic, so it must be
+    // followed by another flag, never by a bare word it would swallow.
+    ...mediaAddDirArgs(mediaDirArg),
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
     // after `--mcp-config`'s variadic JSON as a bare word.
