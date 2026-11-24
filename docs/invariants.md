@@ -2731,3 +2731,35 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     What is NOT pinned is what detached the bridge in the measured incident.
     The fix deliberately makes the gap survivable and visible instead of
     chasing it, the same choice as invariant 74's latch.
+
+<a id="inv-84"></a>
+
+80. **A read-only view of an access rule must enumerate the SAME tiers the
+    resolver does — one it forgets becomes a denial that does not exist.**
+    Secrets resolve own → shared-in → **the commons**, and the commons is Main
+    *plus every public group* ("public = commun": a public group is visible to
+    all, so its secrets reach every agent exactly like Main's — that is
+    `commonsGroupIds`, and `test/secrets.test.ts` pins it). The vault panel knew
+    only two of those three: its inherited section was literally called
+    `inheritedMain`. A public group's secret is tagged `own` by the server for
+    *everyone* (`secretOwnGroupIds` adds every public group), so in a walled
+    group's view it matched neither the selected group nor the "Public" bucket
+    and fell out of **all three** sections. The panel therefore showed a
+    restricted or Personal group an empty vault while its agents were in fact
+    receiving those values at spawn — reported from a live instance as *"a
+    restricted group seems to have no access to the public secrets, yet the UX
+    says shared"*.
+    The direction of the error is what makes it worth an invariant. A view that
+    hides an access someone HAS is not a conservative failure: the obvious fix,
+    for the person looking at it, is to paste the credential into a second group
+    — so a display bug ends in a duplicated secret with two owners, two
+    rotations and no audit trail tying them together. (A view that invented an
+    access would be caught the moment it was used; this one is never caught at
+    all.) The rule generalises to every panel that *reports* a rule it does not
+    enforce — the ledger's own `ledgerGroupsFor` had already been widened for
+    the same reason, and its comment says so in the same words.
+    The section is now `commons` and reads **Inherited from Public**, which is
+    also the selector's own label for that tier, so the two agree on screen. It
+    stays read-only there: writing a public group's secret needs
+    `canWriteSecretGroup`, which a member of the walled group does not clear —
+    the row names the group it comes from instead, which is where to edit it.
