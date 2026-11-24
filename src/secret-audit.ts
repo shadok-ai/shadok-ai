@@ -40,7 +40,7 @@ export const SECRET_AUDIT_ACTIONS: SecretAuditAction[] = [
 ];
 
 /** Through which door the action came. */
-export type SecretAuditVia = "web" | "agent" | "telegram" | "cron" | "peer" | "api" | "system";
+export type SecretAuditVia = "web" | "agent" | "telegram" | "whatsapp" | "cron" | "peer" | "api" | "system";
 
 export interface SecretAuditRow {
   at: number;
@@ -106,6 +106,7 @@ export function spawnActor(c: {
   if (c.origin === "agent") return { actor: c.agent ? `agent ${c.agent}` : "agent", via: "agent" };
   if (c.origin === "cron") return { actor: "cron", via: "cron" };
   if (c.origin === "telegram") return { actor: c.from ? `telegram ${c.from}` : "telegram", via: "telegram" };
+  if (c.origin === "whatsapp") return { actor: c.from ? `whatsapp ${c.from}` : "whatsapp", via: "whatsapp" };
   if (c.origin === "web") return { actor: c.account || "unknown", via: "web" };
   return { actor: c.account || c.origin || "unknown", via: c.origin ? "api" : "system" };
 }

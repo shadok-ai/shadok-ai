@@ -363,6 +363,8 @@ export function promptAuthor(
   // (`connectionOrigin`), never because a frame said so. Anything else (cli,
   // cron, boot) names nobody: it writes its own frames.
   if (origin === "telegram") return claimed;
+  // The WhatsApp bridge, on the same terms: its own secret, never a frame.
+  if (origin === "whatsapp") return claimed;
   return undefined;
 }
 
