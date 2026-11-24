@@ -10,6 +10,7 @@ import {
   type WaTransportEvent,
   type WaTransportFactory,
 } from "./wa-transport.js";
+import { waAccountKey, type WaInbound } from "./wa-guests.js";
 
 /**
  * The instance's WhatsApp handle: ONE transport at most, driven by the pure
@@ -28,7 +29,10 @@ import {
  *    that is no longer the current one is dropped — a stopped socket that
  *    still emits must not move the state.
  *
- * Step 1 only links. Messages arrive in step 2.
+ * Step 2 carries messages: inbound ones go to the listeners (`onMessage` —
+ * the bridge, `wa-bridge.ts`, is the one consumer), and `sendText` /
+ * `setTyping` / `resolveLid` go through the CURRENT transport, only while it
+ * is connected — a send never reaches a socket that is being replaced.
  */
 
 export interface WhatsAppHandle {
@@ -47,6 +51,19 @@ export interface WhatsAppHandle {
    *  cut short by one is not a crash, and must not trip the breaker. */
   releaseResumeGuard(): void;
   stop(): Promise<void>;
+  /** Inbound messages from the current transport. Returns an unsubscribe. */
+  onMessage(cb: (m: WaInbound) => void): () => void;
+  /** Called on every transition INTO connected (a link, a reconnect, a boot
+   *  resume): what the bridge replays its inbox on. */
+  onConnected(cb: () => void): () => void;
+  /** The linked number (`waAccountKey`), whenever one is known — connected,
+   *  reconnecting, halted, or only stored on disk. Null when nothing is linked. */
+  account(): string | null;
+  sendText(to: string, text: string): Promise<void>;
+  setTyping(to: string, on: boolean): Promise<void>;
+  resolveLid(pn: string): Promise<string | null>;
+  /** Resolves true once connected (at once if already), false after `ms`. */
+  whenConnected(ms: number): Promise<boolean>;
 }
 
 export const TICK_MS = 15_000;
@@ -115,6 +132,8 @@ export function startWhatsApp(o: {
   /** Which install the state is waiting for: an Unlink, a refusal or a second
    *  Link in between makes an earlier install's outcome irrelevant. */
   let installSeq = 0;
+  const messageListeners = new Set<(m: WaInbound) => void>();
+  const connectedListeners = new Set<() => void>();
 
   const libReady = () => !o.library || o.library.status() === "ready";
   const libReason = () =>
@@ -224,6 +243,14 @@ export function startWhatsApp(o: {
     // One line per PHASE change: never the QR, never a full number.
     if (prev.phase !== s.phase) log(`whatsapp: ${prev.phase} → ${describe(s)}`);
     watchBreaker(prev);
+    if (prev.phase !== "connected" && s.phase === "connected")
+      for (const cb of [...connectedListeners]) {
+        try {
+          cb();
+        } catch (err) {
+          log(`whatsapp: a connected listener failed: ${oneLine(err)}`);
+        }
+      }
     return prev;
   }
 
@@ -333,6 +360,17 @@ export function startWhatsApp(o: {
         return;
       case "alive":
         dispatch(e);
+        return;
+      case "message":
+        // A frame from the server is a sign of life like any other.
+        dispatch({ type: "alive" });
+        for (const cb of [...messageListeners]) {
+          try {
+            cb(e.msg);
+          } catch (err) {
+            log(`whatsapp: a message listener failed: ${oneLine(err)}`);
+          }
+        }
         return;
       case "close":
         dispatch(e);
@@ -462,8 +500,54 @@ export function startWhatsApp(o: {
     });
   }
 
+  const live = (): WaTransport => {
+    if (stopped || s.phase !== "connected" || !transport) throw new Error("WhatsApp is not connected");
+    return transport;
+  };
+
   return {
     state: () => s,
+
+    onMessage(cb) {
+      messageListeners.add(cb);
+      return () => void messageListeners.delete(cb);
+    },
+    onConnected(cb) {
+      connectedListeners.add(cb);
+      return () => void connectedListeners.delete(cb);
+    },
+    account() {
+      const a = "account" in s ? s.account : undefined;
+      return waAccountKey(a ?? storedAccount(o.sessionDir)?.account);
+    },
+    async sendText(to, text) {
+      await live().sendText(to, text);
+    },
+    async setTyping(to, on) {
+      await live().setTyping(to, on);
+    },
+    async resolveLid(pn) {
+      return live().resolveLid(pn);
+    },
+    whenConnected(ms) {
+      if (!stopped && s.phase === "connected" && transport) return Promise.resolve(true);
+      return new Promise<boolean>((resolve) => {
+        let done = false;
+        const finish = (v: boolean) => {
+          if (done) return;
+          done = true;
+          off();
+          timer.cancel();
+          resolve(v);
+        };
+        connectedListeners.add(onOpen);
+        function onOpen() {
+          finish(true);
+        }
+        const off = () => connectedListeners.delete(onOpen);
+        const timer = setTimer(() => finish(false), ms);
+      });
+    },
 
     link,
 
