@@ -193,3 +193,42 @@ test("qrSvg draws through the data directory's encoder, and names the reason whe
   const notInstalled = await qrSvg("payload", qrLoaderFrom(() => { throw new Error("the WhatsApp library is not installed on this instance"); }));
   assert.ok("error" in notInstalled);
 });
+
+// ── inbound messages (step 2) ───────────────────────────────────────────────
+import { inboundOf } from "../src/wa-baileys.js";
+
+test("inboundOf maps a library message to the neutral shape", () => {
+  const m = {
+    key: { remoteJid: "100000000000001@lid", remoteJidAlt: "33611111111@s.whatsapp.net", fromMe: false, id: "3EB0A1" },
+    message: { conversation: "hello" },
+    pushName: "Grace",
+    messageTimestamp: 1_700_000_000,
+  };
+  assert.deepEqual(inboundOf(m, "notify"), {
+    id: "3EB0A1",
+    chat: "100000000000001@lid",
+    chatAlt: "33611111111@s.whatsapp.net",
+    fromMe: false,
+    live: true,
+    unreadable: false,
+    text: "hello",
+    pushName: "Grace",
+    at: 1_700_000_000_000,
+  });
+});
+
+test("inboundOf: extended text, disappearing messages, a history replay, an undecryptable stub", () => {
+  const key = { remoteJid: "33611111111@s.whatsapp.net", fromMe: false, id: "X" };
+  assert.equal(inboundOf({ key, message: { extendedTextMessage: { text: "with a link" } } }, "notify")?.text, "with a link");
+  assert.equal(
+    inboundOf({ key, message: { ephemeralMessage: { message: { extendedTextMessage: { text: "vanishing" } } } } }, "notify")?.text,
+    "vanishing",
+  );
+  assert.equal(inboundOf({ key, message: { conversation: "old" } }, "append")?.live, false);
+  // Finding 3 of the spike: the stanza arrives with no ciphertext for us.
+  const stub = inboundOf({ key, messageStubType: 2 }, "notify");
+  assert.equal(stub?.unreadable, true);
+  assert.equal(stub?.text, undefined);
+  assert.equal(inboundOf({ key: { fromMe: false } }, "notify"), null);
+  assert.equal(inboundOf(null, "notify"), null);
+});

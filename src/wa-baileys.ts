@@ -1,4 +1,5 @@
 import type { WaAccount } from "./wa-link.js";
+import type { WaInbound } from "./wa-guests.js";
 import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-transport.js";
 import { probeInWorker, workerTransportFactory } from "./wa-worker-host.js";
 
@@ -84,6 +85,45 @@ export function accountOf(me: { id?: string; name?: string } | undefined): WaAcc
   return a;
 }
 
+/** The library's stub type for a message whose ciphertext never came for this
+ *  device (`WAMessageStubType.CIPHERTEXT`): the spike's finding 3. */
+const STUB_CIPHERTEXT = 2;
+
+/**
+ * One library message (`messages.upsert`) as the neutral `WaInbound`, or null
+ * when it carries no usable key. Pure, tested on library-shaped objects.
+ *
+ * Read from the library's own decoder: a DM's `remoteJid` is the person's
+ * primary address and `remoteJidAlt` their other one (a LID chat carries the
+ * phone number, and the reverse). `type: "notify"` is a message delivered now;
+ * `append` is a history sync replaying old ones. A disappearing message wraps
+ * its content one level down (`ephemeralMessage.message`).
+ */
+export function inboundOf(m: any, type: string): WaInbound | null {
+  const k = m?.key;
+  if (!k || typeof k.remoteJid !== "string" || typeof k.id !== "string") return null;
+  let content = m.message ?? null;
+  if (content?.ephemeralMessage?.message) content = content.ephemeralMessage.message;
+  const text =
+    typeof content?.conversation === "string"
+      ? content.conversation
+      : typeof content?.extendedTextMessage?.text === "string"
+        ? content.extendedTextMessage.text
+        : undefined;
+  const ts = Number(m.messageTimestamp);
+  return {
+    id: k.id,
+    chat: k.remoteJid,
+    ...(typeof k.remoteJidAlt === "string" && k.remoteJidAlt ? { chatAlt: k.remoteJidAlt } : {}),
+    fromMe: k.fromMe === true,
+    live: type === "notify",
+    unreadable: m.messageStubType === STUB_CIPHERTEXT,
+    ...(text !== undefined ? { text } : {}),
+    ...(typeof m.pushName === "string" && m.pushName ? { pushName: m.pushName } : {}),
+    at: Number.isFinite(ts) && ts > 0 ? ts * 1000 : Date.now(),
+  };
+}
+
 const SILENT_LOGGER: Record<string, unknown> = {
   level: "silent",
   child: () => SILENT_LOGGER,
@@ -101,6 +141,9 @@ interface LibSocket {
   ws: { on(ev: string, fn: (arg: any) => void): void };
   user?: { id?: string; name?: string };
   logout(msg?: string): Promise<void>;
+  sendMessage(jid: string, content: { text: string }): Promise<unknown>;
+  sendPresenceUpdate(type: string, jid?: string): Promise<void>;
+  signalRepository?: { lidMapping?: { getLIDForPN(pn: string): Promise<string | null> } };
   end(err: Error | undefined): void;
 }
 interface LibAuthState {
@@ -172,6 +215,14 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
       // ~30 s, so a healthy socket always has some. This is what feeds the
       // liveness watchdog that catches a socket that dies without a close.
       s.ws.on("frame", () => emit({ type: "alive" }));
+      // Inbound messages. The library has ALREADY acknowledged each one when
+      // this fires; the bridge's persisted inbox is what keeps it from there.
+      s.ev.on("messages.upsert", (u: { messages?: unknown[]; type?: string }) => {
+        for (const raw of Array.isArray(u?.messages) ? u.messages : []) {
+          const msg = inboundOf(raw, String(u?.type ?? ""));
+          if (msg) emit({ type: "message", msg });
+        }
+      });
       let qrs = 0;
       s.ev.on("connection.update", (u: { qr?: string; connection?: string; lastDisconnect?: { error?: any } }) => {
         emit({ type: "alive" });
@@ -197,6 +248,18 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
     async logout() {
       if (!sock) throw new Error("not connected");
       await sock.logout();
+    },
+    async sendText(to, text) {
+      if (!sock || !live) throw new Error("not connected");
+      await sock.sendMessage(to, { text });
+    },
+    async setTyping(to, on) {
+      if (!sock || !live) throw new Error("not connected");
+      await sock.sendPresenceUpdate(on ? "composing" : "paused", to);
+    },
+    async resolveLid(pn) {
+      const lid = await sock?.signalRepository?.lidMapping?.getLIDForPN(pn).catch(() => null);
+      return typeof lid === "string" && lid ? lid : null;
     },
     async stop() {
       live = false;

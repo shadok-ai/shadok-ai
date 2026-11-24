@@ -187,3 +187,75 @@ test("wipeSession refuses a session directory that is itself a symlink, and touc
   assert.throws(() => wipeSession(path.join(root, "s")), /symlink/);
   assert.equal(fs.readFileSync(path.join(target, "precious.txt"), "utf8"), "keep me");
 });
+
+// ── the fake's message half (step 2) ────────────────────────────────────────
+// The fake models WhatsApp's SERVER: a message it delivers to a connected
+// device is acknowledged on receipt and gone from the server, exactly like the
+// library — so a restart test can prove the bridge's own inbox is what keeps
+// it. A message sent while the device is away is held and delivered on the
+// next open.
+
+async function connected(dir: string) {
+  const fake = makeFakeTransport();
+  let t = await fake.factory({ sessionDir: dir });
+  await t.start(() => {});
+  fake.script.scan(ADA);
+  await t.stop();
+  t = await fake.factory({ sessionDir: dir });
+  const seen: WaTransportEvent[] = [];
+  await t.start((e) => seen.push(e));
+  return { fake, t, seen };
+}
+
+test("fake: a message to a connected device is emitted once and acknowledged", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t, seen } = await connected(d);
+  fake.script.deliver({ id: "M1", chat: "100000000000001@lid", chatAlt: "33611111111@s.whatsapp.net", text: "hello", pushName: "Grace" });
+  const msgs = seen.filter((e) => e.type === "message");
+  assert.equal(msgs.length, 1);
+  assert.equal((msgs[0] as { msg: { text: string; live: boolean; fromMe: boolean } }).msg.text, "hello");
+  assert.equal((msgs[0] as { msg: { live: boolean } }).msg.live, true);
+  // Acknowledged: a restart does NOT bring it back.
+  await t.stop();
+  const again: WaTransportEvent[] = [];
+  const t2 = await fake.factory({ sessionDir: d });
+  await t2.start((e) => again.push(e));
+  assert.equal(again.filter((e) => e.type === "message").length, 0);
+  assert.equal(fake.held, 0);
+});
+
+test("fake: a message sent while away is held, then delivered after the next open", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t } = await connected(d);
+  await t.stop();
+  fake.script.deliver({ id: "M2", chat: "100000000000001@lid", text: "while you were away" });
+  assert.equal(fake.held, 1);
+  const seen: WaTransportEvent[] = [];
+  const t2 = await fake.factory({ sessionDir: d });
+  await t2.start((e) => seen.push(e));
+  assert.deepEqual(seen.map((e) => e.type), ["open", "message"]);
+  assert.equal(fake.held, 0);
+});
+
+test("fake: sendText and setTyping are recorded, and refused while not connected", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t } = await connected(d);
+  await t.sendText("100000000000001@lid", "hi");
+  await t.setTyping("100000000000001@lid", true);
+  assert.deepEqual(fake.sent, [{ to: "100000000000001@lid", text: "hi" }]);
+  assert.deepEqual(fake.typing, [{ to: "100000000000001@lid", on: true }]);
+  await t.stop();
+  await assert.rejects(t.sendText("100000000000001@lid", "late"), /not connected/);
+});
+
+test("fake: resolveLid answers from what it was told", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t } = await connected(d);
+  assert.equal(await t.resolveLid("33611111111@s.whatsapp.net"), null);
+  fake.script.mapLid("33611111111@s.whatsapp.net", "100000000000001@lid");
+  assert.equal(await t.resolveLid("33611111111@s.whatsapp.net"), "100000000000001@lid");
+});

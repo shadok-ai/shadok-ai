@@ -98,9 +98,9 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
     let dead = false;
     let stopping = false;
     let seq = 0;
-    const waiting = new Map<number, { cmd: string; resolve: () => void; reject: (e: Error) => void }>();
+    const waiting = new Map<number, { cmd: string; resolve: (v?: unknown) => void; reject: (e: Error) => void }>();
 
-    w.on("message", (m: { ev?: WaTransportEvent; id?: number; ok?: boolean; error?: string }) => {
+    w.on("message", (m: { ev?: WaTransportEvent; id?: number; ok?: boolean; error?: string; value?: unknown }) => {
       if (m.ev) {
         if (!stopping && !dead && on) on(m.ev);
         return;
@@ -108,7 +108,7 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
       const p = m.id !== undefined ? waiting.get(m.id) : undefined;
       if (!p) return;
       waiting.delete(m.id!);
-      if (m.ok) p.resolve();
+      if (m.ok) p.resolve(m.value);
       else p.reject(new Error(m.error ?? "failed"));
     });
 
@@ -128,12 +128,12 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
     w.on("error", (e) => died(`the WhatsApp library failed: ${oneLine(e)}`));
     w.on("exit", (code) => died(`the WhatsApp library stopped unexpectedly (exit ${code})`));
 
-    const call = (cmd: "start" | "logout" | "stop") =>
-      new Promise<void>((resolve, reject) => {
+    const call = (cmd: "start" | "logout" | "stop" | "sendText" | "setTyping" | "resolveLid", args?: unknown[]) =>
+      new Promise<unknown>((resolve, reject) => {
         if (dead) return reject(new Error("the WhatsApp worker is gone"));
         const id = ++seq;
         waiting.set(id, { cmd, resolve, reject });
-        w.postMessage({ id, cmd });
+        w.postMessage({ id, cmd, ...(args ? { args } : {}) });
       });
 
     const t: WaTransport = {
@@ -141,7 +141,13 @@ export function workerTransportFactory(spec: WorkerSpec): WaTransportFactory {
         on = cb;
         await call("start");
       },
-      logout: () => call("logout"),
+      logout: () => call("logout").then(() => {}),
+      sendText: (to, text) => call("sendText", [to, text]).then(() => {}),
+      setTyping: (to, on) => call("setTyping", [to, on]).then(() => {}),
+      resolveLid: async (pn) => {
+        const v = await call("resolveLid", [pn]);
+        return typeof v === "string" ? v : null;
+      },
       async stop() {
         stopping = true;
         if (!dead) {
