@@ -30,6 +30,18 @@ export interface WaBinding {
   phone?: string;
 }
 
+/** A medium carried by an inbound message (step 3). Its bytes are fetched
+ *  separately (`WaTransport.downloadMedia`), the moment it arrives. */
+export interface WaMedia {
+  kind: "image" | "document" | "audio" | "video";
+  mime?: string;
+  fileName?: string;
+  /** Declared size in bytes — checked BEFORE downloading. */
+  size?: number;
+  /** An audio recorded as a voice note (push-to-talk), as opposed to a file. */
+  voice?: boolean;
+}
+
 /** What the transport says about one inbound message — library-neutral. */
 export interface WaInbound {
   /** The message id, for dedup. */
@@ -47,7 +59,9 @@ export interface WaInbound {
   /** Arrived without content: the sender's phone had not encrypted for this
    *  linked device yet (the spike's finding 3). */
   unreadable: boolean;
+  /** The text — or, for a medium, its caption. */
   text?: string;
+  media?: WaMedia;
   /** The sender's WhatsApp display name. Untrusted, display only. */
   pushName?: string;
   at: number;
@@ -97,7 +111,11 @@ export function waGuestWorkDirName(id: unknown): string | null {
 
 export type InboundVerdict =
   | { kind: "ignore"; why: string }
-  | { kind: "text"; lid: string | null; pn: string | null; text: string };
+  | { kind: "text"; lid: string | null; pn: string | null; text: string }
+  | { kind: "media"; lid: string | null; pn: string | null; media: WaMedia; caption?: string }
+  /** Arrived without content: never a prompt, never stored — only the one
+   *  notice asking for a resend goes to `replyTo` (step 3). */
+  | { kind: "unreadable"; replyTo: string };
 
 /**
  * Is this message someone talking to us, and if so, who and what?
@@ -118,13 +136,14 @@ export function inboundVerdict(m: WaInbound): InboundVerdict {
   if (!primary) return { kind: "ignore", why: "not-a-person" };
   if (m.fromMe) return { kind: "ignore", why: "own" };
   if (!m.live) return { kind: "ignore", why: "replay" };
-  if (m.unreadable) return { kind: "ignore", why: "unreadable" };
+  if (m.unreadable) return { kind: "unreadable", replyTo: primary };
   const text = typeof m.text === "string" ? m.text : "";
-  if (!text.trim()) return { kind: "ignore", why: "no-text" };
   const alt = bareJid(m.chatAlt);
   const isLid = (j: string | null) => !!j && j.endsWith("@lid");
   const lid = isLid(primary) ? primary : isLid(alt) ? alt : null;
   const pn = !isLid(primary) ? primary : alt && !isLid(alt) ? alt : null;
+  if (m.media) return { kind: "media", lid, pn, media: m.media, ...(text.trim() ? { caption: text } : {}) };
+  if (!text.trim()) return { kind: "ignore", why: "no-text" };
   return { kind: "text", lid, pn, text };
 }
 
@@ -192,6 +211,26 @@ export function waReattachList<C extends { sessionId: string; whatsapp?: WaBindi
 ): C[] {
   if (!account) return [];
   return list.filter((c) => c.whatsapp?.account === account && !hasBridge(c.sessionId));
+}
+
+/** How long after someone writes the bridge may answer them with a NOTICE. */
+export const REPLY_WINDOW_MS = 10 * 60_000;
+
+/**
+ * May the bridge send a guest NOTICE to `to` — someone with no binding yet?
+ *
+ * The one exception to "only a binding": a person whose first message arrived
+ * unreadable, or whose first file could not be received, has no agent and so
+ * no binding, yet must be asked to send it again (the design's finding 3 —
+ * and writing to them is what makes their next message readable). `recent` is
+ * fed ONLY by inbound messages, so this still never writes first: it answers
+ * someone who wrote minutes ago, and only with the bridge's own fixed lines.
+ */
+export function replyAllowed(recent: ReadonlyMap<string, number>, to: string, now: number, windowMs = REPLY_WINDOW_MS): boolean {
+  const bare = bareJid(to);
+  if (!bare) return false;
+  const at = recent.get(bare);
+  return at !== undefined && now - at >= 0 && now - at <= windowMs;
 }
 
 /**

@@ -440,7 +440,18 @@ export type GuestNotice =
   | "no-keyboard"     // Telegram refused the question's inline keyboard
   | "exited"          // the agent's process is gone
   | "upload-failed"   // a file the agent sent could not be delivered
-  | "tool-activity";  // the running commentary of tool calls
+  | "tool-activity"   // the running commentary of tool calls
+  // WhatsApp (step 3) — the occasions only that bridge has:
+  | "unreadable"      // a message arrived with no content for this device
+  | "too-large"       // a file over the bridge's ceiling
+  | "media-failed"    // a file could not be received
+  | "voice-failed"    // a voice note could not be transcribed
+  | "dialog-single"   // how to answer a single-choice question
+  | "dialog-multi"    // how to answer a multiple-choice question
+  | "dialog-text"     // how to give an answer of one's own
+  | "dialog-again"    // a reply that answers nothing: how to answer, again
+  | "need-text"       // an own-answer option was picked: now the text
+  | "ended";          // the conversation was closed from the cockpit
 
 /**
  * What a GUEST hears in place of a line the cockpit says to itself, or null to
@@ -475,6 +486,26 @@ export function guestNotice(kind: GuestNotice): string | null {
     case "upload-failed":
     case "tool-activity":
       return null;
+    case "unreadable":
+      return "⚠️ Your message didn't come through on my side — please send it again.";
+    case "too-large":
+      return "⚠️ That file is too large for me to receive (over 50 MB) — could you send a smaller one, or a link to it?";
+    case "media-failed":
+      return "⚠️ I couldn't receive that file — please send it again.";
+    case "voice-failed":
+      return "🎙 I couldn't make out that voice message — could you send it again, or write it?";
+    case "dialog-single":
+      return "Reply with the number of your choice.";
+    case "dialog-multi":
+      return "Reply with the numbers of your choices, for example: 1 3";
+    case "dialog-text":
+      return "For an answer of your own, send its number followed by your words.";
+    case "dialog-again":
+      return "I didn't get that — please reply with one of the numbers above.";
+    case "need-text":
+      return "✍️ Send your answer in your next message.";
+    case "ended":
+      return "This conversation was closed on my side — your next message starts a new one.";
   }
 }
 

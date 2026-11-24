@@ -74,7 +74,6 @@ test("inboundVerdict: only a live, readable text DM from someone else gets throu
     [{ chat: "1234@broadcast" }, "broadcast"],
     [{ fromMe: true }, "own"],
     [{ live: false }, "replay"],
-    [{ unreadable: true, text: undefined }, "unreadable"],
     [{ text: "   " }, "no-text"],
     [{ text: undefined }, "no-text"],
     [{ chat: "0@call" }, "not-a-person"],

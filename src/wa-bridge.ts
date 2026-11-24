@@ -523,12 +523,8 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
   const onMessage = async (m: WaInbound) => {
     if (stopped) return;
     const v = inboundVerdict(m);
-    if (v.kind === "ignore") {
-      // One line for what a person may be waiting on; the rest (receipts,
-      // own messages, groups) is noise. Never the body, never a full number.
-      if (v.why === "unreadable") log("whatsapp: a message arrived unreadable (not yet encrypted for this device) — ignored");
-      return;
-    }
+    if (v.kind === "ignore") return;
+    if (v.kind !== "text") return; // media and the unreadable notice: task 3
     if (!guestsOpen(d.setup())) return; // the door shut: silence, nothing queued
     const account = d.handle.account();
     if (!account || d.inbox.seen(m.id)) return;
