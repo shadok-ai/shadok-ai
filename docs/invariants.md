@@ -2667,3 +2667,67 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     obvious spelling in a `/2fa` route, and a later "harmonise these" pass
     would restore it without noticing it removes the only remedy for a lost
     password.
+
+<a id="inv-83"></a>
+
+79. **Content that exists only as a live frame has no safety net — and the
+    mirror's two directions did not have the same one.** Everything the cockpit
+    shows an agent SAY comes from the transcript, and `src/tail.ts` persists its
+    byte offset (invariant 7) precisely so a gap is re-read and re-broadcast
+    rather than lost. A `prompt-echo` has none of that: it is one frame,
+    broadcast at submit time, derived from nothing on disk. So a channel
+    mirrored into Telegram whose bridge happened to be detached at that instant
+    lost the operator's own message **for good**, while the agent's answer to
+    that very message arrived normally a few seconds later — the tail had
+    recovered by then. Reported from a live instance exactly in those words: *"I
+    write in Telegram, it answers; I write in the web, my message does not
+    appear but the answer does"*, intermittently for about ten minutes after a
+    crash and a restart. It reads as a broken bridge and is not one; the
+    asymmetry is between a datum with a resume point and a datum without.
+    Three things made it unfindable, and each is fixed here.
+    **A bridge dies with its WebSocket, and said nothing.** `ws.on("close")`
+    dropped it from `bridges` silently — so the window during which a topic is
+    attached to nothing left no trace on either side. It now logs, which is also
+    the line that tells an operator why their messages were missing.
+    **A detached mirror is indistinguishable from an attached one at the
+    broadcast site.** `broadcast` writes to a client set; a set that lacks the
+    bridge looks exactly like one that has it. `warnMirrorGap` asks the question
+    out loud, and asks it of the SECRET the bridge proved at connect
+    (`x-shadok-bridge`), never of `origin` — a browser can send
+    `origin: "telegram"` and would then silence the warning for precisely the
+    client that cannot carry the mirror.
+    **And the one mechanism that could have recovered the frame was switched
+    off on purpose.** A reattaching bridge replayed nothing: `backfill` is set
+    only for a freshly created topic, "never on a reconnect/reboot". That is
+    right — re-posting history on every auto-update would be its own incident —
+    but it left the gap uncovered, so the bridge now gets the tail's cure in the
+    tail's shape: a resume point per BINDING (`src/tg-replay.ts`, stored beside
+    the other per-launch-dir Telegram state, keyed by `bindKey` because the
+    setting belongs to the topic and a `/new` must not replay the previous
+    session's tail), and a reconnect that posts the gap and only the gap.
+    Four details in that replay are load-bearing.
+    **No mark replays nothing.** A binding never delivered through is a NEW
+    mirror, not one with an unbounded backlog — the same rule as the ledger
+    watermark, where no record means a fresh agent anchored to now instead of
+    the whole table flooding into it.
+    **A turn with no `at` is never posted.** It cannot be placed against the
+    mark, and posting it would re-spam history on every reconnect, which is the
+    very thing `backfill`'s restraint exists to prevent.
+    **The mark's own echo is dropped at the HEAD, and only there.** An echo is
+    marked with our delivery instant and Claude Code stamps that same prompt
+    into the transcript a moment LATER, so the one item we know landed can still
+    sit after the mark; recognising its text is what keeps the operator's own
+    sentence from appearing twice. The same trade-off `isStalePreface` makes — a
+    duplicate in a topic is permanent, nothing ever comes to edit it away — and
+    only at the head, or a message deliberately sent twice would vanish.
+    **The mark only ever moves forward.** Two different clocks feed it (a
+    transcript timestamp, our own delivery instant), so a later delivery can
+    legitimately carry an earlier number; taking it would reopen a closed gap
+    and post into the topic again.
+    One limit is STATED rather than hidden: a `file` turn is not re-uploaded
+    from a gap. Replaying it means reading bytes with the agent's rights long
+    after the fact, for a path that may be gone — the text around it comes back
+    and says there was one.
+    What is NOT pinned is what detached the bridge in the measured incident.
+    The fix deliberately makes the gap survivable and visible instead of
+    chasing it, the same choice as invariant 74's latch.

@@ -4,6 +4,7 @@ import { type Folder, sanitizeFolders } from "./agent-folders.js";
 import os from "node:os";
 import path from "node:path";
 import { findWaChannel, type WaBinding } from "./wa-guests.js";
+import { type DeliveredMark } from "./tg-replay.js";
 
 /** A Telegram chat/topic a channel is bound to (folded into the channel). */
 export interface TgBinding {
@@ -578,6 +579,42 @@ export function loadTgOperators(): number[] {
 }
 export function saveTgOperators(ids: number[]): void {
   writeJson("telegram-operators", ids);
+}
+
+/**
+ * What each Telegram binding has already DELIVERED into its chat — the mirror's
+ * resume point, and the exact twin of the tail's byte offset (`writePos`,
+ * invariant 7): a bridge dies with its WebSocket, and whatever was broadcast
+ * while it was gone had no way back. Keyed by `bindKey`, not by session: the
+ * setting belongs to the topic (a `/new` recreates a session in the same topic
+ * and must not replay the previous one's tail), like `telegram-tools`.
+ *
+ * Bounded by construction — one entry per binding ever used, and the file is
+ * capped: a mark is rewritten in place and the overflow drops the entries
+ * touched longest ago, which are precisely the topics nobody writes in.
+ */
+const DELIVERED_CAP = 200;
+
+/** Long enough that no ordinary prompt is truncated, so the head comparison
+ *  stays exact for the case it exists for. */
+export const DELIVERED_TEXT_MAX = 2000;
+
+export function loadTgDelivered(): Record<string, DeliveredMark> {
+  const out: Record<string, DeliveredMark> = {};
+  for (const r of readJson("telegram-delivered")) {
+    if (!r || typeof r.key !== "string" || typeof r.at !== "number") continue;
+    out[r.key] = { at: r.at, ...(typeof r.text === "string" ? { text: r.text } : {}) };
+  }
+  return out;
+}
+
+/** Record one binding's resume point. The stored text is TRUNCATED: it is only
+ *  ever compared against a replayed turn's head, and a 60k-character paste has
+ *  no business sitting in a state file for ever. */
+export function saveTgDelivered(key: string, mark: DeliveredMark): void {
+  const rows = readJson("telegram-delivered").filter((r) => r && typeof r.key === "string" && r.key !== key);
+  rows.push({ key, at: mark.at, ...(mark.text ? { text: mark.text.slice(0, DELIVERED_TEXT_MAX) } : {}) });
+  writeJson("telegram-delivered", rows.slice(-DELIVERED_CAP));
 }
 
 /**

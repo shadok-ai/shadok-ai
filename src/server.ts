@@ -10578,6 +10578,36 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
   }
 }
 
+/** Is this session's Telegram mirror connected RIGHT NOW? Proved at connect by
+ *  the bridge's own secret, so no client can claim it. */
+function telegramBridgeAttached(s: Live): boolean {
+  for (const c of s.clients)
+    if (c.readyState === c.OPEN && (c as WebSocket & { __tgBridge?: boolean }).__tgBridge) return true;
+  return false;
+}
+
+/**
+ * SAY it when a prompt echo is broadcast into a mirrored session with no bridge
+ * to carry it.
+ *
+ * `broadcast` writes to a client set, and a set that lacks the bridge looks
+ * exactly like one that has it — so this loss had no trace anywhere, on either
+ * side. Measured on a live instance: the operator's web messages stopped
+ * appearing in their topic for about ten minutes while the agent's answers kept
+ * arriving (those are re-read from the transcript, invariant 7), and the only
+ * way to tell was to read the code. The reattach now replays the gap
+ * (`src/tg-replay.ts`); this line is what makes the gap itself visible.
+ */
+function warnMirrorGap(s: Live, origin: string | undefined): void {
+  if (telegramBridgeAttached(s)) return;
+  // Only a channel with a binding has a mirror to miss. Read last, so the
+  // ordinary case (bridge attached, or no Telegram at all) costs nothing.
+  if (!loadChannels().find((c) => c.sessionId === s.id)?.telegram) return;
+  console.log(
+    `telegram: ${s.id.slice(0, 8)} — no bridge attached, this ${origin ?? "unknown"} prompt does not reach its chat now (replayed when it reattaches)`,
+  );
+}
+
 /**
  * Re-spawns the agent in place, resuming the same session id, so it picks up
  * fresh env (newly-added secrets) or a freshly-changed profile. History is
@@ -12135,6 +12165,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   })();
   // The Telegram bridge, proved the same way (its own secret, same compare).
   const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
+  // Stamped on the socket so `telegramBridgeAttached` can answer "is this
+  // session's mirror actually connected right now?". From the SECRET, never
+  // from `origin` — a browser can send `origin: "telegram"` and would then
+  // silence the very warning below. Same shape as `__admin`.
+  (ws as WebSocket & { __tgBridge?: boolean }).__tgBridge = isTelegramBridge;
   // The WhatsApp bridge, proved by its own secret (same compare).
   const isWhatsAppBridge = presentsSecret(req, "x-shadok-wa-bridge", WHATSAPP_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
@@ -12933,6 +12968,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(author ? { from: author } : {}) },
               ws,
             );
+            // A prompt echo exists ONLY as this frame — unlike the agent's text,
+            // nothing on disk can re-derive it. A mirrored session whose bridge
+            // is detached at this instant therefore loses it, so name it.
+            if (origin !== "telegram") warnMirrorGap(session, origin);
           } else {
             // A cron / notification is hidden: no echo, so the next streamed
             // text would glue onto the previous turn. Flag it for the tail.
