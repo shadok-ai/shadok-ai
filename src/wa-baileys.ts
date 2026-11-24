@@ -1,5 +1,5 @@
 import type { WaAccount } from "./wa-link.js";
-import type { WaInbound } from "./wa-guests.js";
+import type { WaInbound, WaMedia } from "./wa-guests.js";
 import type { WaTransport, WaTransportEvent, WaTransportFactory } from "./wa-transport.js";
 import { probeInWorker, workerTransportFactory } from "./wa-worker-host.js";
 
@@ -103,13 +103,20 @@ export function inboundOf(m: any, type: string): WaInbound | null {
   const k = m?.key;
   if (!k || typeof k.remoteJid !== "string" || typeof k.id !== "string") return null;
   let content = m.message ?? null;
-  if (content?.ephemeralMessage?.message) content = content.ephemeralMessage.message;
+  // Wrappers the library leaves in place: disappearing, view-once, a document
+  // sent with a caption.
+  for (const w of ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage"])
+    if (content?.[w]?.message) content = content[w].message;
+  const media = mediaOf(content);
+  const caption = media ? content?.[`${media.kind}Message`]?.caption : undefined;
   const text =
     typeof content?.conversation === "string"
       ? content.conversation
       : typeof content?.extendedTextMessage?.text === "string"
         ? content.extendedTextMessage.text
-        : undefined;
+        : typeof caption === "string" && caption
+          ? caption
+          : undefined;
   const ts = Number(m.messageTimestamp);
   return {
     id: k.id,
@@ -119,10 +126,31 @@ export function inboundOf(m: any, type: string): WaInbound | null {
     live: type === "notify",
     unreadable: m.messageStubType === STUB_CIPHERTEXT,
     ...(text !== undefined ? { text } : {}),
+    ...(media ? { media } : {}),
     ...(typeof m.pushName === "string" && m.pushName ? { pushName: m.pushName } : {}),
     at: Number.isFinite(ts) && ts > 0 ? ts * 1000 : Date.now(),
   };
 }
+
+/** The medium a library message carries, described (the bytes come later). */
+function mediaOf(content: any): WaMedia | undefined {
+  for (const kind of ["image", "document", "audio", "video"] as const) {
+    const x = content?.[`${kind}Message`];
+    if (!x || typeof x !== "object") continue;
+    const size = Number(x.fileLength);
+    return {
+      kind,
+      ...(typeof x.mimetype === "string" && x.mimetype ? { mime: x.mimetype } : {}),
+      ...(kind === "document" && typeof x.fileName === "string" && x.fileName ? { fileName: x.fileName } : {}),
+      ...(Number.isFinite(size) && size > 0 ? { size } : {}),
+      ...(kind === "audio" && x.ptt === true ? { voice: true } : {}),
+    };
+  }
+  return undefined;
+}
+
+/** Recent media messages kept for their download: a burst of photos, not a history. */
+const RAW_KEEP = 100;
 
 const SILENT_LOGGER: Record<string, unknown> = {
   level: "silent",
@@ -141,9 +169,10 @@ interface LibSocket {
   ws: { on(ev: string, fn: (arg: any) => void): void };
   user?: { id?: string; name?: string };
   logout(msg?: string): Promise<void>;
-  sendMessage(jid: string, content: { text: string }): Promise<unknown>;
+  sendMessage(jid: string, content: Record<string, unknown>): Promise<unknown>;
   sendPresenceUpdate(type: string, jid?: string): Promise<void>;
   signalRepository?: { lidMapping?: { getLIDForPN(pn: string): Promise<string | null> } };
+  updateMediaMessage?: (m: unknown) => Promise<unknown>;
   end(err: Error | undefined): void;
 }
 interface LibAuthState {
@@ -154,6 +183,7 @@ interface Lib {
   default: (cfg: Record<string, unknown>) => LibSocket;
   useMultiFileAuthState(dir: string): Promise<{ state: LibAuthState; saveCreds: () => Promise<void> }>;
   Browsers: { ubuntu(b: string): unknown };
+  downloadMediaMessage?: (m: unknown, type: "buffer", opts: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<Uint8Array>;
 }
 
 /** How long `stop()` waits for credential writes already under way. */
@@ -177,6 +207,8 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
   let live = false;
   let writable = true;
   const pending = new Set<Promise<unknown>>();
+  /** The library message of each recent medium, for `downloadMedia`. */
+  const raw = new Map<string, unknown>();
   const track = (p: Promise<unknown>): Promise<void> => {
     const q = p.then(
       () => undefined,
@@ -218,9 +250,14 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
       // Inbound messages. The library has ALREADY acknowledged each one when
       // this fires; the bridge's persisted inbox is what keeps it from there.
       s.ev.on("messages.upsert", (u: { messages?: unknown[]; type?: string }) => {
-        for (const raw of Array.isArray(u?.messages) ? u.messages : []) {
-          const msg = inboundOf(raw, String(u?.type ?? ""));
-          if (msg) emit({ type: "message", msg });
+        for (const rawMsg of Array.isArray(u?.messages) ? u.messages : []) {
+          const msg = inboundOf(rawMsg, String(u?.type ?? ""));
+          if (!msg) continue;
+          if (msg.media) {
+            raw.set(msg.id, rawMsg);
+            while (raw.size > RAW_KEEP) raw.delete(raw.keys().next().value as string);
+          }
+          emit({ type: "message", msg });
         }
       });
       let qrs = 0;
@@ -256,6 +293,32 @@ export function makeBaileysTransport(lib: Lib, sessionDir: string): WaTransport 
     async setTyping(to, on) {
       if (!sock || !live) throw new Error("not connected");
       await sock.sendPresenceUpdate(on ? "composing" : "paused", to);
+    },
+    async downloadMedia(id) {
+      const m = raw.get(id);
+      if (!m) throw new Error("this file is no longer available to download");
+      if (typeof lib.downloadMediaMessage !== "function") throw new Error("the WhatsApp library cannot download media");
+      // The reupload hook asks the sender's phone for a fresh copy when the
+      // server's has expired — what made the spike's downloads succeed.
+      const buf = await lib.downloadMediaMessage(m, "buffer", {}, {
+        logger: SILENT_LOGGER,
+        ...(sock?.updateMediaMessage ? { reuploadRequest: sock.updateMediaMessage } : {}),
+      });
+      raw.delete(id);
+      return buf;
+    },
+    async sendFile(to, f) {
+      if (!sock || !live) throw new Error("not connected");
+      const data = Buffer.from(f.data);
+      // No image library is installed with the library (sharp/jimp are left
+      // out): the library's thumbnail step fails inside its own try and the
+      // picture goes out without a preview — degraded, never failed.
+      await sock.sendMessage(
+        to,
+        (f.image
+          ? { image: data, mimetype: f.mime, ...(f.caption ? { caption: f.caption } : {}) }
+          : { document: data, mimetype: f.mime, fileName: f.name, ...(f.caption ? { caption: f.caption } : {}) }),
+      );
     },
     async resolveLid(pn) {
       const lid = await sock?.signalRepository?.lidMapping?.getLIDForPN(pn).catch(() => null);

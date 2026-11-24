@@ -259,3 +259,19 @@ test("fake: resolveLid answers from what it was told", async () => {
   fake.script.mapLid("33611111111@s.whatsapp.net", "100000000000001@lid");
   assert.equal(await t.resolveLid("33611111111@s.whatsapp.net"), "100000000000001@lid");
 });
+
+// ── media (step 3) ──────────────────────────────────────────────────────────
+
+test("fake: a medium arrives described, its bytes fetched by id; a file sent is recorded", async () => {
+  const d = path.join(tmp(), "s");
+  ensureSessionDir(d);
+  const { fake, t, seen } = await connected(d);
+  fake.script.deliver({ id: "P1", chat: "100000000000001@lid", media: { kind: "image", mime: "image/jpeg", size: 4 }, mediaData: Buffer.from("JPEG"), text: "my receipt" });
+  const m = seen.find((e) => e.type === "message") as { msg: { media?: { kind: string }; text?: string } };
+  assert.equal(m.msg.media?.kind, "image");
+  assert.equal(m.msg.text, "my receipt");
+  assert.equal(Buffer.from(await t.downloadMedia("P1")).toString(), "JPEG");
+  await assert.rejects(t.downloadMedia("nope"), /no media/);
+  await t.sendFile("100000000000001@lid", { data: Buffer.from("PDF"), name: "quote.pdf", mime: "application/pdf", image: false });
+  assert.deepEqual(fake.files, [{ to: "100000000000001@lid", name: "quote.pdf", mime: "application/pdf", image: false, size: 3 }]);
+});

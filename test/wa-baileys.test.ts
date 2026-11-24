@@ -232,3 +232,25 @@ test("inboundOf: extended text, disappearing messages, a history replay, an unde
   assert.equal(inboundOf({ key: { fromMe: false } }, "notify"), null);
   assert.equal(inboundOf(null, "notify"), null);
 });
+
+test("inboundOf describes a picture, a document, a voice note and a video, with their captions", () => {
+  const key = { remoteJid: "100000000000001@lid", fromMe: false, id: "X" };
+  assert.deepEqual(inboundOf({ key, message: { imageMessage: { mimetype: "image/jpeg", caption: "receipt", fileLength: 2048 } } }, "notify")?.media, {
+    kind: "image",
+    mime: "image/jpeg",
+    size: 2048,
+  });
+  assert.equal(inboundOf({ key, message: { imageMessage: { caption: "receipt" } } }, "notify")?.text, "receipt");
+  assert.deepEqual(
+    inboundOf({ key, message: { documentWithCaptionMessage: { message: { documentMessage: { mimetype: "application/pdf", fileName: "price list.pdf", caption: "here", fileLength: "10" } } } } }, "notify")?.media,
+    { kind: "document", mime: "application/pdf", fileName: "price list.pdf", size: 10 },
+  );
+  assert.deepEqual(inboundOf({ key, message: { audioMessage: { mimetype: "audio/ogg; codecs=opus", ptt: true } } }, "notify")?.media, {
+    kind: "audio",
+    mime: "audio/ogg; codecs=opus",
+    voice: true,
+  });
+  assert.equal(inboundOf({ key, message: { videoMessage: { mimetype: "video/mp4" } } }, "notify")?.media?.kind, "video");
+  assert.equal(inboundOf({ key, message: { viewOnceMessageV2: { message: { imageMessage: { mimetype: "image/jpeg" } } } } }, "notify")?.media?.kind, "image");
+  assert.equal(inboundOf({ key, message: { conversation: "plain" } }, "notify")?.media, undefined);
+});

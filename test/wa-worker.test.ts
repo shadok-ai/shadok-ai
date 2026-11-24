@@ -78,3 +78,11 @@ test("sendText, setTyping and resolveLid cross the worker boundary, with their a
   assert.ok(seen.some((e) => e.type === "message" && (e as { msg: { text?: string } }).msg.text === "sent:hi there"));
   await t.stop();
 });
+
+test("downloadMedia brings bytes back across the worker; sendFile carries them there", async () => {
+  const { t, seen } = await run("loadGood", 300);
+  assert.equal(Buffer.from(await t.downloadMedia("P1")).toString(), "bytes-of-P1");
+  await t.sendFile("100000000000001@lid", { data: Buffer.from("abc"), name: "a.pdf", mime: "application/pdf", image: false });
+  assert.ok(seen.some((e) => e.type === "message" && (e as { msg: { text?: string } }).msg.text === "file:a.pdf:3"));
+  await t.stop();
+});

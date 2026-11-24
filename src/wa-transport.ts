@@ -45,6 +45,20 @@ export interface WaTransport {
   /** The LID the transport knows for a phone-number address, or null — what
    *  lets a PN-only message find a person already bound under their LID. */
   resolveLid(pn: string): Promise<string | null>;
+  /** The bytes of a medium received in THIS process (step 3). Only a recent
+   *  message can be fetched — the library's message is not kept across a
+   *  restart — so the bridge downloads at receipt. */
+  downloadMedia(id: string): Promise<Uint8Array>;
+  /** Send a file: as an image WhatsApp previews, or as a document. */
+  sendFile(to: string, file: WaOutFile): Promise<void>;
+}
+
+export interface WaOutFile {
+  data: Uint8Array;
+  name: string;
+  mime: string;
+  image: boolean;
+  caption?: string;
 }
 
 export type WaTransportFactory = (o: { sessionDir: string }) => Promise<WaTransport>;

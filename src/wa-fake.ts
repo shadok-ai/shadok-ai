@@ -46,7 +46,7 @@ export interface FakeScript {
    *  device (and then acknowledged, gone from the server, as the library does
    *  on receipt), or held while the device is away and delivered after its
    *  next open — the two facts a restart test must rest on. */
-  deliver(m: Partial<WaInbound> & { chat: string }): void;
+  deliver(m: Partial<WaInbound> & { chat: string; mediaData?: Uint8Array | string }): void;
   /** The transport learns that this phone address is that LID. */
   mapLid(pn: string, lid: string): void;
 }
@@ -71,7 +71,10 @@ export function makeFakeTransport(): {
   held: number;
   sent: { to: string; text: string }[];
   typing: { to: string; on: boolean }[];
+  files: { to: string; name: string; mime: string; image: boolean; size: number; caption?: string }[];
 } {
+  const mediaBytes = new Map<string, Uint8Array>();
+  const files: { to: string; name: string; mime: string; image: boolean; size: number; caption?: string }[] = [];
   let starts = 0;
   let msgSeq = 0;
   const held: WaInbound[] = [];
@@ -137,6 +140,15 @@ export function makeFakeTransport(): {
       async resolveLid(pn) {
         return lids.get(pn) ?? null;
       },
+      async downloadMedia(id) {
+        const b = mediaBytes.get(id);
+        if (!b) throw new Error("fake: no media for this message");
+        return b;
+      },
+      async sendFile(to, f) {
+        if (!mine || current !== mine || !isOpen()) throw new Error("fake: not connected");
+        files.push({ to, name: f.name, mime: f.mime, image: f.image, size: f.data.length, ...(f.caption ? { caption: f.caption } : {}) });
+      },
     };
     return t;
   };
@@ -188,8 +200,10 @@ export function makeFakeTransport(): {
         unreadable: m.unreadable ?? false,
         ...(m.text !== undefined ? { text: m.text } : {}),
         ...(m.pushName ? { pushName: m.pushName } : {}),
+        ...(m.media ? { media: m.media } : {}),
         at: m.at ?? Date.now(),
       };
+      if (m.mediaData !== undefined) mediaBytes.set(msg.id, typeof m.mediaData === "string" ? Buffer.from(m.mediaData) : m.mediaData);
       held.push(msg);
       flushHeld();
     },
@@ -212,6 +226,7 @@ export function makeFakeTransport(): {
     },
     sent,
     typing,
+    files,
   };
 }
 
