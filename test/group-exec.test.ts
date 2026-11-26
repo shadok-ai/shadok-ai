@@ -293,3 +293,42 @@ test("cronCheckEnv: a secret cannot spoof the peers registry either", () => {
   });
   assert.equal(env.SHADOK_PEERS_FILE, "/home/main/.shadok-ai/peers-out/-workspace.json");
 });
+
+test("a BOXED agent acts on itself and on nothing else, in every mode", () => {
+  const groups: Group[] = [
+    { id: "door", name: "Door", nature: "restricted", members: ["ann"], createdAt: 0 },
+    { id: "main", name: "Main", nature: "public", members: [], createdAt: 0 },
+  ];
+  const channels = [
+    { sessionId: "s1", group: "door" },
+    { sessionId: "s2", group: "door" },
+    { sessionId: "s3", group: "main" },
+  ];
+  const boxed = { id: "s1", group: "door", boxed: true };
+  const act = (mode: "multi-tenant" | "mono-tenant", targetId: string) =>
+    mayActOnSession({ mode, agent: boxed, viewer: null, targetId, channels, groups });
+
+  assert.equal(act("multi-tenant", "s1"), true, "itself");
+  assert.equal(act("multi-tenant", "s2"), false, "a sibling guest of the SAME group");
+  assert.equal(act("multi-tenant", "s3"), false, "a commons agent");
+  // Mono-tenant has no group wall by design, but a box is not a group rule:
+  // it must not evaporate with the deployment mode.
+  assert.equal(act("mono-tenant", "s1"), true);
+  assert.equal(act("mono-tenant", "s2"), false);
+  // The unboxed sibling keeps today's reach, so the box is what changed.
+  assert.equal(
+    mayActOnSession({ mode: "multi-tenant", agent: { id: "s1", group: "door" }, viewer: null, targetId: "s2", channels, groups }),
+    true,
+  );
+});
+
+test("a BOXED agent reaches no group-level resource (a media directory)", () => {
+  const groups: Group[] = [{ id: "door", name: "Door", nature: "restricted", members: [], createdAt: 0 }];
+  const reach = (boxed: boolean, mode: "multi-tenant" | "mono-tenant" = "multi-tenant") =>
+    mayReachGroup({ mode, agent: { id: "s1", group: "door", boxed }, viewer: null, group: "door", groups });
+  // Its own group's media holds every OTHER guest's attachments, so "my group"
+  // is not a permission a guest may have.
+  assert.equal(reach(true), false);
+  assert.equal(reach(false), true);
+  assert.equal(reach(true, "mono-tenant"), false);
+});

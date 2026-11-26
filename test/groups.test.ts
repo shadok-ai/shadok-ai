@@ -20,6 +20,12 @@ import {
   mergeGroupsPut,
   groupNameConflict,
   secretOwnGroupIds,
+  viewerInGroup,
+  viewerBox,
+  canSeeSession,
+  canWriteSecretGroup,
+  ledgerGroupsFor,
+  memberGroupIds,
   type Group,
 } from "../src/groups.js";
 
@@ -446,4 +452,55 @@ test("orphanedGroupsHeal: an empty restricted roster gets the heir back, nothing
   assert.deepEqual(healed!.map((g) => g.members), [[], ["admin"], ["leo"]]);
   assert.equal(orphanedGroupsHeal([main, solo], "admin"), null, "nothing to repair → nothing to write");
   assert.equal(orphanedGroupsHeal([], "admin"), null, "an empty read is never written over (invariant 6)");
+});
+
+// ── The viewer box (a guest's agent) ────────────────────────────────────────
+
+const BOXED = { name: "agent:s1", role: "member" as const, agentGroup: "door", onlySession: "s1" };
+const DOOR: Group = { id: "door", name: "Door", nature: "restricted", members: ["ann"], createdAt: 0 };
+const COMMONS: Group = { id: "main", name: "Main", nature: "public", members: [], createdAt: 0 };
+
+test("a boxed viewer belongs to no group — not even the one its channel lives in", () => {
+  assert.equal(viewerInGroup(DOOR, BOXED), false);
+  assert.equal(canSeeGroup(DOOR, BOXED), false);
+  // Before the public clause on purpose: the commons would otherwise hand a
+  // stranger's agent every agent of the instance's shared group.
+  assert.equal(canSeeGroup(COMMONS, BOXED), false);
+  // The unboxed agent of the same group still sees it — the box is what differs.
+  assert.equal(canSeeGroup(DOOR, { ...BOXED, onlySession: undefined }), true);
+});
+
+test("a boxed viewer sees exactly ONE session", () => {
+  const chans = [
+    { sessionId: "s1", cwd: "/a", group: "door" },
+    { sessionId: "s2", cwd: "/b", group: "door" },
+    { sessionId: "s3", cwd: "/c" },
+  ];
+  assert.equal(canSeeSession("s1", chans, [DOOR], BOXED), true);
+  assert.equal(canSeeSession("s2", chans, [DOOR], BOXED), false, "a SIBLING guest of the same group");
+  assert.equal(canSeeSession("s3", chans, [DOOR], BOXED), false, "a group-less commons session");
+  assert.equal(canSeeSession("", chans, [DOOR], BOXED), false, "an empty id resolves to nothing");
+  assert.deepEqual(
+    visibleChannels(chans, [DOOR, COMMONS], BOXED).map((c) => c.sessionId),
+    ["s1"],
+  );
+});
+
+test("a boxed viewer owns no secret, no ledger and no membership", () => {
+  const groups = [DOOR, COMMONS];
+  assert.deepEqual([...memberGroupIds(groups, BOXED)], []);
+  assert.deepEqual([...secretOwnGroupIds(groups, BOXED)], []);
+  assert.deepEqual([...ledgerGroupsFor(groups, BOXED)], []);
+  assert.equal(canWriteSecretGroup(DOOR, BOXED), false);
+  assert.equal(canAdministerGroup(DOOR, BOXED), false);
+  // And it cannot be resumed into its own group either: a resume drives a
+  // process AS that group, which is exactly what the box refuses.
+  assert.equal(canResumeAs("door", groups, BOXED), false);
+});
+
+test("viewerBox names the box, and nothing else has one", () => {
+  assert.equal(viewerBox(BOXED), "s1");
+  assert.equal(viewerBox({ name: "ann", role: "admin" }), null);
+  assert.equal(viewerBox({ ...BOXED, onlySession: undefined }), null);
+  assert.equal(viewerBox(null), null);
 });

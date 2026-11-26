@@ -229,8 +229,11 @@ test("MUST-FIX1 wiring: GET /groups is filtered by the caller via listableGroups
 test("MUST-FIX2 wiring: GET /diff carries the session group gate (canSeeSession) AND the peer check", () => {
   const route = SERVER_SRC.indexOf('app.get("/diff"');
   assert.ok(route > 0, "the GET /diff route must exist");
-  const body = SERVER_SRC.slice(route, route + 1600);
+  // 2200, not 1600: the route also carries the guest box now (inv-86), and the
+  // window has to reach past it to the group gate below.
+  const body = SERVER_SRC.slice(route, route + 2200);
   assert.ok(body.includes("canSeeSession("), "/diff must gate with canSeeSession");
+  assert.ok(body.includes("viewerBox("), "/diff must refuse a boxed caller another session");
   assert.ok(
     body.includes("viewerFor(currentAccount(req))"),
     "/diff must derive the viewer server-side from currentAccount",
@@ -245,8 +248,10 @@ test("ADJACENT wiring: GET /recover and GET /sessions filter past sessions by gr
   for (const name of ["/recover", "/sessions"]) {
     const route = SERVER_SRC.indexOf(`app.get("${name}"`);
     assert.ok(route > 0, `the GET ${name} route must exist`);
-    const body = SERVER_SRC.slice(route, route + 1300);
+    // 1900, not 1300: both routes now carry the guest box too (inv-86).
+    const body = SERVER_SRC.slice(route, route + 1900);
     assert.ok(body.includes("canSeeSession("), `${name} must filter sessions via canSeeSession`);
+    assert.ok(body.includes("viewerBox("), `${name} must filter a boxed caller to its own session`);
     assert.ok(
       body.includes("viewerFor(currentAccount(req))"),
       `${name} must derive the viewer server-side from currentAccount`,

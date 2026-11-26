@@ -2802,3 +2802,47 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     cannot do is administer the group — every group write is browser-only and
     `requestFromBrowser` refuses any request carrying a peer token, so
     `canAdministerGroup` returning true for a peer viewer opens nothing.
+
+
+<a id="inv-86"></a>
+
+82. **A group is a wall between PEOPLE WHO KNOW EACH OTHER. Put strangers in
+    one and its membership rule becomes a mutual-visibility grant.** Open DMs
+    (Telegram, then WhatsApp) give anyone who writes to the instance an agent of
+    their own, and every guest of one door lands in the SAME group — because the
+    group is shadok's isolation unit, and there was nothing finer. An agent's
+    membership of a group is its channel's group (`viewerInGroup` keys on
+    `agentGroup`), and every visibility question delegates to it
+    (`canSeeSession` → `canSeeGroup`), so each guest's agent was entitled to a
+    **sibling guest's** session, transcript, diff — and, where the operator had
+    shared a connected account with that group, its provider token through
+    `POST /github/token`. None of that needed privilege or a file: a guest
+    carries `SHADOK_SESSION_KEY` in its own environment, and the one thing a
+    stranger controls is the prompt. The per-conversation working directory
+    (`guestWorkDirName`) was a filesystem measure and said so; it never
+    addressed the API at all, which is how a hole stayed open behind a
+    mitigation that reads like a wall. MEASURED against an unpatched build, in
+    MONO-tenant as well as multi-tenant: a guest's agent listed every channel of
+    the instance and `POST /github/token` handed it the provider token of an
+    account shared with the door's group.
+    The fix is a **box on the principal, not a rule on the group**:
+    `guestConversationOf` reads the registry (`telegram` / `whatsapp`, both
+    SERVER_OWNED) and a guest's agent resolves to a viewer with `onlySession`,
+    which sees exactly one session and belongs to no group — so
+    `memberGroupIds`, `secretOwnGroupIds` and `ledgerGroupsFor` empty
+    themselves, and `accountVisible` refuses outright. Three properties are
+    load-bearing. **The box is asked BEFORE the public-group clause** (the
+    commons would otherwise hand a stranger every shared agent) **and before
+    every `DEPLOYMENT_MODE !== "multi-tenant"` short-circuit** — a box that only
+    holds in the privileged deployment is not a box, and that escape sits in
+    `httpMayDrive`, `mayDriveSession`, `/live`, `/sessions` and
+    `mayReachGroup`. **`self` still stands above it**, so a boxed agent keeps
+    acting on itself. And the derivation ignores the DOOR's configuration on
+    purpose: an admin re-pointing a door at another group must not silently
+    un-box the conversations already running. An unknown DM owner boxes every
+    DM, which is the fail-closed direction — boxing the owner's own agent costs
+    it the sight of its siblings, un-boxing a stranger's costs the instance a
+    wall.
+    Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
+    step 1 of 5. The filesystem half (a Unix user per conversation) is a later
+    step; this one needs no multi-tenant, no provisioning and no migration.

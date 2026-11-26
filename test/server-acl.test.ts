@@ -416,3 +416,61 @@ test("PUT /secrets refuses a reserved name before any write", () => {
   const write = src.indexOf("setSecret(key", start);
   assert.ok(start > 0 && guard > start && write > guard, "reserved guard must precede setSecret in PUT /secrets");
 });
+
+// ── The guest box, as wired in the routes ──────────────────────────────────
+
+test("server: the guest box is asked BEFORE every mono-tenant short-circuit", () => {
+  // The box is not a group rule, so it must not evaporate where the group wall
+  // is switched off. Each of these places has a `DEPLOYMENT_MODE !==
+  // "multi-tenant"` escape; the box has to come first, or a mono-tenant
+  // instance would answer a boxed caller with the whole fleet.
+  const before = (label: string, from: string, box: RegExp, span = 900) => {
+    const at = SERVER.indexOf(from);
+    assert.ok(at >= 0, `${label}: ${from} not found`);
+    const region = SERVER.slice(at, at + span);
+    const b = region.search(box);
+    const e = region.indexOf('DEPLOYMENT_MODE !== "multi-tenant"');
+    assert.ok(b >= 0, `${label}: no box check found`);
+    assert.ok(e >= 0, `${label}: no mono-tenant escape found`);
+    assert.ok(b < e, `${label}: the box must be checked before the mono-tenant escape`);
+  };
+  before("httpMayDrive", "function httpMayDrive", /viewerBox\(/, 500);
+  before("WS mayDriveSession", "const mayDriveSession = ", /viewerBox\(/, 700);
+  before("GET /live visible()", "const visible = (id: string)", /guestBox\)/, 500);
+  before("GET /sessions", 'app.get("/sessions"', /viewerBox\(/, 1400);
+});
+
+test("server: a boxed caller may only reattach to ITSELF on WS start", () => {
+  const start = SERVER.slice(SERVER.indexOf('case "start": {'));
+  const guard = start.slice(0, 1800);
+  assert.match(guard, /viewerBox\(viewerFor\(me\)\)/, "the box is read from the caller's own principal");
+  // A prefix is a legal resume id (invariant 17), so the guard must RESOLVE it
+  // rather than compare the raw string — otherwise it both refuses a legitimate
+  // short id and lets a prefix that resolves elsewhere through.
+  assert.match(guard, /resolveResumeId\(/);
+  assert.match(guard, /a guest agent can only reattach to itself/);
+});
+
+test("server: requestAgent carries the box, so the reach gates see it", () => {
+  const fn = SERVER.slice(SERVER.indexOf("function requestAgent("));
+  const body = fn.slice(0, 900);
+  assert.match(body, /boxed: !!guestConversationOf\(/);
+  // Derived from the registry row, never from the request.
+  assert.ok(!/req\.body/.test(body), "requestAgent must not read the body");
+});
+
+test("server: a boxed caller writes no registry and drives no factory agent", () => {
+  const put = SERVER_SRC_PUT_CHANNELS();
+  assert.match(put, /viewerBox\(viewerFor\(currentAccount\(req\)\)\)/);
+  assert.match(put, /a guest agent does not write the registry/);
+  const fac = SERVER.slice(SERVER.indexOf("function factoryMayDrive("), SERVER.indexOf("function factoryMayDrive(") + 700);
+  const b = fac.search(/viewerBox\(/);
+  const e = fac.indexOf('DEPLOYMENT_MODE !== "multi-tenant"');
+  assert.ok(b >= 0 && e >= 0 && b < e, "factoryMayDrive must ask the box before the mono-tenant clause");
+});
+
+function SERVER_SRC_PUT_CHANNELS(): string {
+  const at = SERVER.indexOf('app.put("/channels"');
+  assert.ok(at > 0, "PUT /channels must exist");
+  return SERVER.slice(at, at + 900);
+}

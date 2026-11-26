@@ -32,15 +32,19 @@ import type { DeploymentMode } from "./capability.js";
  */
 export function mayActOnSession(input: {
   mode: DeploymentMode;
-  /** The calling agent (per-session key), with its channel's group. */
-  agent: { id: string; group: string | null } | null;
+  /** The calling agent (per-session key), with its channel's group, and whether
+   *  it is boxed to its own session (a guest's — `guestConversationOf`). */
+  agent: { id: string; group: string | null; boxed?: boolean } | null;
   viewer: Viewer | null;
   targetId: string;
   channels: readonly { sessionId: string; group?: string | null }[];
   groups: readonly Group[];
 }): boolean {
-  if (input.mode !== "multi-tenant") return true;
+  if (input.mode !== "multi-tenant" && !input.agent?.boxed) return true;
   if (!input.targetId) return false;
+  // A boxed agent acts on itself whatever the registry says — the row of a
+  // session that has not been persisted yet must not become an escape hatch.
+  if (input.agent?.boxed) return input.agent.id === input.targetId;
   const ch = input.channels.find((c) => c.sessionId === input.targetId);
   if (!ch) return false;
   return mayReachGroup({ ...input, group: ch.group ?? null, self: input.agent?.id === input.targetId });
@@ -80,14 +84,20 @@ export function cronCheckAllowed(input: {
  */
 export function mayReachGroup(input: {
   mode: DeploymentMode;
-  agent: { id: string; group: string | null } | null;
+  /** `boxed` = an agent confined to its own session (a guest's, see
+   *  `guestConversationOf`): it reaches nothing of its group, so the check must
+   *  come BEFORE the mono-tenant short-circuit — a box that holds only in the
+   *  privileged deployment is not a box. `self` still stands above it: a boxed
+   *  agent keeps acting on ITSELF. */
+  agent: { id: string; group: string | null; boxed?: boolean } | null;
   viewer: Viewer | null;
   group: string | null;
   groups: readonly Group[];
   self?: boolean;
 }): boolean {
-  if (input.mode !== "multi-tenant") return true;
   if (input.self) return true;
+  if (input.agent?.boxed) return false;
+  if (input.mode !== "multi-tenant") return true;
   const g = input.group ? input.groups.find((x) => x.id === input.group) : null;
   if (input.group && !g) return false; // dangling → fail closed
   // Group-less = the commons, visible to everyone (today's rule).

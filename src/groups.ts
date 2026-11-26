@@ -36,6 +36,23 @@ export interface Viewer {
    * for happens to belong to. `undefined` = a person, judged by `name`.
    */
   agentGroup?: string | null;
+  /**
+   * Set ONLY for an agent boxed to a single session — today a GUEST's agent,
+   * one of the strangers writing to an open DM door (`guestConversationOf`).
+   * Such a viewer sees exactly ONE session and belongs to NO group: every
+   * membership, visibility and reach question below refuses it, so a guest
+   * cannot reach a sibling guest even though they share a group by construction.
+   *
+   * It is a BOX, not a role, so it is checked BEFORE every other answer — before
+   * the public-group short-circuit and before the mono-tenant one. A box that
+   * only holds in the privileged deployment is not a box.
+   */
+  onlySession?: string;
+}
+
+/** The single session a viewer is boxed to, or null when it is not boxed. */
+export function viewerBox(viewer: Viewer | null | undefined): string | null {
+  return viewer?.onlySession || null;
 }
 
 /** A private group's owner counts as a member even if the list omits them. */
@@ -56,12 +73,18 @@ export function isAgentViewer(viewer: Viewer | null | undefined): boolean {
  */
 export function viewerInGroup(g: Group, viewer: Viewer | null): boolean {
   if (!viewer) return false;
+  // A boxed viewer is a member of nothing — which is what empties
+  // `memberGroupIds`, `secretOwnGroupIds` and `ledgerGroupsFor` for a guest.
+  if (viewer.onlySession) return false;
   if (viewer.agentGroup !== undefined) return viewer.agentGroup !== null && viewer.agentGroup === g.id;
   return memberOf(g, viewer.name);
 }
 
 /** Operational visibility, and also the see/drive rule. An admin is NOT exempt. */
 export function canSeeGroup(g: Group, viewer: Viewer | null): boolean {
+  // Before the public clause on purpose: a guest must not see the commons
+  // either, or it would list every agent of the instance's shared group.
+  if (viewer?.onlySession) return false;
   if (g.nature === "public") return true;
   return viewer !== null && viewerInGroup(g, viewer);
 }
@@ -127,6 +150,9 @@ export function canSeeSession(
   groups: readonly Group[],
   viewer: Viewer | null,
 ): boolean {
+  // The box first: a boxed viewer sees its own session and nothing else, not
+  // even a group-less one. An empty id resolves to nothing, so it is refused.
+  if (viewer?.onlySession) return !!sessionId && sessionId === viewer.onlySession;
   if (!sessionId) return true; // no id to resolve → legacy / commons
   const gid = channels.find((c) => c.sessionId === sessionId)?.group ?? null;
   if (!gid) return true; // commons / group-less
@@ -299,7 +325,9 @@ export function visibleChannels(
   viewer: Viewer | null,
 ): Channel[] {
   const byId = new Map(groups.map((g) => [g.id, g]));
+  const box = viewerBox(viewer);
   return channels.filter((c) => {
+    if (box) return c.sessionId === box;
     if (!c.group) return true;
     const g = byId.get(c.group);
     if (!g) {
@@ -425,12 +453,20 @@ export function canRestartInto(storedGroupId: string | null | undefined, groups:
 
 /** An account as a Viewer (null passes through). */
 export function viewerFor(
-  account: { name: string; role: Role; agent?: { group: string | null } } | null,
+  account: {
+    name: string;
+    role: Role;
+    agent?: { group: string | null; sessionId?: string; guest?: string | null };
+  } | null,
 ): Viewer | null {
   if (!account) return null;
-  return account.agent
-    ? { name: account.name, role: account.role, agentGroup: account.agent.group }
-    : { name: account.name, role: account.role };
+  if (!account.agent) return { name: account.name, role: account.role };
+  const v: Viewer = { name: account.name, role: account.role, agentGroup: account.agent.group };
+  // A guest's agent is boxed to its own session. Derived here, from the
+  // principal the session key resolved to, so EVERY caller of `viewerFor` gets
+  // the box without having to know it exists.
+  if (account.agent.guest && account.agent.sessionId) v.onlySession = account.agent.sessionId;
+  return v;
 }
 
 /**
@@ -481,6 +517,11 @@ export function secretOwnGroupIds(groups: readonly Group[], viewer: Viewer | nul
  * whole table visible, today's behaviour.
  */
 export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null): Set<string> {
+  // A boxed viewer (a guest's agent) is in NO ledger scope: it neither reads a
+  // row nor writes one. Checked before the commons fallback below, which would
+  // otherwise hand a stranger's agent Main's rows — operational notes a sibling
+  // agent wrote, which is content and not just a status.
+  if (viewer?.onlySession) return new Set<string>();
   const out = memberGroupIds(groups, viewer);
   const home = spawnGroupFor(viewer, groups);
   out.add(home ? home.id : MAIN_GROUP_ID);

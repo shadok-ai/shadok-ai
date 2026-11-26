@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_CREDENTIAL_VARS,
   agentAccount,
+  guestConversationOf,
   headerPresent,
   isBrowserPerson,
   resolveAgentPrincipal,
@@ -51,7 +52,7 @@ const agentViewer = (id: string) => viewerFor(agentAccount(resolveAgentPrincipal
 
 test("a session key resolves to THE AGENT — a member, never the bootstrap admin", () => {
   const p = resolveAgentPrincipal("s-comex", CHANNELS, scope);
-  assert.deepEqual(p, { sessionId: "s-comex", group: "comex", profile: "Shadok-dev", createdBy: "alice", peer: null });
+  assert.deepEqual(p, { sessionId: "s-comex", group: "comex", profile: "Shadok-dev", createdBy: "alice", peer: null, guest: null });
   const a = agentAccount(p);
   assert.equal(a.role, "member");
   assert.equal(a.name, "agent:s-comex");
@@ -221,4 +222,63 @@ test("source: a session key resolves to the agent principal, not the bootstrap a
   assert.match(body, /const agent = agentPrincipal\(req\);\s*if \(agent\) return agentAccount\(agent\);/);
   // …and that check comes before the no-password shortcut.
   assert.ok(body.indexOf("agentPrincipal(req)") < body.indexOf("if (!GUI_PASSWORD)"));
+});
+
+// ── The guest box: which channel is a stranger's conversation ───────────────
+
+test("guestConversationOf: a WhatsApp binding is always a guest's", () => {
+  assert.equal(
+    guestConversationOf({ whatsapp: { account: "33600000000", id: "42@lid" } }, null),
+    "wa:33600000000:42@lid",
+  );
+  // That transport has no owner side, so even the linked number's own DM is a
+  // guest's — the design says so in as many words.
+  assert.equal(
+    guestConversationOf({ whatsapp: { account: "a", id: "b" } }, 777),
+    "wa:a:b",
+  );
+});
+
+test("guestConversationOf: a Telegram DM is a guest's unless it is the owner's", () => {
+  assert.equal(guestConversationOf({ telegram: { chatId: 555 } }, 777), "tg:555");
+  assert.equal(guestConversationOf({ telegram: { chatId: 777 } }, 777), null, "the owner's own DM");
+  // A negative chatId is a GROUP chat and a threadId is a board topic: neither
+  // is a stranger's conversation.
+  assert.equal(guestConversationOf({ telegram: { chatId: -100200 } }, 777), null);
+  assert.equal(guestConversationOf({ telegram: { chatId: 555, threadId: 9 } }, 777), null);
+});
+
+test("guestConversationOf: an unknown DM owner boxes every DM — fail closed", () => {
+  // Boxing the owner's agent costs it the sight of its siblings; un-boxing a
+  // stranger's costs the instance a wall. So the unknown case boxes.
+  assert.equal(guestConversationOf({ telegram: { chatId: 777 } }, null), "tg:777");
+});
+
+test("guestConversationOf: a plain web agent is not boxed", () => {
+  assert.equal(guestConversationOf({}, 777), null);
+  assert.equal(guestConversationOf(null, 777), null);
+  assert.equal(guestConversationOf(undefined, 777), null);
+});
+
+test("resolveAgentPrincipal carries the guest conversation, from the REGISTRY", () => {
+  const chans = [
+    { sessionId: "s-guest", group: "door", whatsapp: { account: "n", id: "x@lid" } },
+    { sessionId: "s-plain", group: "door" },
+  ];
+  const none = () => null;
+  assert.equal(resolveAgentPrincipal("s-guest", chans, none).guest, "wa:n:x@lid");
+  assert.equal(resolveAgentPrincipal("s-plain", chans, none).guest, null);
+  // A session with no row at all resolves to no group and no box: it is not a
+  // guest, and the group gate refuses it on its own.
+  assert.equal(resolveAgentPrincipal("s-ghost", chans, none).guest, null);
+});
+
+test("a guest principal becomes a viewer boxed to its own session", () => {
+  const chans = [{ sessionId: "s-guest", group: "door", telegram: { chatId: 555 } }];
+  const p = resolveAgentPrincipal("s-guest", chans, () => null, null, 777);
+  const v = viewerFor(agentAccount(p));
+  assert.equal(v?.onlySession, "s-guest");
+  // The ordinary agent beside it keeps no box at all.
+  const q = resolveAgentPrincipal("s-guest", [{ sessionId: "s-guest", group: "door" }], () => null);
+  assert.equal(viewerFor(agentAccount(q))?.onlySession, undefined);
 });

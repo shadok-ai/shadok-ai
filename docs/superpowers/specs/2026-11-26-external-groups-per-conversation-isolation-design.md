@@ -1,8 +1,10 @@
 # External groups: the conversation is the isolation unit
 
 Design, drafted 2026-11-26 from a cockpit conversation with the operator, and
-checked against the code as it was written (`5542f3f`). **Nothing here is built
-yet; this document is the thing to approve before a plan.** Points the operator
+checked against the code as it was written (`5542f3f`). Approved 2026-11-26.
+Status: **step 1 (the box on the API) implemented** — plan
+[`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md);
+steps 2 to 5 not built. Points the operator
 settled in that conversation are marked **[OPERATOR]**; a call made here that a
 builder could not settle alone is **[CALL]**; points deliberately left open are
 **[OPEN]**.
@@ -159,8 +161,10 @@ that today answers "same group, so yes": the session list, the channel list,
 resume and recover, diff, media, the secret routes, and spawning (a guest agent
 cannot spawn at all, which is the narrowest and the right default).
 
-*Status: traced in the pure core while writing this design, not exploited end
-to end. Recorded in the shared ledger as `ecce` (open).*
+*Status: **confirmed end to end** while building step 1 — against an unpatched
+build, a guest's agent listed every channel of the instance, saw the connected
+account shared with the door's group, and obtained its provider token from
+`POST /github/token`. Fixed by step 1; recorded in the shared ledger as `ecce`.*
 
 ### 5. [DECIDED] An external door's profile carries no secrets
 
