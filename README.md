@@ -428,6 +428,12 @@ Enter to skip; you can add it later from the web UI).
   never a message. Older `#agent=<session>&msg=<id>` links still open. A message
   older than the history shown, or a conversation that was closed, says so
   instead of opening somewhere else.
+- **Who wrote each message** — every bubble opens with a round chip instead of
+  a written name: the person's initials on their own colour (stable across
+  devices, the palette the agent tabs use), the Shadok for the agent and for the
+  cockpit's own messages. Hover it for the full name ("Ada · telegram"). Your
+  own chip uses your account's name, or a plain silhouette in a cockpit with no
+  accounts.
 - **Run the command an agent asks you to** — when an agent writes `! cmd` for
   you to run (typically because it cannot), a ▶ run button sits right on that
   command's code block, beside its copy button — so it runs where it was
