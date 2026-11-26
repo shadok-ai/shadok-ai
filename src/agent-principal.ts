@@ -33,6 +33,13 @@ export interface AgentPrincipal {
    * for an agent no restricted peer owns.
    */
   peer: string | null;
+  /**
+   * The GUEST conversation this agent belongs to — a stranger's open DM — or
+   * null for an ordinary agent. An agent that has one is boxed to ITSELF: see
+   * `guestConversationOf` for why, and `Viewer.onlySession` for what the box
+   * then refuses.
+   */
+  guest: string | null;
 }
 
 /** The account-shaped view of an agent: a member, never an admin. */
@@ -49,6 +56,54 @@ export const AGENT_ACCOUNT_PREFIX = "agent:";
 
 export function agentAccountName(sessionId: string): string {
   return `${AGENT_ACCOUNT_PREFIX}${sessionId}`;
+}
+
+/**
+ * Is this channel a GUEST's conversation — someone who wrote to the instance's
+ * Telegram bot or WhatsApp number — and if so, which one?
+ *
+ * Why the question has to exist. Every guest of one door lands in the SAME
+ * group, because the group is shadok's isolation unit. An agent's membership of
+ * a group is its channel's group (`viewerInGroup`), and every visibility
+ * question delegates to it (`canSeeSession` -> `canSeeGroup`), so one guest's
+ * agent is entitled to a SIBLING guest's session, diff, transcript and — where
+ * the operator shared a connected account with that group — its provider token.
+ * A guest carries its session key in its own environment, so reaching any of
+ * that needs no filesystem access and no privilege: it needs a prompt, which is
+ * the one thing a stranger controls. The per-conversation working directory
+ * (`guestWorkDirName`) is a filesystem measure and never addressed this.
+ *
+ * Derived from the registry alone (`telegram` / `whatsapp` are both
+ * SERVER_OWNED), never from a frame or a body, and deliberately NOT from the
+ * door's configuration: an admin who re-points a door at another group must not
+ * silently un-box the conversations that are already running.
+ *
+ *  - a WhatsApp binding is always a guest's. That transport has no owner and no
+ *    operator side: "every DM is a guest's, including the admin's own".
+ *  - a Telegram binding is a guest's when it is a DM (`threadId` absent and a
+ *    POSITIVE `chatId` — a negative one is a group chat) and the sender is not
+ *    the DM owner. `dmOwner` unknown means every DM is a guest's, which is the
+ *    fail-closed direction: boxing the owner's own agent costs it the sight of
+ *    its siblings, while un-boxing a stranger's costs the instance a wall.
+ *  - anything else — a board topic, a group chat, a plain web agent — is not a
+ *    guest's and is not boxed.
+ *
+ * The value is an opaque identity, only ever compared for equality and used as
+ * the conversation's key once the external nature exists; the transport prefix
+ * keeps a phone number and a Telegram id from ever colliding.
+ */
+export function guestConversationOf(
+  ch: {
+    telegram?: { chatId: number; threadId?: number } | null;
+    whatsapp?: { account: string; id: string } | null;
+  } | null | undefined,
+  dmOwner: number | null,
+): string | null {
+  if (!ch) return null;
+  if (ch.whatsapp) return `wa:${ch.whatsapp.account}:${ch.whatsapp.id}`;
+  const tg = ch.telegram;
+  if (!tg || tg.threadId != null || !(tg.chatId > 0)) return null;
+  return dmOwner !== null && tg.chatId === dmOwner ? null : `tg:${tg.chatId}`;
 }
 
 /**
@@ -71,9 +126,14 @@ export function resolveAgentPrincipal(
     profile?: string | null;
     createdBy?: string | null;
     createdByPeer?: string;
+    telegram?: { chatId: number; threadId?: number } | null;
+    whatsapp?: { account: string; id: string } | null;
   }[],
   peerScope: (name: string) => "admin" | "member" | "restricted" | null,
   liveProfile?: string | null,
+  /** The Telegram DM owner, for `guestConversationOf`. Omitted = unknown, which
+   *  boxes every DM — the fail-closed direction. */
+  dmOwner: number | null = null,
 ): AgentPrincipal {
   const ch = channels.find((c) => c.sessionId === sessionId);
   const tag = ch?.createdByPeer;
@@ -89,6 +149,7 @@ export function resolveAgentPrincipal(
     profile: liveProfile ?? ch?.profile ?? null,
     createdBy: ch?.createdBy ?? null,
     peer,
+    guest: guestConversationOf(ch, dmOwner),
   };
 }
 

@@ -198,6 +198,7 @@ import {
 } from "./rooms.js";
 import {
   viewerFor,
+  viewerBox,
   canResumeAs,
   canRestartInto,
   canSeeGroup,
@@ -494,6 +495,7 @@ import {
   type AgentPrincipal,
   AGENT_CREDENTIAL_VARS,
   agentAccount,
+  guestConversationOf,
   headerPresent,
   isBrowserPerson,
   resolveAgentPrincipal,
@@ -1604,8 +1606,12 @@ export function callerGroups(req: Caller): { viewer: Viewer | null; groups: Grou
  * closed). Mono-tenant has no group wall, so it is always true there.
  */
 function httpMayDrive(req: Caller, id: string): boolean {
+  const viewer = viewerFor(currentAccount(req));
+  // The box holds in every deployment mode; the wall below only in multi-tenant.
+  const box = viewerBox(viewer);
+  if (box) return id === box;
   if (DEPLOYMENT_MODE !== "multi-tenant") return true;
-  return canSeeSession(id, loadChannels(), loadGroups(), viewerFor(currentAccount(req)));
+  return canSeeSession(id, loadChannels(), loadGroups(), viewer);
 }
 
 /** Is two-factor sign-in on for this instance? Meaningless with no password. */
@@ -2014,6 +2020,7 @@ function principalForSession(id: string): AgentPrincipal {
       return row ? peerScope(row) : null;
     },
     sessions.get(id)?.profile,
+    loadTgOwner(),
   );
 }
 
@@ -2066,9 +2073,17 @@ function profileOfAgent(id: string): string | null {
  * browser / account. What `mayActOnSession` needs to keep an agent inside its
  * own group whatever principal its key maps to (invariant 60).
  */
-function requestAgent(req: Caller & { body?: unknown }, chans: readonly Channel[]): { id: string; group: string | null } | null {
+function requestAgent(
+  req: Caller & { body?: unknown },
+  chans: readonly Channel[],
+): { id: string; group: string | null; boxed?: boolean } | null {
   const id = callerOf(req).id;
-  return id ? { id, group: chans.find((c) => c.sessionId === id)?.group ?? null } : null;
+  if (!id) return null;
+  const ch = chans.find((c) => c.sessionId === id);
+  // A guest's agent is boxed to its own session (`guestConversationOf`), so it
+  // reaches no sibling and no group-level resource — a media subdirectory
+  // included, which is where the other guests' attachments live.
+  return { id, group: ch?.group ?? null, boxed: !!guestConversationOf(ch, loadTgOwner()) };
 }
 
 /** May this request act on (schedule for, read the files of) `targetId`? */
@@ -2790,11 +2805,16 @@ app.get("/sessions", (req, res) => {
   // Filter each to the caller's visible groups — the same session-level boundary
   // as /diff and /live. A session with no channel row (legacy/commons) stays
   // visible to all. Mono-tenant returns the list unchanged.
+  // A boxed caller (a guest's agent) is filtered FIRST, mono-tenant included:
+  // `canSeeSession` already knows the box, but the short-circuit below would
+  // return before asking it.
+  const sessViewer = viewerFor(currentAccount(req));
+  const sessBox = viewerBox(sessViewer);
+  if (sessBox) return res.json(list.filter((s) => s.id === sessBox));
   if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
   const chans = loadChannels();
   const groups = loadGroups();
-  const viewer = viewerFor(currentAccount(req));
-  res.json(list.filter((s) => canSeeSession(s.id, chans, groups, viewer)));
+  res.json(list.filter((s) => canSeeSession(s.id, chans, groups, sessViewer)));
 });
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
@@ -2824,8 +2844,11 @@ app.get("/live", (req, res) => {
   const groups = loadGroups();
   // An agent in a restricted peer's box sees that peer's agents only.
   const box = restrictedBoxOf(req);
+  const guestBox = viewerBox(viewer);
   const visible = (id: string): boolean => {
     if (box && !ownedByPeer(chans.find((c) => c.sessionId === id), box)) return false;
+    // A guest's agent sees its own row only — before the mono-tenant clause.
+    if (guestBox) return id === guestBox;
     if (DEPLOYMENT_MODE !== "multi-tenant") return true;
     const gid = chans.find((c) => c.sessionId === id)?.group ?? null;
     if (!gid) return true; // commons / group-less
@@ -2894,6 +2917,13 @@ app.get("/diff", (req, res) => {
   // An agent a restricted peer spawned inherits the same box.
   const box = restrictedBoxOf(req);
   if (box && !ownedByPeer(ch, box)) return res.status(403).json({ error: "not your agent" });
+  // A guest's agent may diff its own session and nothing else, mono-tenant
+  // included (the clause below short-circuits before `canSeeSession`).
+  // Resolved once: `currentAccount` re-reads the registry and the peer file, and
+  // /diff is polled by the open diff panel.
+  const diffViewer = viewerFor(currentAccount(req));
+  const diffBox = viewerBox(diffViewer);
+  if (diffBox && s.id !== diffBox) return res.status(403).json({ error: "not your agent" });
   // /diff returns a session's git status + working-tree FILE CONTENTS, so it is a
   // cross-group confidentiality decision just like the drive/`/live` paths. Gate
   // it on the SAME group boundary (canSeeSession mirrors `mayDriveSession` /
@@ -2902,7 +2932,7 @@ app.get("/diff", (req, res) => {
   // unresolvable group fails closed. Mono-tenant short-circuits to visible.
   if (
     DEPLOYMENT_MODE === "multi-tenant" &&
-    !canSeeSession(s.id, chans, loadGroups(), viewerFor(currentAccount(req)))
+    !canSeeSession(s.id, chans, loadGroups(), diffViewer)
   )
     return res.status(403).json({ error: "not your agent" });
   res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
@@ -2918,11 +2948,15 @@ app.get("/recover", (req, res) => {
   // first-prompt preview). Filter each past session to the caller's visible
   // groups — the same boundary as /diff and /sessions. A session with no channel
   // row (legacy/commons) stays visible to all. Mono-tenant returns it unchanged.
+  // A boxed caller (a guest's agent) first, mono-tenant included: the clause
+  // below returns before `canSeeSession` is ever asked.
+  const recViewer = viewerFor(currentAccount(req));
+  const recBox = viewerBox(recViewer);
+  if (recBox) return res.json(list.filter((s) => s.sessionId === recBox));
   if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
   const chans = loadChannels();
   const groups = loadGroups();
-  const viewer = viewerFor(currentAccount(req));
-  res.json(list.filter((s) => canSeeSession(s.sessionId, chans, groups, viewer)));
+  res.json(list.filter((s) => canSeeSession(s.sessionId, chans, groups, recViewer)));
 });
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
@@ -4233,6 +4267,14 @@ app.post("/crons/:id/run", (req, res) => {
   res.status(202).json({ ok: true, id: c.id });
 });
 app.put("/channels", (req, res) => {
+  // A boxed caller (a guest's agent) does not write the registry at all. The
+  // merge below protects every server-owned field and never drops a live row,
+  // so the reach was cosmetic — a stranger renaming and reordering the
+  // operator's tabs — but it is not a reach a guest should have. The wider case
+  // (any agent may PUT these cosmetic fields) is older than this box and is
+  // left alone here on purpose.
+  if (viewerBox(viewerFor(currentAccount(req))))
+    return res.status(403).json({ error: "a guest agent does not write the registry" });
   // A stale tab whose server was stopped and replaced by another instance on the
   // same port must not write its old channels into THIS instance's file. The
   // page carries the launch-dir key it was loaded from; refuse an explicit
@@ -9795,8 +9837,12 @@ function factoryPersonGroup(req: Caller): string {
 function factoryMayDrive(req: Caller, sessionId: string): boolean {
   const chans = loadChannels();
   if (peerScopeFor(req) === "restricted" && !ownedByPeer(chans.find((c) => c.sessionId === sessionId), peerName(req)!)) return false;
+  const viewer = viewerFor(currentAccount(req));
+  // The box before the mono-tenant clause, as everywhere else (inv-86).
+  const box = viewerBox(viewer);
+  if (box) return sessionId === box;
   if (DEPLOYMENT_MODE !== "multi-tenant") return true;
-  return canSeeSession(sessionId, chans, loadGroups(), viewerFor(currentAccount(req)));
+  return canSeeSession(sessionId, chans, loadGroups(), viewer);
 }
 /**
  * The vault the factory's scan compares against, as the CALLER's group sees it
@@ -12272,6 +12318,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // so this changes nothing outside the privileged deployment. A dangling group
   // id fails closed, the twin of `visibleChannels`.
   const mayDriveSession = (id: string | undefined): boolean => {
+    // A boxed caller (a guest's agent) drives its OWN session and no other —
+    // asked before the mono-tenant clause, and before `isSystemDrive`, which a
+    // guest's socket cannot prove anyway.
+    const box = viewerBox(viewerFor(me));
+    if (box) return id === box;
     if (!id || DEPLOYMENT_MODE !== "multi-tenant") return true;
     // The server driving a channel it manages (cron/notification/reload) is
     // authorized regardless of group — the delivery proved itself with the
@@ -12368,6 +12419,28 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "start": {
           if (session) return fail("session already started");
           if (roomId) return fail("this connection is a room, not an agent");
+          // A BOXED caller — a guest's agent, one of the strangers on an open DM
+          // door (`guestConversationOf`) — may only ever reattach to ITSELF: no
+          // new agent, no other session. Refused here rather than at the group
+          // gate further down, because a fresh spawn has no stored group to
+          // judge and would otherwise be born into the guest's own group under
+          // its OS user. The bridge that spawns a guest's agent proves the
+          // system-drive secret and is not an agent principal, so it is not
+          // boxed and this never stands in its way.
+          {
+            const callerBox = viewerBox(viewerFor(me));
+            if (callerBox) {
+              // `resume` is resolved the same way the handler below resolves it
+              // (a PREFIX is legal — invariant 17), or the guard would refuse a
+              // legitimate short id and, worse, pass a prefix that resolves to
+              // someone else's session.
+              const want = msg.resume
+                ? resolveResumeId(loadChannels().map((c) => c.sessionId), msg.resume)
+                : null;
+              if (!want?.ok || want.id !== callerBox)
+                return fail("a guest agent can only reattach to itself", "forbidden");
+            }
+          }
           // Refusing here is what actually prevents zombies. The historical
           // failure was never "the login was missing" — it was "an agent was
           // allowed to start without one", and then sat on the first-run screen

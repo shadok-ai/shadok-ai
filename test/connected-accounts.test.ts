@@ -390,3 +390,26 @@ test("the two opt-in areas map back from Google's scopes, apart from the ones th
   assert.equal(GOOGLE_AREA_SCOPES.gmail_modify, "https://www.googleapis.com/auth/gmail.modify");
   assert.equal(GOOGLE_AREA_SCOPES.calendar_freebusy, "https://www.googleapis.com/auth/calendar.events.freebusy");
 });
+
+test("a BOXED agent (a guest's) reaches no connected account — the token case", () => {
+  // The configuration that made this urgent: an operator connects a provider
+  // account and shares it with the very group the open-DM door spawns into, so
+  // the agents answering strangers can use it. Every guest's agent was then
+  // entitled to it, and `POST /github/token` hands an agent a real provider
+  // token. The box refuses it whatever the share says.
+  const acct: ConnectedAccount = {
+    id: "a1", provider: "github", owner: "ann", login: "ann", createdAt: 0,
+    share: { everyone: false, personal: false, groups: ["g1"], profiles: [] },
+  } as ConnectedAccount;
+  const boxed: Viewer = { name: "agent:s1", role: "member", agentGroup: "g1", onlySession: "s1" };
+  const unboxed: Viewer = { name: "agent:s2", role: "member", agentGroup: "g1" };
+  assert.equal(accountVisible(acct, unboxed, groups, { peerBox: null, agentsUnwalled: false }), true);
+  assert.equal(accountVisible(acct, boxed, groups, { peerBox: null, agentsUnwalled: false }), false);
+  // Not even the unwalled (mono-tenant) shortcut lets it through: that clause
+  // sits BELOW the box, so a box is a box in every deployment mode.
+  assert.equal(accountVisible(acct, boxed, groups, { peerBox: null, agentsUnwalled: true }), false);
+  // And a share pointing at a group id that no longer resolves cannot either —
+  // the generic branch would otherwise read it as the agent's own group.
+  const dangling = { ...acct, share: { everyone: false, personal: false, groups: ["g1"], profiles: [] } } as ConnectedAccount;
+  assert.equal(accountVisible(dangling, boxed, [], { peerBox: null, agentsUnwalled: false }), false);
+});

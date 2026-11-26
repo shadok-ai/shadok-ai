@@ -385,10 +385,14 @@ Enter to skip; you can add it later from the web UI).
   Each person's agent works in **its own folder**, named after their Telegram
   id, inside that group's home — so what one agent remembers about the person
   it is talking to (Claude Code keeps a project's memory per directory) is not
-  loaded by the next person's agent. Said plainly, because it is not a wall:
-  they all run under the SAME Unix user, so an agent that goes looking can
+  loaded by the next person's agent. Said plainly, because the FOLDER is not a
+  wall: they all run under the SAME Unix user, so an agent that goes looking can
   still read its neighbour's folder. It stops the accident, not a determined
-  agent; a real wall would be one group per person.
+  agent; a real wall would be one Unix user per person.
+  What **is** a wall is the cockpit's own API: a guest's agent is boxed to its
+  own conversation, so it cannot see, drive or diff another guest's agent, reads
+  no secret and no shared ledger row, obtains no connected account, and can
+  start no agent of its own. That holds whatever group they share.
   They can talk and answer their agent's questions, and nothing else: no
   command reaches the bot. Two things worth knowing before you open it — every
   conversation is a real agent that stays resident, and they all draw on **your**

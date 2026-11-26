@@ -390,7 +390,12 @@ export function accountVisible(
   groups: readonly Group[],
   opts: VisibilityOpts,
 ): boolean {
-  if (!viewer || opts.peerBox) return false;
+  // A boxed viewer (a guest's agent) never reaches a connected account. Without
+  // this, an account SHARED WITH THE DOOR'S GROUP was visible to every stranger
+  // writing in — and `POST /github/token` hands an agent a real provider token.
+  // Checked here as well as in `viewerInGroup` because a share may name a group
+  // id that no longer resolves, which the generic branch treats as the agent's.
+  if (!viewer || viewer.onlySession || opts.peerBox) return false;
   // Normalised here too, not only at load: an account built in memory (a
   // test, a future caller) must not slip past the rules in the v1 shape.
   const share = normalizeShare(a.share, privateGroupFor(a.owner, groups)?.id ?? null, commonsGroupIds(groups)) ?? defaultShare();
