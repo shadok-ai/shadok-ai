@@ -4928,7 +4928,7 @@
   window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES, googleAreaChips } from "/social-card.js?v=__ASSET_V__";
+  import { draftCardModel, accountRowModel, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES, googleAreaChips } from "/social-card.js?v=__ASSET_V__";
   window.googleAreaChips = googleAreaChips;
   window.googleAutonomousConfirmText = googleAutonomousConfirmText;
   window.googlePolicyRows = googlePolicyRows;
@@ -4936,7 +4936,6 @@
   window.GOOGLE_AREA_CHOICES = GOOGLE_AREA_CHOICES;
   window.draftCardModel = draftCardModel;
   window.accountRowModel = accountRowModel;
-  window.hasPendingDraft = hasPendingDraft;
   window.autonomousConfirmText = autonomousConfirmText;
   window.shareChoices = shareChoices;
   window.toggleShare = toggleShare;
@@ -5298,7 +5297,6 @@
       const text = !google && d && typeof d.text === "string" ? d.text : "";
       return { title, kind: "post", kindLabel: "", fields: [], attachments: [], text, image: null, actions, statusLine: pending ? "" : String((d && d.status) || ""), link: null, pending };
     },
-    hasPendingDraft: (drafts) => [...(drafts || [])].some((d) => d && d.status === "pending"),
     // The panel opens on a click, long after the module lands; neutral rows.
     accountRowModel: (a) => ({ provider: (a && a.provider) || "linkedin", label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "", areas: [], testNote: "", shareHint: "", disconnectText: "" }),
     // No setting chips until the module lands: a stub must never PUT a guess.
@@ -8006,9 +8004,9 @@
 
   /** Channel highlight: "working" | "needs-answer" | "unread" | null. */
   function setTabMood(tab, mood) {
-    // A LinkedIn draft waiting for a person outranks every other mood until it
-    // is decided: a turn ending or a dialog being answered must not hide it.
-    if (mood !== "needs-answer" && tab.drafts && window.hasPendingDraft(tab.drafts.values())) mood = "needs-answer";
+    // A pending draft card (an email, a LinkedIn post, a Drive upload) raises
+    // NO mood on purpose: a draft nobody decides would keep the cockpit's
+    // "needs an answer" signal lit forever. The card itself is the reminder.
     const wasNeeds = tab.btnEl.classList.contains("needs-answer");
     tab.btnEl.classList.toggle("working", mood === "working");
     tab.btnEl.classList.toggle("needs-answer", mood === "needs-answer");
@@ -9803,7 +9801,6 @@
       tab.transcriptEl.appendChild(turn);
       pinBottom(tab);
     }
-    refreshDraftMood(tab);
   }
 
   function paintDraftCard(tab, turn, draft, at) {
@@ -9917,14 +9914,6 @@
     if (!(j && j.draft) && el) el.querySelectorAll(".sd-actions button").forEach((b) => (b.disabled = false));
   }
 
-  /** A pending draft keeps the tab on needs-answer; once none is left, the
-   *  highlight goes — unless a real dialog or a pace bubble still holds it. */
-  function refreshDraftMood(tab) {
-    const pending = tab.drafts && window.hasPendingDraft(tab.drafts.values());
-    if (pending) setTabMood(tab, "needs-answer");
-    else if (tab.btnEl.classList.contains("needs-answer") && !tab.pendingChoices && !tab.paceBubble) setTabMood(tab, null);
-  }
-
   /** Repaint every draft card (after the ESM bridge lands: stubs drew them). */
   function repaintDraftCards() {
     for (const tab of tabs) {
@@ -9933,7 +9922,6 @@
         const d = tab.drafts.get(id);
         if (d && el.isConnected) paintDraftCard(tab, el, d, d.createdAt);
       }
-      refreshDraftMood(tab);
     }
   }
 
@@ -11583,9 +11571,6 @@
             if (h.afterInternal) b.parentElement.classList.add("after-gap");
           }
         }
-        // Re-evaluate the draft mood once the replay is in: a draft decided
-        // while this tab was away must stop asking for an answer.
-        refreshDraftMood(t);
         // Restore the reader's place deterministically — never trust the
         // browser's implicit scroll anchoring for a full teardown.
         el._stickBottom = wasStick;
