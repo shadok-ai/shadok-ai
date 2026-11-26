@@ -96,10 +96,29 @@ export const MODEL_FILE = process.env.SHADOK_WHISPER_MODEL?.trim() || "ggml-smal
  */
 let chosenModelId: string | null = null;
 let languageSetting: SpeechLanguageSetting = "smart";
+let webEngine: WebDictationEngine = "server";
 
-export function setSpeechSettings(s: { model?: string | null; language?: unknown }): void {
+/**
+ * Who transcribes a Dictate click in the WEB composer: this server's whisper,
+ * or the browser's own recogniser (live, but the audio goes to the browser's
+ * maker — hence opt-in and "server" for anything unrecognised). Voice notes
+ * from Telegram and WhatsApp are files and always come here.
+ */
+export type WebDictationEngine = "server" | "browser";
+export function normalizeWebEngine(v: unknown): WebDictationEngine {
+  return v === "browser" ? "browser" : "server";
+}
+
+export function setSpeechSettings(s: { model?: string | null; language?: unknown; web?: unknown }): void {
   chosenModelId = SPEECH_MODELS.some((m) => m.id === s.model) ? (s.model as string) : null;
   languageSetting = normalizeLanguageSetting(s.language);
+  webEngine = normalizeWebEngine(s.web);
+}
+
+/** The language rule and the web engine in force, for the routes that answer
+ *  a browser about to dictate. */
+export function speechSettings(): { language: SpeechLanguageSetting; web: WebDictationEngine } {
+  return { language: languageSetting, web: webEngine };
 }
 
 /** Pure: the model file in force — the cockpit's choice, else the default. */
@@ -802,6 +821,7 @@ function availability(file: string): { state: ModelAvailability; reason?: string
 export interface SpeechStatus {
   model: string;
   language: SpeechLanguageSetting;
+  web: WebDictationEngine;
   models: { id: string; label: string; note: string; mb: number; state: ModelAvailability; percent?: number; reason?: string }[];
 }
 
@@ -817,6 +837,7 @@ export function speechStatus(): SpeechStatus {
   return {
     model: list.find((m) => m.file === active)?.id ?? "small",
     language: languageSetting,
+    web: webEngine,
     models: list.map((m) => ({
       id: m.id, label: m.label, note: m.note, mb: Math.round((MODELS[m.file] ?? 0) / 1_000_000),
       ...availability(m.file),

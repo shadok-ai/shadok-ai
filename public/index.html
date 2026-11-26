@@ -3714,6 +3714,12 @@
   <div class="vm-row"><span class="vm-label">Dictation</span>
     <select id="sttModelSel" aria-label="Dictation model"></select>
   </div>
+  <div class="vm-row"><span class="vm-label">Web dictation</span>
+    <select id="sttWebSel" aria-label="Who transcribes the web Dictate button">
+      <option value="server">On this server (whisper)</option>
+      <option value="browser">In the browser (live)</option>
+    </select>
+  </div>
   <div class="vm-row"><span class="vm-label">Spoken language</span>
     <select id="sttLangSel" aria-label="Spoken language">
       <option value="smart">Follow the conversation</option>
@@ -4947,6 +4953,8 @@
   window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
+  import * as liveDictation from "/live-dictation.js?v=__ASSET_V__";
+  window.liveDictationKit = () => liveDictation;
   import { draftCardModel, accountRowModel, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES, googleAreaChips } from "/social-card.js?v=__ASSET_V__";
   window.googleAreaChips = googleAreaChips;
   window.googleAutonomousConfirmText = googleAutonomousConfirmText;
@@ -5301,6 +5309,9 @@
     familyChildren: () => () => [],
     familyDescendants: () => [],
     looksLikeEmoji: () => false,
+    // Dictating before the module lands: no live recogniser yet, so the click
+    // records for the server (`liveDictationCtor` reads null as "not here").
+    liveDictationKit: () => null,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
     // A draft can arrive in the history replay before the module lands. The
@@ -5460,6 +5471,9 @@
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
   const transcripts = $("transcripts"), thinking = $("thinking");
   const composer = $("composer"), promptInput = $("promptInput"), sendBtn = $("sendBtn");
+  // The live dictation in progress (see "Live dictation" below). Declared here
+  // because `activate` reads it, and runs during the boot restore.
+  let liveRec = null, liveBroken = false;
   // Attachments upload asynchronously and leave a "⏳ …" placeholder in the box
   // until the server returns the real reference. Sending while that's in flight
   // would ship the placeholder instead of the file — so Send is inert until
@@ -8353,6 +8367,9 @@
       persistDraft(active);
     }
     active = tab;
+    // A dictation belongs to the agent it was started in.
+    if (prev && prev !== tab) stopLiveDictation(true);
+    refreshListen(tab);
     // Remember this as the group's last-focused agent, so returning to the
     // group comes back to it rather than the top one (consumed by setView).
     if (tab.sessionId) lastAgentByView[viewOfTab(tab)] = tab.sessionId;
@@ -11427,13 +11444,18 @@
       lang.appendChild(o);
     }
     lang.value = speechInfo.language;
+    $("sttWebSel").value = speechInfo.web === "browser" ? "browser" : "server";
     const cur = (speechInfo.models || []).find((m) => m.id === speechInfo.model) || {};
     const state =
       cur.state === "downloading" ? "Downloading" + (cur.percent != null ? " " + cur.percent + "%" : "") + "… dictation keeps working meanwhile." :
       cur.state === "checking" ? "Checking the file…" :
       cur.state === "failed" ? "Could not be installed: " + (cur.reason || "unknown error") + ". Pick it again to retry." :
       cur.state === "absent" ? "Downloaded the first time someone dictates." : "";
-    hint.textContent = note || [cur.note, state, STT_LANG_HINT[speechInfo.language] || "Language: every clip is transcribed as the one chosen."].filter(Boolean).join(" ");
+    // Said where it is chosen: the live mode trades the wait for where the audio goes.
+    const web = speechInfo.web === "browser"
+      ? "Web dictation: written live by the browser (Chrome, Edge, Safari) — in the language of the conversation; the audio goes to the browser's maker, not to this server. Other browsers and voice notes use the model above."
+      : "";
+    hint.textContent = note || [cur.note, state, STT_LANG_HINT[speechInfo.language] || "Language: every clip is transcribed as the one chosen.", web].filter(Boolean).join(" ");
     // Follow a download to its end, only while the menu is open.
     clearTimeout(speechPoll);
     if ((cur.state === "downloading" || cur.state === "checking") && !verMenu.hidden) speechPoll = setTimeout(loadSpeech, 2000);
@@ -11459,6 +11481,7 @@
   }
   $("sttModelSel").addEventListener("change", () => saveSpeech({ model: $("sttModelSel").value }));
   $("sttLangSel").addEventListener("change", () => saveSpeech({ language: $("sttLangSel").value }));
+  $("sttWebSel").addEventListener("change", () => saveSpeech({ web: $("sttWebSel").value }).then(() => { if (active) refreshListen(active); }));
 
   restartAllBtn.addEventListener("click", async () => {
     if (!confirm("Restart all agents? Each respawns and resumes with its history.")) return;
@@ -12279,6 +12302,8 @@
     // Remember this channel's last sent prompt, so Escape (an interruption) can
     // put it back in the composer and let it be re-edited/resent.
     t.lastSent = text;
+    // What was just typed may have changed the language to listen in.
+    setTimeout(() => refreshListen(t), 1500);
     // The composer is shared and shows the active channel's draft. A forced send
     // can come from a bubble in a channel the user has since left, and clearing
     // it then would throw away whatever they are typing in the channel they are
@@ -12952,9 +12977,103 @@
     updateSendDisabled();
   }
 
+  // ── Live dictation: the browser's own recogniser ─────────
+  // When the instance chose it (Web dictation → In the browser) and this
+  // browser has one, the words are written into the composer WHILE they are
+  // spoken instead of after a round trip to whisper. Same button, same red
+  // square, same rule: never sent by itself. Anything the browser cannot do
+  // falls back to the recording above.
+  //
+  // `listen` is asked ahead of the click (on switching agent, after a prompt):
+  // the recogniser is started inside the click itself, with no await before it.
+  async function refreshListen(t) {
+    if (!t || !t.sessionId || t.roomId) return;
+    try {
+      const r = await pollFetch("/speech/listen?session=" + encodeURIComponent(t.sessionId) + "&lang=" + encodeURIComponent(navigator.language || ""));
+      if (r.ok) t.listen = await r.json();
+    } catch { /* offline, or a twin request already read the answer: the last one stands */ }
+  }
+  function liveDictationCtor() {
+    const ld = window.liveDictationKit();
+    if (!ld || liveBroken || !active || !active.listen || active.listen.engine !== "browser") return null;
+    return ld.recognitionCtor(window);
+  }
+  function startLiveDictation(Ctor) {
+    const ld = window.liveDictationKit(), tab = active;
+    micMsg("");
+    const rec = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    const lang = ld.recognitionLang(tab.listen && tab.listen.lang, navigator.languages && navigator.languages.length ? navigator.languages : navigator.language);
+    if (lang) rec.lang = lang;
+    // Where the words go: the cursor's place when the dictation started.
+    const cur = promptInput.value;
+    const at = promptInput.selectionStart ?? cur.length;
+    const before = cur.slice(0, at), after = cur.slice(promptInput.selectionEnd ?? at);
+    let heard = false;
+    rec.onresult = (e) => {
+      if (liveRec !== rec) return;
+      const t = ld.liveTranscript(Array.from(e.results, (r) => ({ final: r.isFinal, text: r[0] ? r[0].transcript : "" })));
+      const spoken = [t.final, t.interim].filter(Boolean).join(" ");
+      if (spoken) heard = true;
+      promptInput.value = ld.spliceDictation(before, spoken, after);
+      const end = promptInput.value.length - after.length;
+      promptInput.setSelectionRange(end, end);
+      tab.draft = promptInput.value;
+      autosizePrompt();
+      updateSendDisabled();
+    };
+    rec.onerror = (e) => {
+      if (liveRec !== rec) return;
+      const f = ld.recognitionFailure(e.error);
+      // A recogniser that refuses here will refuse again: the next click records
+      // for the server instead.
+      if (f.fallback) liveBroken = true;
+      if (f.message && !(e.error === "no-speech" && heard)) micMsg(f.message);
+    };
+    rec.onend = () => {
+      if (liveRec !== rec) return;
+      liveRec = null;
+      endRecordingUI();
+      promptInput.focus();
+    };
+    try { rec.start(); } catch { liveBroken = true; return startRecording(); }
+    liveRec = rec;
+    micStart = Date.now();
+    micBtn.classList.add("recording");
+    const tm = micTimeEl();
+    tm.textContent = "0:00";
+    micTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - micStart) / 1000);
+      tm.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+      if (s >= 300) stopLiveDictation(false);
+    }, 250);
+  }
+  // `discard`: the composer is no longer this dictation's to write (the prompt
+  // was sent, the agent changed, the person typed) — late results are ignored.
+  // Otherwise the recogniser is asked to finish and its last words still land.
+  function stopLiveDictation(discard) {
+    const rec = liveRec;
+    if (!rec) return;
+    if (discard) {
+      liveRec = null;
+      endRecordingUI();
+      try { rec.abort(); } catch { /* already over */ }
+    } else {
+      try { rec.stop(); } catch { /* already over: onend clears the button */ }
+    }
+  }
+  // Typing takes the composer back: a result arriving afterwards would
+  // overwrite the keystrokes (setting `.value` from code fires no `input`).
+  promptInput.addEventListener("input", () => stopLiveDictation(true));
+  composer.addEventListener("submit", () => stopLiveDictation(true), true);
+
   if (micBtn) micBtn.addEventListener("click", () => {
     if (!active || micBtn.disabled) return;
-    if (micBtn.classList.contains("recording")) stopRecording();
+    if (liveRec) return stopLiveDictation(false);
+    if (micBtn.classList.contains("recording")) return stopRecording();
+    const Ctor = liveDictationCtor();
+    if (Ctor) startLiveDictation(Ctor);
     else startRecording();
   });
 
@@ -16894,7 +17013,7 @@
   // the reason, rather than a control that silently snaps back.
   function applyAdminOnlyControls(amAdmin) {
     const why = amAdmin ? "" : "Admin only";
-    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn", "sttModelSel", "sttLangSel"]) {
+    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn", "sttModelSel", "sttLangSel", "sttWebSel"]) {
       const el = $(id);
       if (!el) continue;
       el.disabled = !amAdmin;

@@ -109,7 +109,7 @@ export interface Config {
   cockpitTheme?: Record<string, string>;
   /** Dictation, per launch dir: the whisper model picked in the cockpit (an id
    *  from `SPEECH_MODELS`) and the language rule (`smart` when absent). */
-  speech?: Record<string, { model?: string; language?: string }>;
+  speech?: Record<string, { model?: string; language?: string; web?: string }>;
   /**
    * Per launch-directory "mute the whole instance", keyed by absolute cwd.
    * `true` = every agent on this instance raises NO web attention signal: the
@@ -274,12 +274,12 @@ export function setTitleForCwd(cfg: Config, cwd: string, title: string): void {
 
 /** This directory's dictation settings as stored — validated by their reader
  *  (`setSpeechSettings`, src/whisper.ts), which knows the models. */
-export function speechForCwd(cfg: Config, cwd: string): { model?: string; language?: string } {
+export function speechForCwd(cfg: Config, cwd: string): { model?: string; language?: string; web?: string } {
   return cfg.speech?.[cwd] ?? {};
 }
 
 /** Merge a change into this directory's dictation settings and persist. */
-export function setSpeechForCwd(cfg: Config, cwd: string, patch: { model?: string; language?: string }): void {
+export function setSpeechForCwd(cfg: Config, cwd: string, patch: { model?: string; language?: string; web?: string }): void {
   cfg.speech ??= {};
   cfg.speech[cwd] = { ...cfg.speech[cwd], ...patch };
   saveConfig(cfg);

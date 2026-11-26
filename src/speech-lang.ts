@@ -236,3 +236,16 @@ export function normalizeLanguageSetting(v: unknown): SpeechLanguageSetting {
   if (v === "auto" || v === "smart") return v;
   return normalizeLang(v) ?? "smart";
 }
+
+/**
+ * Pure: the language a BROWSER's recogniser should listen in (the live
+ * dictation, `public/live-dictation.js`). Unlike whisper it detects nothing, so
+ * there is no audio to believe first: a fixed setting is an order, otherwise
+ * what was typed in the conversation, otherwise the client's own language.
+ * "auto" has no audio-only reading here and follows the client. Null: let the
+ * browser use its default.
+ */
+export function listenLanguage(setting: SpeechLanguageSetting, expected: ExpectedLanguage): string | null {
+  if (setting !== "smart" && setting !== "auto") return setting;
+  return (setting === "smart" ? expected.typed : null) ?? expected.hint ?? null;
+}
