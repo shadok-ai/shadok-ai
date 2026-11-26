@@ -11792,11 +11792,20 @@
         }
         if (t === active) updateJumpButton();
         break;
-      case "social-draft":
-        // A LinkedIn draft appeared or changed state (published, discarded…):
-        // its card is updated in place, and the tab's mood follows.
+      case "social-draft": {
+        // A draft card (email, LinkedIn post, Drive upload) appeared or changed
+        // state (published, discarded…): its card is updated in place.
+        // A NEW pending one flags the tab "unread" — the same signal as an answer
+        // landing, cleared by simply visiting the channel. Never "needs-answer":
+        // a draft nobody decides would keep that lit forever. Only on the live
+        // arrival (a replay never re-flags) and never over a real question.
+        const isNew = !!(msg.draft && msg.draft.id) && !(t.drafts && t.drafts.has(msg.draft.id));
         if (msg.draft) renderSocialDraft(t, msg.draft, msg.draft.createdAt);
+        const away = document.hidden || !document.hasFocus();
+        if (isNew && msg.draft.status === "pending" && (t !== active || away)
+          && !t.btnEl.classList.contains("needs-answer")) setTabMood(t, "unread");
         break;
+      }
       case "stream-tool":
         // The suspended message's tool_use is written right AFTER its text
         // blocks: from here on, new text really comes after the question.

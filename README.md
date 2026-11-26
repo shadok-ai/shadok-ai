@@ -702,9 +702,9 @@ Enter to skip; you can add it later from the web UI).
   `autonomous`). Every attempt — published, refused, expired,
   failed — is written to a **publication log** (who triggered it, who approved
   it, the text, the post URL or LinkedIn's error), readable by anyone who can
-  use the account through the row's **Log** button (the last 50 entries). A pending draft does NOT light the "waiting for an answer"
-  signal (favicon badge, tab blink): one nobody decides would keep it on for
-  good, so the card in the chat is the reminder. An unapproved draft expires after 7
+  use the account through the row's **Log** button (the last 50 entries). A new pending draft flags its agent as "unread" (amber, cleared by
+  visiting the channel), never as "waiting for an answer": one nobody decides
+  would keep that signal on for good, so the card in the chat is the reminder. An unapproved draft expires after 7
   days. LinkedIn tokens last about 60 days: seven days before expiry the owner
   gets a dismissible banner at the top of the cockpit (and again once it has
   expired) and, when they are the Telegram DM owner, a DM; an expired
