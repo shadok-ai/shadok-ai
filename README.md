@@ -349,12 +349,13 @@ Enter to skip; you can add it later from the web UI).
   whenever nobody chose one in the menu.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
-- **Live dictation (optional)** — version menu → *Web dictation* → *In the
-  browser (live)* hands the 🎙 button to the browser's own speech recognition
-  (Chrome, Edge, Safari): the words appear in the composer while you speak,
-  in the language of the conversation. The audio then goes to the browser's
-  maker instead of staying on your server, so it is off by default; other
-  browsers and Telegram/WhatsApp voice notes keep using the local model.
+- **Live dictation** — by default the 🎙 button uses the browser's own speech
+  recognition (Chrome, Edge, Safari): the words appear in the composer while
+  you speak, in the language of the conversation. The audio then goes to the
+  browser's maker. To keep it on your server, an admin picks version menu →
+  *Web dictation* → *On this server (whisper)*: the clip is transcribed by the
+  local model, after a wait. Other browsers and Telegram/WhatsApp voice notes
+  always use the local model.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
   microphone and transcribes it with the **same local whisper.cpp** the voice
   notes use (nothing leaves the machine). The text drops into the composer
