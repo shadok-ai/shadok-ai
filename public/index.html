@@ -151,6 +151,22 @@
     margin: 0 5px;
     opacity: 0.7;
   }
+  /* Who spoke, as a round chip in place of the written name (public/avatar.js):
+     initials on the person's colour, the Shadok for the agent. The name lives in
+     the chip's tooltip. The time follows the chip with no "·" — there is no
+     name for it to separate from. */
+  .speaker {
+    display: inline-grid; place-items: center; vertical-align: middle;
+    width: 20px; height: 20px; border-radius: 50%; flex: none;
+    font-size: 9px; font-weight: 700; letter-spacing: .02em; line-height: 1;
+    color: #fff; background: var(--ac, var(--text-dim)); cursor: default;
+  }
+  .speaker.shadok { background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber); }
+  .speaker svg { width: 16px; height: 16px; }
+  .speaker.you svg { width: 12px; height: 12px; }
+  .label .speaker + .time::before { content: none; }
+  .label .speaker + .time { margin-left: 6px; }
+  .label .speaker + .what { margin-left: 6px; }
 
   /* ── Instrument bar ──────────────────────────────────── */
   header {
@@ -4896,6 +4912,7 @@
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
+  import { avatarFor } from "/avatar.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
@@ -5025,6 +5042,7 @@
   window.hasReadonlyPreset = hasReadonlyPreset;
   window.applyReadonlyPreset = applyReadonlyPreset;
   window.echoAuthor = echoAuthor;
+  window.avatarFor = avatarFor;
   window.isOwnPrompt = isOwnPrompt;
   window.notifyState = notifyState;
   window.BLINK_MS = BLINK_MS;
@@ -5208,6 +5226,9 @@
     extractLiveText: () => "",
     livePreviewDecision: () => null,
     echoAuthor: () => "",
+    // Mirrors the agent case so its chip is right from the first paint; every
+    // chip is repainted from the real module on `shadok-bridge-ready`.
+    avatarFor: (who, ctx) => ({ kind: (ctx && ctx.role === "claude") || who === "claude" ? "shadok" : "you" }),
     isOwnPrompt: () => true,
     notifyState: () => ({ color: null, badge: "", blink: false }),
     dialPos: () => 0,
@@ -9399,6 +9420,57 @@
    *  the left — still a tinted human bubble, only the agent is white. The author
    *  is kept on the turn so the side can be re-decided once `/me` answers
    *  (`resideAllPrompts`). */
+  // ── Speaker chips (who wrote a bubble) ──
+  // Static markup only (no user data), so innerHTML is safe here. The Shadok is
+  // the header's brand mark without its animation hooks.
+  const SPEAKER_SHADOK_SVG = '<svg viewBox="0 0 32 32" aria-hidden="true"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/><line x1="21.6" y1="17.2" x2="26" y2="20.4"/><g stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><g stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></svg>';
+  const SPEAKER_YOU_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
+  /** The signed-in name, read defensively: `me` is declared further down the
+   *  script, and a chip may be painted before that line has run. */
+  function myName() {
+    try { return me?.name ?? null; } catch { return null; }
+  }
+  /** (Re)paint one chip from its `data-who` / `data-role`. */
+  function paintSpeaker(chip) {
+    const a = window.avatarFor(chip.dataset.who, { role: chip.dataset.role, me: myName() });
+    chip.className = "speaker" + (a.kind === "initials" ? "" : " " + a.kind);
+    if (a.kind === "initials") {
+      chip.textContent = a.text;
+      chip.style.setProperty("--ac", a.color);
+    } else {
+      chip.style.removeProperty("--ac");
+      chip.innerHTML = a.kind === "shadok" ? SPEAKER_SHADOK_SVG : SPEAKER_YOU_SVG;
+    }
+  }
+  /**
+   * Fill a bubble's label with WHO spoke: a chip in place of the written name,
+   * the full name in its tooltip, plus an optional `what` ("choice requested",
+   * a draft's title) for the labels that also say what the bubble is. The name
+   * stays on `label.dataset.who` — what grouping by speaker compares.
+   */
+  function fillSpeakerLabel(label, who, role, what) {
+    label.dataset.who = who;
+    const chip = document.createElement("span");
+    chip.dataset.who = who;
+    chip.dataset.role = role === "claude" ? "claude" : "";
+    chip.title = who;
+    chip.setAttribute("role", "img");
+    chip.setAttribute("aria-label", who);
+    paintSpeaker(chip);
+    label.appendChild(chip);
+    if (what) {
+      const w = document.createElement("span");
+      w.className = "what";
+      w.textContent = what;
+      label.appendChild(w);
+    }
+  }
+  /** Repaint every chip: the real module landed, or `/me` told us who "you" is. */
+  function repaintSpeakers() {
+    for (const chip of document.querySelectorAll(".label > .speaker[data-who]")) paintSpeaker(chip);
+  }
+  window.addEventListener("shadok-bridge-ready", repaintSpeakers);
+
   function markPromptSide(bubble, msg) {
     const turn = bubble.parentElement;
     turn.dataset.from = msg?.from ?? "";
@@ -9406,8 +9478,8 @@
     if (msg?.auto) turn.dataset.auto = "1";
     // A run of prompts shows one label — but only while it is ONE speaker.
     const prev = turn.previousElementSibling;
-    const who = turn.querySelector(":scope > .label")?.firstChild?.textContent ?? "";
-    const prevWho = prev?.classList.contains("user") ? prev.querySelector(":scope > .label")?.firstChild?.textContent ?? "" : who;
+    const who = turn.querySelector(":scope > .label")?.dataset.who ?? "";
+    const prevWho = prev?.classList.contains("user") ? prev.querySelector(":scope > .label")?.dataset.who ?? "" : who;
     turn.classList.toggle("new-speaker", who !== prevWho);
     applyPromptSide(turn);
   }
@@ -9434,7 +9506,7 @@
     if (role !== "system") {
       const label = document.createElement("span");
       label.className = "label";
-      label.textContent = who;
+      fillSpeakerLabel(label, who, role);
       // The time lives INSIDE the label: a run of bubbles from the same speaker
       // has only one label (CSS rule `.turn.claude + .turn.claude > .label`), so
       // the time groups the same way instead of repeating on every block.
@@ -9729,7 +9801,7 @@
       turn.className = "turn user";
       const label = document.createElement("span");
       label.className = "label";
-      label.textContent = "you · shell";
+      fillSpeakerLabel(label, "you", "user", "shell");
       const time = fmtTime(at);
       if (time) label.appendChild(time);
       const bubble = document.createElement("div");
@@ -9765,7 +9837,7 @@
     turn.className = "turn claude";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = "claude";
+    fillSpeakerLabel(label, "claude", "claude");
     const time = fmtTime(at);
     if (time) label.appendChild(time);
     turn.appendChild(label);
@@ -9845,7 +9917,7 @@
     turn.textContent = "";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = "claude — " + m.title;
+    fillSpeakerLabel(label, "claude", "claude", m.title);
     const time = fmtTime(Number.isFinite(at) ? at : draft.createdAt);
     if (time) label.appendChild(time);
     const bubble = document.createElement("div");
@@ -10295,9 +10367,9 @@
       turn.className = "turn claude dialog";
       const label = document.createElement("span");
       label.className = "label";
-      label.textContent = msg.multi
-        ? "claude — multi-select (check then submit)"
-        : "claude — choice requested";
+      fillSpeakerLabel(label, "claude", "claude", msg.multi
+        ? "multi-select (check then submit)"
+        : "choice requested");
       // A question asked while you were away: HOW LONG it has been waiting is
       // exactly what you want to see on coming back.
       const time = fmtTime(Date.now());
@@ -12354,7 +12426,7 @@
     turn.className = "turn claude dialog";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = "shadok-ai — pace exceeded";
+    fillSpeakerLabel(label, "shadok-ai", "claude", "pace exceeded");
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     const q = document.createElement("div");
@@ -17026,6 +17098,7 @@
   }
   async function loadMe() {
     try { me = await (await fetch("/me")).json(); } catch { me = null; }
+    repaintSpeakers();
     const b = $("usersBtn");
     // Every signed-in PERSON opens it — a member manages their own passkeys
     // there; only an admin sees the accounts below.
