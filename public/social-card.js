@@ -349,11 +349,6 @@ function googleCardModel(d) {
   };
 }
 
-/** Does any of these drafts still wait for a person? */
-export function hasPendingDraft(drafts) {
-  return [...(drafts ?? [])].some((d) => d && d.status === "pending");
-}
-
 function groupName(groups, id) {
   const g = (Array.isArray(groups) ? groups : []).find((x) => x && String(x.id) === String(id));
   return g ? g.name : String(id);

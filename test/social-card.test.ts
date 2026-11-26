@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   draftCardModel,
   accountRowModel,
-  hasPendingDraft,
   scopeText,
   autonomousConfirmText,
   shareChoices,
@@ -76,11 +76,15 @@ test("draft card: the image file card rides along", () => {
   assert.equal(draftCardModel(draft()).image, null);
 });
 
-test("hasPendingDraft: only `pending` asks for an answer", () => {
-  assert.equal(hasPendingDraft([draft({ status: "published" }), draft({ status: "pending" })]), true);
-  assert.equal(hasPendingDraft([draft({ status: "publishing" }), draft({ status: "discarded" })]), false);
-  assert.equal(hasPendingDraft(new Map([["d1", draft()]]).values()), true);
-  assert.equal(hasPendingDraft(undefined), false);
+test("a pending draft never raises the tab's attention mood", () => {
+  // An undecided draft would otherwise keep the cockpit's "needs an answer"
+  // signal (favicon, title badge, blink) lit for as long as nobody decides it.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const start = html.indexOf("function setTabMood(");
+  const body = html.slice(start, html.indexOf("\n  }\n", start));
+  assert.ok(start > 0 && body.length > 0);
+  assert.doesNotMatch(body, /drafts|hasPendingDraft/);
+  assert.doesNotMatch(html, /refreshDraftMood|hasPendingDraft/);
 });
 
 const account = (over: Record<string, unknown> = {}) => ({
@@ -230,7 +234,6 @@ test("email card: from, to, cc, bcc, subject, the exact body and the attachment 
   assert.deepEqual(m.attachments, ["q3.pdf", "notes.txt"]);
   assert.deepEqual(m.actions, [{ action: "publish", label: "Send" }, { action: "discard", label: "Discard" }]);
   assert.match(m.statusLine, /nothing is sent until someone sends it/);
-  assert.equal(hasPendingDraft([mail()]), true);
 });
 
 test("email card: a bcc is never hidden when there is one, and never shown as a row when there is none", () => {
