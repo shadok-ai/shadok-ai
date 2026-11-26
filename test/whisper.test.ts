@@ -154,3 +154,93 @@ test("a recorded audio clip gets a truthful extension, defaulting to webm", () =
   assert.equal(audioClipExtension(""), "webm");
   assert.equal(audioClipExtension("application/octet-stream"), "webm");
 });
+
+test("the cockpit's choice is an id from a closed list, never a file name", async () => {
+  const { activeModelFile, SPEECH_MODELS } = await import("../src/whisper.js");
+  assert.equal(activeModelFile("medium", "ggml-small-q5_1.bin"), "ggml-medium-q5_0.bin");
+  // Nobody chose: the operator's model (env), else the default.
+  assert.equal(activeModelFile(null, "ggml-small-q5_1.bin"), "ggml-small-q5_1.bin");
+  assert.equal(activeModelFile(null, "my-own.bin"), "my-own.bin");
+  // The choice travels from a request body to a path and a URL: anything that
+  // is not an id of the list falls back, it is never used as given.
+  assert.equal(activeModelFile("../../etc/passwd", "ggml-small-q5_1.bin"), "ggml-small-q5_1.bin");
+  assert.equal(activeModelFile("ggml-medium-q5_0.bin", "ggml-small-q5_1.bin"), "ggml-small-q5_1.bin");
+  for (const m of SPEECH_MODELS) {
+    assert.ok(MODELS[m.file] > 0, `${m.id} must have a measured size`);
+    assert.ok(m.note.length > 10 && !/NOTE_/.test(m.note), `${m.id} must say what it costs`);
+  }
+  assert.equal(new Set(SPEECH_MODELS.map((m) => m.id)).size, SPEECH_MODELS.length);
+});
+
+test("size checks and paths follow the model asked for, not the default", () => {
+  const medium = "ggml-medium-q5_0.bin";
+  assert.ok(modelLooksComplete(MODELS[medium], medium));
+  assert.ok(!modelLooksComplete(MODELS[MODEL_FILE], medium), "small's bytes are not medium");
+  assert.ok(whisperPaths("/w", medium).model.endsWith(medium));
+  // The first-use notice announces the size of what is ACTUALLY about to download.
+  const small = Number(/~(\d+) Mo/.exec(installNotice(["model"])!)![1]);
+  const big = Number(/~(\d+) Mo/.exec(installNotice(["model"], medium)!)![1]);
+  assert.ok(big > small * 2);
+});
+
+test("a clip is never left waiting on a model that is still arriving", async () => {
+  const { modelForClip } = await import("../src/whisper.js");
+  // Picked a minute ago, still downloading: the model that worked answers.
+  assert.equal(modelForClip("new.bin", "downloading", "old.bin"), "old.bin");
+  // Its download failed: same — a failed upgrade must not cost dictation.
+  assert.equal(modelForClip("new.bin", "failed", "old.bin"), "old.bin");
+  assert.equal(modelForClip("new.bin", "checking", "old.bin"), "old.bin");
+  // Ready, or simply not looked at yet: use it (and install it if need be).
+  assert.equal(modelForClip("new.bin", "ready", "old.bin"), "new.bin");
+  assert.equal(modelForClip("new.bin", "absent", "old.bin"), "new.bin");
+  // Nothing ever worked here: there is no fallback to prefer.
+  assert.equal(modelForClip("new.bin", "downloading", null), "new.bin");
+  assert.equal(modelForClip("new.bin", "failed", "new.bin"), "new.bin");
+});
+
+test("the settings row reports the choice in force and each model's state", async () => {
+  const w = await import("../src/whisper.js");
+  const dir = process.env.SHADOK_WHISPER_DIR;
+  process.env.SHADOK_WHISPER_DIR = "/nonexistent/shadok-whisper-test";
+  try {
+    w.resetWhisper();
+    assert.equal(w.speechStatus().model, "small");
+    assert.equal(w.speechStatus().language, "smart");
+    w.setSpeechSettings({ model: "medium", language: "fr-FR" });
+    const st = w.speechStatus();
+    assert.equal(st.model, "medium");
+    assert.equal(st.language, "fr");
+    assert.deepEqual(st.models.map((m) => m.id), w.SPEECH_MODELS.map((m) => m.id));
+    assert.ok(st.models.every((m) => m.state === "absent" && m.mb > 100));
+    // An unknown choice is dropped, never stored as a file name.
+    w.setSpeechSettings({ model: "ggml-evil.bin", language: "nonsense" });
+    assert.equal(w.speechStatus().model, "small");
+    assert.equal(w.speechStatus().language, "smart");
+  } finally {
+    w.resetWhisper();
+    if (dir === undefined) delete process.env.SHADOK_WHISPER_DIR; else process.env.SHADOK_WHISPER_DIR = dir;
+  }
+});
+
+test("the dictation settings are an admin's to change, and only typed prompts teach the language", async () => {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const put = src.slice(src.indexOf('app.put("/speech"'));
+  const gate = put.indexOf("accountAdmin(req, res, true");
+  assert.ok(gate > 0 && gate < put.indexOf("setSpeechForCwd("), "the admin gate must come before the write");
+  // A transcription made in the wrong language would vote for its own mistake.
+  const note = src.slice(src.indexOf("typedLanguages.note(") - 200, src.indexOf("typedLanguages.note("));
+  assert.match(note, /msg\.voice !== true/);
+});
+
+test("threads follow the machine, within whisper's default and a ceiling", async () => {
+  const { whisperThreads } = await import("../src/whisper.js");
+  assert.equal(whisperThreads(1), 1);
+  assert.equal(whisperThreads(2), 2);
+  assert.equal(whisperThreads(4), 4);
+  assert.equal(whisperThreads(8), 4);
+  assert.equal(whisperThreads(12), 6);
+  assert.equal(whisperThreads(24), 8);
+  assert.equal(whisperThreads(96), 8);
+  assert.equal(whisperThreads(NaN), 1);
+});
