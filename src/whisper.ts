@@ -96,17 +96,21 @@ export const MODEL_FILE = process.env.SHADOK_WHISPER_MODEL?.trim() || "ggml-smal
  */
 let chosenModelId: string | null = null;
 let languageSetting: SpeechLanguageSetting = "smart";
-let webEngine: WebDictationEngine = "server";
+let webEngine: WebDictationEngine = "browser";
 
 /**
  * Who transcribes a Dictate click in the WEB composer: this server's whisper,
  * or the browser's own recogniser (live, but the audio goes to the browser's
- * maker — hence opt-in and "server" for anything unrecognised). Voice notes
- * from Telegram and WhatsApp are files and always come here.
+ * maker). The browser is the DEFAULT: a wait of ten to forty seconds per
+ * sentence is what made dictation unusable, and no whisper model on a CPU
+ * removes it. Only an instance that stored nothing takes the default — an
+ * admin's explicit "server" stands, which is how an instance keeps its audio
+ * at home. Voice notes from Telegram and WhatsApp are files and always come
+ * here.
  */
 export type WebDictationEngine = "server" | "browser";
 export function normalizeWebEngine(v: unknown): WebDictationEngine {
-  return v === "browser" ? "browser" : "server";
+  return v === "server" ? "server" : "browser";
 }
 
 export function setSpeechSettings(s: { model?: string | null; language?: unknown; web?: unknown }): void {

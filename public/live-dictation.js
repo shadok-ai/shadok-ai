@@ -7,7 +7,8 @@
 // Why it exists: whisper on a CPU answers a four-second sentence in ten to
 // forty seconds, and says nothing until then. A browser's recogniser writes the
 // words while they are spoken. The price is that the audio goes to whoever
-// makes the browser, so it is a setting an admin turns on, never a default.
+// makes the browser: the default, and a setting an admin can turn back to the
+// server (Web dictation → On this server) to keep the audio on the instance.
 
 /** The recognition constructor of this browser, or null (Firefox has none). */
 export function recognitionCtor(win) {

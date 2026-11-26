@@ -59,8 +59,11 @@ The better models did not make dictation pleasant: the wait IS the complaint,
 and a CPU cannot remove it. So the web Dictate button can be handed to the
 browser's own recogniser (Web Speech API), which writes while one speaks.
 
-- A third setting, `web`: `server` (default) or `browser`. Opt-in because the
-  audio then goes to the browser's maker instead of staying on the instance.
+- A third setting, `web`: `browser` (the default) or `server`. It shipped
+  opt-in for one release, then became the default at the owner's request: the
+  wait is what made dictation unusable. The audio then goes to the browser's
+  maker; an admin who wants it kept on the instance picks `server`, and a
+  stored choice is never overridden by the default.
 - It only concerns the web button. Telegram and WhatsApp voice notes are files
   and keep using whisper, as does any browser without a recogniser (Firefox).
 - A recogniser detects no language, it is told one: `GET /speech/listen`

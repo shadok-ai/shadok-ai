@@ -3716,8 +3716,8 @@
   </div>
   <div class="vm-row"><span class="vm-label">Web dictation</span>
     <select id="sttWebSel" aria-label="Who transcribes the web Dictate button">
-      <option value="server">On this server (whisper)</option>
       <option value="browser">In the browser (live)</option>
+      <option value="server">On this server (whisper)</option>
     </select>
   </div>
   <div class="vm-row"><span class="vm-label">Spoken language</span>
@@ -11444,17 +11444,17 @@
       lang.appendChild(o);
     }
     lang.value = speechInfo.language;
-    $("sttWebSel").value = speechInfo.web === "browser" ? "browser" : "server";
+    $("sttWebSel").value = speechInfo.web === "server" ? "server" : "browser";
     const cur = (speechInfo.models || []).find((m) => m.id === speechInfo.model) || {};
     const state =
       cur.state === "downloading" ? "Downloading" + (cur.percent != null ? " " + cur.percent + "%" : "") + "… dictation keeps working meanwhile." :
       cur.state === "checking" ? "Checking the file…" :
       cur.state === "failed" ? "Could not be installed: " + (cur.reason || "unknown error") + ". Pick it again to retry." :
       cur.state === "absent" ? "Downloaded the first time someone dictates." : "";
-    // Said where it is chosen: the live mode trades the wait for where the audio goes.
-    const web = speechInfo.web === "browser"
-      ? "Web dictation: written live by the browser (Chrome, Edge, Safari) — in the language of the conversation; the audio goes to the browser's maker, not to this server. Other browsers and voice notes use the model above."
-      : "";
+    // Said where it is chosen: the two modes trade the wait for where the audio goes.
+    const web = speechInfo.web === "server"
+      ? "Web dictation: recorded, then transcribed by the model above — the audio stays on this server, the text comes after a wait."
+      : "Web dictation: written live by the browser (Chrome, Edge, Safari) — in the language of the conversation; the audio goes to the browser's maker, not to this server. Other browsers and voice notes use the model above.";
     hint.textContent = note || [cur.note, state, STT_LANG_HINT[speechInfo.language] || "Language: every clip is transcribed as the one chosen.", web].filter(Boolean).join(" ");
     // Follow a download to its end, only while the menu is open.
     clearTimeout(speechPoll);

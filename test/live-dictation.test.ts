@@ -71,15 +71,17 @@ test("the language to listen in: a fixed one is an order, else typed, else the c
   assert.equal(listenLanguage("smart", {}), null);
 });
 
-test("the web engine is opt-in, admin-gated, and refused when unknown", async () => {
+test("the web engine defaults to the browser, an explicit server stands, the write is admin-gated", async () => {
   const w = await import("../src/whisper.js");
   try {
+    // An instance that chose nothing dictates live.
     w.setSpeechSettings({});
+    assert.equal(w.speechStatus().web, "browser");
+    // Keeping the audio on the instance is a choice that must survive.
+    w.setSpeechSettings({ web: "server" });
     assert.equal(w.speechStatus().web, "server");
     w.setSpeechSettings({ web: "browser" });
     assert.equal(w.speechStatus().web, "browser");
-    w.setSpeechSettings({ web: "cloud" });
-    assert.equal(w.speechStatus().web, "server");
   } finally {
     w.setSpeechSettings({});
   }
