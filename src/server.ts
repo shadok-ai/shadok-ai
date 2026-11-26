@@ -169,9 +169,9 @@ import {
   type TelegramHandle,
 } from "./telegram.js";
 import {
-  transcribe, audioClipExtension, setSpeechSettings, speechStatus, prefetchSpeech, SPEECH_MODELS,
+  transcribe, audioClipExtension, setSpeechSettings, speechStatus, speechSettings, normalizeWebEngine, prefetchSpeech, SPEECH_MODELS,
 } from "./whisper.js";
-import { expectedLanguage, typedLanguages, normalizeLanguageSetting } from "./speech-lang.js";
+import { expectedLanguage, typedLanguages, normalizeLanguageSetting, listenLanguage } from "./speech-lang.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import {
   GUEST_SETUP_OFF,
@@ -2766,11 +2766,32 @@ setSpeechSettings(speechForCwd(loadConfig(), process.cwd()));
 app.get("/speech", (_req, res) => {
   res.json(speechStatus());
 });
+/**
+ * What a browser about to dictate needs BEFORE the click: who transcribes (its
+ * own recogniser or this server), and in which language to listen — a browser
+ * recogniser detects nothing, it is told. Asked ahead of time, per
+ * conversation, because the recogniser is best started inside the click itself.
+ * The session id is taken at its word like `/transcribe` does: all it can buy
+ * is which of a few languages was typed in a conversation whose id the caller
+ * already holds.
+ */
+app.get("/speech/listen", (req, res) => {
+  const { language, web } = speechSettings();
+  const q = (v: unknown) => (typeof v === "string" ? v : "");
+  const expect = expectedLanguage(q(req.query.session) || null, q(req.query.lang));
+  res.json({ engine: web, lang: listenLanguage(language, expect) });
+});
 app.put("/speech", (req, res) => {
   // One model serves every voice note and every dictation of the instance, and
   // picking one starts a download of several hundred MB: admin only.
   if (!accountAdmin(req, res, true, "change the dictation settings")) return;
-  const patch: { model?: string; language?: string } = {};
+  const patch: { model?: string; language?: string; web?: string } = {};
+  if (req.body?.web !== undefined) {
+    // Refused rather than normalised: a typo must not silently read as "keep
+    // the audio on this server" when the admin asked for something else.
+    if (req.body.web !== "browser" && req.body.web !== "server") return res.status(400).json({ error: "unknown web dictation engine" });
+    patch.web = normalizeWebEngine(req.body.web);
+  }
   if (req.body?.model !== undefined) {
     const id = String(req.body.model);
     // An id from the closed list, never a file name: it ends up in a path and

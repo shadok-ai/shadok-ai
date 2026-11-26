@@ -53,6 +53,31 @@ a CPU; that trade is the instance's to make, not ours.
 - Shrinking the audio context for short clips (`-ac`) is a third faster and
   breaks the text (invented words, "Ita, ita.") → rejected.
 
+## Follow-up: live dictation in the browser
+
+The better models did not make dictation pleasant: the wait IS the complaint,
+and a CPU cannot remove it. So the web Dictate button can be handed to the
+browser's own recogniser (Web Speech API), which writes while one speaks.
+
+- A third setting, `web`: `server` (default) or `browser`. Opt-in because the
+  audio then goes to the browser's maker instead of staying on the instance.
+- It only concerns the web button. Telegram and WhatsApp voice notes are files
+  and keep using whisper, as does any browser without a recogniser (Firefox).
+- A recogniser detects no language, it is told one: `GET /speech/listen`
+  answers with the fixed setting, else the conversation's typed language, else
+  the client's (`listenLanguage`). Asked ahead of the click so the recogniser
+  starts inside it.
+- The words land at the cursor and are rewritten as the recogniser revises
+  them; never sent by themselves. A send, a keystroke or a change of agent
+  drops the dictation, so a late result cannot overwrite the composer.
+- A recogniser that fails with anything but silence or a missing microphone is
+  not tried again in that page: the next click records for the server.
+
+Verified in a headless browser against a SIMULATED recogniser only — no real
+speech went through a real Chrome, Edge or Safari recogniser, and the handling
+of a mobile recogniser's repeated final results is written from its documented
+behaviour, not observed.
+
 ## Not verified
 
 No clip in the test set made whisper detect the wrong language, so the retry was
