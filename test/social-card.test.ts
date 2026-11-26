@@ -85,6 +85,10 @@ test("a pending draft never raises the tab's attention mood", () => {
   assert.ok(start > 0 && body.length > 0);
   assert.doesNotMatch(body, /drafts|hasPendingDraft/);
   assert.doesNotMatch(html, /refreshDraftMood|hasPendingDraft/);
+  // A NEW draft flags the tab "unread" (cleared by a visit) — never needs-answer.
+  const c = html.slice(html.indexOf('case "social-draft"'), html.indexOf('case "stream-tool"'));
+  assert.match(c, /setTabMood\(t, "unread"\)/);
+  assert.doesNotMatch(c, /setTabMood\(t, "needs-answer"\)/);
 });
 
 const account = (over: Record<string, unknown> = {}) => ({
