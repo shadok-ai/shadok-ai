@@ -168,7 +168,10 @@ import {
   mediaDir,
   type TelegramHandle,
 } from "./telegram.js";
-import { transcribe, audioClipExtension } from "./whisper.js";
+import {
+  transcribe, audioClipExtension, setSpeechSettings, speechStatus, prefetchSpeech, SPEECH_MODELS,
+} from "./whisper.js";
+import { expectedLanguage, typedLanguages, normalizeLanguageSetting } from "./speech-lang.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import {
   GUEST_SETUP_OFF,
@@ -381,6 +384,8 @@ import {
   setInstanceContextForCwd,
   themeForCwd,
   setThemeForCwd,
+  speechForCwd,
+  setSpeechForCwd,
   mutedForCwd,
   setMutedForCwd,
   agentAuthForCwd,
@@ -2739,7 +2744,12 @@ app.post("/transcribe", express.raw({ type: () => true, limit: PASTE_LIMIT }), a
   const tmp = path.join(os.tmpdir(), `shadok-stt-${randomUUID()}.${ext}`);
   try {
     await fs.promises.writeFile(tmp, body);
-    const out = await transcribe(tmp);
+    // What to expect of the language: what was typed in the conversation being
+    // dictated into, and the browser's own. Both are only a bias on whisper's
+    // detection (src/speech-lang.ts), which is why a session id is taken at its
+    // word here — the worst a made-up one buys is a second opinion on a clip.
+    const expect = expectedLanguage(String(req.headers["x-shadok-session"] ?? "") || null, req.headers["x-shadok-lang"]);
+    const out = await transcribe(tmp, undefined, { expect });
     if (out.ok) return res.json({ ok: true, text: out.text });
     return res.json({ ok: false, kind: out.kind });
   } catch (e) {
@@ -2747,6 +2757,34 @@ app.post("/transcribe", express.raw({ type: () => true, limit: PASTE_LIMIT }), a
   } finally {
     await fs.promises.rm(tmp, { force: true }).catch(() => {});
   }
+});
+
+// Dictation settings, per launch directory: which whisper model transcribes,
+// and how the language is chosen. Read at boot so the first clip already uses
+// them; nothing is downloaded until someone dictates or an admin picks a model.
+setSpeechSettings(speechForCwd(loadConfig(), process.cwd()));
+app.get("/speech", (_req, res) => {
+  res.json(speechStatus());
+});
+app.put("/speech", (req, res) => {
+  // One model serves every voice note and every dictation of the instance, and
+  // picking one starts a download of several hundred MB: admin only.
+  if (!accountAdmin(req, res, true, "change the dictation settings")) return;
+  const patch: { model?: string; language?: string } = {};
+  if (req.body?.model !== undefined) {
+    const id = String(req.body.model);
+    // An id from the closed list, never a file name: it ends up in a path and
+    // a download URL.
+    if (!SPEECH_MODELS.some((m) => m.id === id)) return res.status(400).json({ error: "unknown model" });
+    patch.model = id;
+  }
+  if (req.body?.language !== undefined) patch.language = normalizeLanguageSetting(req.body.language);
+  setSpeechForCwd(loadConfig(), process.cwd(), patch);
+  setSpeechSettings(speechForCwd(loadConfig(), process.cwd()));
+  // Fetch it now, in the background: the download is then over before the
+  // next person dictates instead of starting under them.
+  if (patch.model) prefetchSpeech();
+  res.json(speechStatus());
 });
 
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -13092,6 +13130,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
+          // What a person TYPED says which language to expect of their next
+          // voice clip. Never a transcription: one made in the wrong language
+          // would vote for its own mistake.
+          if ((origin === "web" || origin === "telegram" || origin === "whatsapp") && msg.voice !== true) {
+            typedLanguages.note(session.id, text);
+          }
           session.cronTurn = origin === "cron" && isCronPrompt(text);
           // The session's other clients see the prompt arrive — except a cron:
           // that is not someone speaking, and its text (the prompt PLUS its

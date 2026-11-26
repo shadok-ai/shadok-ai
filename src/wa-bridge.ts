@@ -5,6 +5,7 @@ import { attachmentPrompt, makeSendQueue, makeTyping, promptEchoLabel, shouldPre
 import { bareJid, findWaChannel, inboundVerdict, replyAllowed, sendAllowed, senderKey, waReattachList, type WaBinding, type WaInbound } from "./wa-guests.js";
 import { dialogMessage, mdToWhatsApp, neutralizeCommand, parseDialogReply, stripAttachmentMarkers, waChunks, waMediaFileName, type WaDialog } from "./wa-format.js";
 import { transcribe as whisperTranscribe, heardNotice } from "./whisper.js";
+import { expectedLanguage } from "./speech-lang.js";
 import { lookAtVideo as realLookAtVideo, MAX_FRAMES, type VideoLook } from "./video.js";
 import { contentTypeFor, telegramPhotoable } from "./download.js";
 import type { Inbox, InboxEntry } from "./wa-inbox.js";
@@ -438,7 +439,8 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
       // against), then send it marked as spoken. Its install/progress lines are
       // the operator's business: logged, never said to a guest.
       b.typing.start();
-      const out = await transcribe(dest, (line) => log(`whatsapp: ${short(b)} — ${line}`));
+      const out = await transcribe(dest, (line) => log(`whatsapp: ${short(b)} — ${line}`),
+        { expect: expectedLanguage(b.sessionId) });
       if (!out.ok) {
         log(`whatsapp: ${short(b)} — a voice note could not be transcribed (${out.kind})`);
         b.typing.stop();

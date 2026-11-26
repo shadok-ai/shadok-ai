@@ -3709,6 +3709,25 @@
     <select id="defModelSel"><option value="">Claude Code's own default</option></select>
   </div>
   <div class="vm-hint" id="vmModelHint"></div>
+  <!-- Dictation (src/whisper.ts): the model every voice note and every Dictate
+       click is transcribed with, and how its language is chosen. -->
+  <div class="vm-row"><span class="vm-label">Dictation</span>
+    <select id="sttModelSel" aria-label="Dictation model"></select>
+  </div>
+  <div class="vm-row"><span class="vm-label">Spoken language</span>
+    <select id="sttLangSel" aria-label="Spoken language">
+      <option value="smart">Follow the conversation</option>
+      <option value="auto">Detect from the audio only</option>
+      <option value="en">Always English</option>
+      <option value="fr">Always French</option>
+      <option value="es">Always Spanish</option>
+      <option value="de">Always German</option>
+      <option value="it">Always Italian</option>
+      <option value="pt">Always Portuguese</option>
+      <option value="nl">Always Dutch</option>
+    </select>
+  </div>
+  <div class="vm-hint" id="vmSttHint"></div>
   <button class="vm-btn" id="restartAllBtn" type="button">Restart all agents</button>
   <div class="vm-hint" id="vmRestartHint">Respawn every agent (they resume with history).</div>
   <!-- Only the agents flagged as running on the OLD Claude Code binary (their ↻
@@ -11079,6 +11098,7 @@
       renderVerMenu(); refreshReloadUpdatesBtn(); document.getElementById("vmReloadUpdatesHint").hidden = true;
       renderAuthRows();   // paint what we have, then refresh in the background
       refreshAuthRows();
+      loadSpeech();
     }
   }
 
@@ -11378,6 +11398,67 @@
     }
   });
   loadModels();
+
+  // ── Dictation settings (version menu) ────────────────────
+  // The model and the language rule, per instance (GET/PUT /speech). Picking a
+  // model starts its download on the server; the row follows it to the end.
+  let speechInfo = null, speechPoll = null;
+  const STT_LANG_HINT = {
+    smart: "Language: detected from the audio. When that is unsure, what you typed here and your browser's language decide.",
+    auto: "Language: detected from the audio alone.",
+  };
+  function renderSpeech(note) {
+    const sel = $("sttModelSel"), lang = $("sttLangSel"), hint = $("vmSttHint");
+    if (!sel || !speechInfo) return;
+    sel.replaceChildren();
+    for (const m of speechInfo.models || []) {
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = m.label + (m.mb ? " · " + m.mb + " MB" : "");
+      // An operator's own model is shown, never offered: it has no entry in the
+      // server's list, so choosing it could only be refused.
+      if (m.id === "custom") o.disabled = true;
+      sel.appendChild(o);
+    }
+    sel.value = speechInfo.model;
+    if (![...lang.options].some((o) => o.value === speechInfo.language)) {
+      const o = document.createElement("option");
+      o.value = speechInfo.language; o.textContent = "Always “" + speechInfo.language + "”";
+      lang.appendChild(o);
+    }
+    lang.value = speechInfo.language;
+    const cur = (speechInfo.models || []).find((m) => m.id === speechInfo.model) || {};
+    const state =
+      cur.state === "downloading" ? "Downloading" + (cur.percent != null ? " " + cur.percent + "%" : "") + "… dictation keeps working meanwhile." :
+      cur.state === "checking" ? "Checking the file…" :
+      cur.state === "failed" ? "Could not be installed: " + (cur.reason || "unknown error") + ". Pick it again to retry." :
+      cur.state === "absent" ? "Downloaded the first time someone dictates." : "";
+    hint.textContent = note || [cur.note, state, STT_LANG_HINT[speechInfo.language] || "Language: every clip is transcribed as the one chosen."].filter(Boolean).join(" ");
+    // Follow a download to its end, only while the menu is open.
+    clearTimeout(speechPoll);
+    if ((cur.state === "downloading" || cur.state === "checking") && !verMenu.hidden) speechPoll = setTimeout(loadSpeech, 2000);
+  }
+  async function loadSpeech() {
+    try {
+      const r = await pollFetch("/speech");
+      if (r.ok) { speechInfo = await r.json(); renderSpeech(); }
+    } catch { /* offline or slow: the row keeps what it showed */ }
+  }
+  async function saveSpeech(patch) {
+    const prev = speechInfo;
+    try {
+      const r = await fetch("/speech", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "refused");
+      speechInfo = await r.json();
+      renderSpeech();
+    } catch (e) {
+      // Put the boxes back and say why (invariant 71).
+      speechInfo = prev;
+      renderSpeech("Could not save — " + (e.message || e));
+    }
+  }
+  $("sttModelSel").addEventListener("change", () => saveSpeech({ model: $("sttModelSel").value }));
+  $("sttLangSel").addEventListener("change", () => saveSpeech({ language: $("sttLangSel").value }));
 
   restartAllBtn.addEventListener("click", async () => {
     if (!confirm("Restart all agents? Each respawns and resumes with its history.")) return;
@@ -12833,7 +12914,11 @@
     micBtn.classList.add("working");
     micBtn.disabled = true;
     try {
-      const r = await fetch("/transcribe", { method: "POST", headers: { "content-type": blob.type }, body: blob });
+      // The conversation and the browser's language tell the server what
+      // language to expect when whisper's own detection is unsure.
+      const headers = { "content-type": blob.type, "x-shadok-lang": navigator.language || "" };
+      if (active && active.sessionId) headers["x-shadok-session"] = active.sessionId;
+      const r = await fetch("/transcribe", { method: "POST", headers, body: blob });
       const j = await r.json().catch(() => ({}));
       if (j && j.ok && j.text) {
         insertDictation(j.text);
@@ -16809,7 +16894,7 @@
   // the reason, rather than a control that silently snaps back.
   function applyAdminOnlyControls(amAdmin) {
     const why = amAdmin ? "" : "Admin only";
-    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
+    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn", "sttModelSel", "sttLangSel"]) {
       const el = $(id);
       if (!el) continue;
       el.disabled = !amAdmin;

@@ -1,9 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  parseDetectedLanguage, retryLanguage, normalizeLanguageSetting,
+  type ExpectedLanguage, type SpeechLanguageSetting,
+} from "./speech-lang.js";
 
 /**
- * Local speech-to-text for Telegram voice messages.
+ * Local speech-to-text: Telegram and WhatsApp voice notes, the web composer's
+ * Dictate button, the sound track of a shared video.
  *
  * Provisioned ON DEMAND, at the first voice message, never at boot. The live
  * VPS builds its images from a host-side Dockerfile of its own (see CLAUDE.md),
@@ -35,9 +40,72 @@ export const WHISPER_TAG = "v1.9.4";
 export const MODELS: Record<string, number> = {
   "ggml-small-q5_1.bin": 190_085_487,
   "ggml-medium-q5_0.bin": 539_212_467,
+  "ggml-large-v3-turbo-q5_0.bin": 574_041_195,
 };
 
+/**
+ * The models an admin can pick in the cockpit (version menu → Dictation).
+ *
+ * Measured 2026-11-26 on one busy 24-core host, 8 threads, real French speech
+ * (a public-domain reading): a 4-second clip took 9s on small, 25s on medium,
+ * 42s on turbo; a 28-second one 16s, 51s and 44s. On the same clips small
+ * wrote "ses forces par l'enseignement" for "s'efforce, par l'enseignement" and
+ * "Voyez l'anniversaire" for "Joyeux anniversaire"; medium and turbo got both.
+ * So the picker's notes are ratios from that one machine, not a benchmark —
+ * enough to choose by, and the reason the default stays the fast one.
+ *
+ * Shrinking whisper's audio context for short clips (`-ac`) was measured too
+ * and REJECTED: a third faster, but small began inventing words and turbo
+ * returned "Ita, ita." for a clean sentence.
+ *
+ * A closed list on purpose: the choice arrives in a request body and ends up in
+ * a file path and a download URL, so it is an `id` looked up here and never a
+ * file name. Each entry is pinned by size and SHA-256 like everything else this
+ * module fetches. A model outside the list stays possible, for an operator, by
+ * `SHADOK_WHISPER_MODEL` + `SHADOK_WHISPER_MODEL_SHA256`.
+ */
+export interface SpeechModel {
+  id: string;
+  file: string;
+  label: string;
+  /** One line for the picker: what choosing it costs and buys. */
+  note: string;
+  /**
+   * This model must be left to write its timestamps. Measured on a 28-second
+   * French clip: with `-nt` the turbo model returned "Article 4. Article 6.
+   * Article 7. Article 7." — the headings, every sentence between them gone —
+   * and the whole text without it. `parseWhisperText` strips the timestamps
+   * either way, so the only cost is in knowing which models need it.
+   */
+  timestamps?: boolean;
+}
+export const SPEECH_MODELS: readonly SpeechModel[] = [
+  { id: "small", file: "ggml-small-q5_1.bin", label: "Small", note: "Fastest. Makes mistakes on short clips and outside English." },
+  { id: "medium", file: "ggml-medium-q5_0.bin", label: "Medium", note: "Clearly more accurate. About 3 times slower than Small." },
+  { id: "turbo", file: "ggml-large-v3-turbo-q5_0.bin", label: "Large v3 turbo", note: "The most faithful. About 5 times slower than Small on a short clip, close to Medium on a long one.", timestamps: true },
+];
+
+/** The model when nobody chose one in the cockpit: the operator's, else small. */
 export const MODEL_FILE = process.env.SHADOK_WHISPER_MODEL?.trim() || "ggml-small-q5_1.bin";
+
+/**
+ * What the cockpit chose, pushed in by the server at boot and on every change
+ * (`setSpeechSettings`). Module state rather than a parameter because four
+ * unrelated callers transcribe (web, Telegram, WhatsApp, video) and none of
+ * them should have to know there is a setting.
+ */
+let chosenModelId: string | null = null;
+let languageSetting: SpeechLanguageSetting = "smart";
+
+export function setSpeechSettings(s: { model?: string | null; language?: unknown }): void {
+  chosenModelId = SPEECH_MODELS.some((m) => m.id === s.model) ? (s.model as string) : null;
+  languageSetting = normalizeLanguageSetting(s.language);
+}
+
+/** Pure: the model file in force — the cockpit's choice, else the default. */
+export function activeModelFile(choice: string | null = chosenModelId, fallback: string = MODEL_FILE): string {
+  return SPEECH_MODELS.find((m) => m.id === choice)?.file ?? fallback;
+}
 
 /**
  * SHA-256 of every artifact this module downloads. The tags and file names
@@ -66,6 +134,9 @@ export const WHISPER_SRC_SHA256 = "57e280cee375ab02425b806ad5146b99f6eb9357e3c2b
 export const MODEL_SHA256: Record<string, string> = {
   "ggml-small-q5_1.bin": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
   "ggml-medium-q5_0.bin": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+  // Added 2026-11-26, same method: downloaded and hashed, then checked against
+  // the Hub's LFS object id at MODEL_REV.
+  "ggml-large-v3-turbo-q5_0.bin": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
 };
 /**
  * The model repository's commit, not `main`: `/resolve/main/` is a moving ref,
@@ -74,7 +145,9 @@ export const MODEL_SHA256: Record<string, string> = {
  * 2024-10-29), read from `https://huggingface.co/api/models/ggerganov/whisper.cpp`.
  */
 export const MODEL_REV = "5359861c739e955e79d9a303bcbc70fb988958b1";
-export const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REV}/${MODEL_FILE}`;
+export const modelUrl = (file: string): string =>
+  `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REV}/${file}`;
+export const MODEL_URL = modelUrl(MODEL_FILE);
 
 /**
  * Pure: the hash a model must have, or null = refuse it.
@@ -114,11 +187,11 @@ export interface WhisperPaths {
  * several containers turns ~600 MB per container into ~600 MB total; without
  * that mount this degrades, correctly, to one copy each.
  */
-export function whisperPaths(dir: string): WhisperPaths {
+export function whisperPaths(dir: string, modelFile: string = MODEL_FILE): WhisperPaths {
   return {
     dir,
     ffmpeg: path.join(dir, "ffmpeg"),
-    model: path.join(dir, MODEL_FILE),
+    model: path.join(dir, modelFile),
     src: path.join(dir, `whisper.cpp-${WHISPER_TAG.replace(/^v/, "")}`),
     binCandidates: [
       path.join(dir, "whisper-cli"),
@@ -163,11 +236,12 @@ export function missingParts(present: Record<WhisperPart, boolean>): WhisperPart
  * Without it the user sends a voice note and gets silence for minutes while
  * ~600 MB arrives and a compiler runs — which looks exactly like a broken bot.
  */
-export function installNotice(parts: readonly WhisperPart[]): string | null {
+export function installNotice(parts: readonly WhisperPart[], modelFile: string = MODEL_FILE): string | null {
   if (!parts.length) return null;
   const heavy = parts.includes("model");
-  const mb = Math.round((MODEL_BYTES + 80 * 1024 * 1024) / 1_000_000);
-  return `🎙 première fois : j'installe la transcription${heavy && MODEL_BYTES ? ` (~${mb} Mo)` : ""}, je te réponds dès que c'est prêt.`;
+  const bytes = MODELS[modelFile] ?? 0;
+  const mb = Math.round((bytes + 80 * 1024 * 1024) / 1_000_000);
+  return `🎙 première fois : j'installe la transcription${heavy && bytes ? ` (~${mb} Mo)` : ""}, je te réponds dès que c'est prêt.`;
 }
 
 /** Pure: why it could not be installed, said once and never repeated. */
@@ -261,12 +335,13 @@ export function audioClipExtension(contentType: string): string {
 }
 
 /** Is a downloaded model plausibly the model, rather than an error page? */
-export function modelLooksComplete(size: number): boolean {
+export function modelLooksComplete(size: number, modelFile: string = MODEL_FILE): boolean {
   // An unknown model (someone pointed SHADOK_WHISPER_MODEL at another file) has
   // no expected size: accept anything that is plainly not an error page rather
   // than refuse a model we simply have no number for.
-  if (!MODEL_BYTES) return size > 8 * 1024 * 1024;
-  return Math.abs(size - MODEL_BYTES) <= MODEL_BYTES_SLACK;
+  const bytes = MODELS[modelFile] ?? 0;
+  if (!bytes) return size > 8 * 1024 * 1024;
+  return Math.abs(size - bytes) <= MODEL_BYTES_SLACK;
 }
 
 /** The built CLI, or null when none of the candidates is there. */
@@ -308,6 +383,8 @@ export function pkgInstallCommand(
 export type WhisperState =
   | { kind: "ready"; bin: string; ffmpeg: string; model: string }
   | { kind: "unavailable"; reason: string };
+type ToolState = { kind: "ready"; bin: string; ffmpeg: string } | { kind: "unavailable"; reason: string };
+type ModelState = { kind: "ready"; path: string } | { kind: "unavailable"; reason: string };
 
 /**
  * ONE install for the whole process, and one refusal too.
@@ -318,20 +395,42 @@ export type WhisperState =
  * `ENOTEMPTY` happened (invariant 32) — two installs racing over one tree.
  *
  * A failure is remembered, so a broken host is not asked to download 600 MB
- * again on every voice note. It is cleared only by a restart, which is the
- * moment someone has plausibly fixed whatever was wrong.
+ * again on every voice note. It is cleared by a restart, or by an admin picking
+ * a model in the cockpit (`prefetchSpeech`) — both are moments when someone has
+ * plausibly fixed whatever was wrong.
+ *
+ * The toolchain (cmake, ffmpeg, the whisper.cpp build) and the MODELS are
+ * tracked apart, because the model is now a setting: changing it must cost one
+ * download, never a rebuild, and each model file is its own single flight.
  */
-let inFlight: Promise<WhisperState> | null = null;
-let settled: WhisperState | null = null;
+let toolInFlight: Promise<ToolState> | null = null;
+let toolSettled: ToolState | null = null;
+const modelInFlight = new Map<string, Promise<ModelState>>();
+const modelSettled = new Map<string, ModelState>();
+/** Bytes received so far, per model being downloaded — for the settings row. */
+const modelProgress = new Map<string, number>();
+/** The model that last proved usable in this process: what a clip is
+ *  transcribed with while a newly chosen one is still downloading. */
+let lastReadyModel: string | null = null;
 
 export function whisperState(): WhisperState | null {
-  return settled;
+  const model = modelSettled.get(activeModelFile());
+  if (!toolSettled || !model) return null;
+  if (toolSettled.kind !== "ready") return toolSettled;
+  if (model.kind !== "ready") return model;
+  return { kind: "ready", bin: toolSettled.bin, ffmpeg: toolSettled.ffmpeg, model: model.path };
 }
 
 /** Test seam: forget what this process decided. */
 export function resetWhisper(): void {
-  inFlight = null;
-  settled = null;
+  toolInFlight = null;
+  toolSettled = null;
+  modelInFlight.clear();
+  modelSettled.clear();
+  modelProgress.clear();
+  lastReadyModel = null;
+  chosenModelId = null;
+  languageSetting = "smart";
   ffInFlight = null;
   ffSettled = null;
 }
@@ -440,7 +539,7 @@ async function presentAndPinned(file: string, expected: string): Promise<boolean
 export async function downloadVerified(
   url: string,
   dest: string,
-  opts: { sha256: string; mode?: number; fetchImpl?: typeof fetch },
+  opts: { sha256: string; mode?: number; fetchImpl?: typeof fetch; onProgress?: (bytes: number) => void },
 ): Promise<void> {
   const tmp = `${dest}.part-${process.pid}`;
   const r = await (opts.fetchImpl ?? fetch)(url, { redirect: "follow" });
@@ -449,7 +548,12 @@ export async function downloadVerified(
   try {
     const h = createHash("sha256");
     const src = Readable.fromWeb(r.body as never);
-    src.on("data", (c: Buffer) => h.update(c));
+    let got = 0;
+    src.on("data", (c: Buffer) => {
+      h.update(c);
+      got += c.length;
+      opts.onProgress?.(got);
+    });
     await pipeline(src, fs.createWriteStream(tmp));
     const actual = h.digest("hex");
     if (actual !== opts.sha256) {
@@ -522,45 +626,23 @@ export async function ensureFfmpeg(notify?: (line: string) => void): Promise<Ffm
   return ffInFlight;
 }
 
-/**
- * Provision everything, once. Returns the same answer to every later caller.
- *
- * `notify` is called ONCE, before the first byte moves, so the user learns that
- * a long install started rather than watching silence.
- */
-export async function ensureWhisper(notify?: (line: string) => void): Promise<WhisperState> {
-  if (settled) return settled;
-  if (inFlight) return inFlight;
-  inFlight = (async (): Promise<WhisperState> => {
+/** cmake, ffmpeg and the whisper.cpp CLI — everything but a model. */
+async function ensureToolchain(): Promise<ToolState> {
+  if (toolSettled) return toolSettled;
+  if (toolInFlight) return toolInFlight;
+  toolInFlight = (async (): Promise<ToolState> => {
     const dir = whisperDir();
     const p = whisperPaths(dir);
     try {
       await fs.promises.mkdir(dir, { recursive: true });
-      const modelPin = modelSha256(MODEL_FILE, process.env.SHADOK_WHISPER_MODEL_SHA256);
-      if (!modelPin) {
-        throw new Error(`no pinned SHA-256 for the model ${MODEL_FILE} — set SHADOK_WHISPER_MODEL_SHA256 to its hash`);
-      }
-      const present = {
-        cmake: HAS("cmake"),
-        ffmpeg: fs.existsSync(p.ffmpeg),
-        whisper: !!existingBin(p),
-        model: fs.existsSync(p.model) && modelLooksComplete(fs.statSync(p.model).size)
-          && (await presentAndPinned(p.model, modelPin)),
-      };
-      const missing = missingParts(present);
-      const notice = installNotice(missing);
-      if (notice) notify?.(notice);
-
-      if (!present.cmake) await installPkg("cmake");
-      {
-        // ALWAYS through the same single-flight as the video path, even when a
-        // file is already there: that is where a cached ffmpeg is checked
-        // against its pin. And two provisioners writing `${dest}.part-${pid}`
-        // from one pid is the ENOTEMPTY-shaped race this file already paid for.
-        const ff = await ensureFfmpeg();
-        if (ff.kind !== "ready") throw new Error(ff.reason);
-      }
-      if (!present.whisper) {
+      if (!HAS("cmake")) await installPkg("cmake");
+      // ALWAYS through the same single-flight as the video path, even when a
+      // file is already there: that is where a cached ffmpeg is checked
+      // against its pin. And two provisioners writing `${dest}.part-${pid}`
+      // from one pid is the ENOTEMPTY-shaped race this file already paid for.
+      const ff = await ensureFfmpeg();
+      if (ff.kind !== "ready") throw new Error(ff.reason);
+      if (!existingBin(p)) {
         const tgz = path.join(dir, `whisper-${WHISPER_TAG}.tar.gz`);
         // Verified BEFORE extraction: what is built from it runs as root.
         await downloadVerified(`https://github.com/ggml-org/whisper.cpp/archive/refs/tags/${WHISPER_TAG}.tar.gz`, tgz,
@@ -575,23 +657,184 @@ export async function ensureWhisper(notify?: (line: string) => void): Promise<Wh
           "-DWHISPER_BUILD_EXAMPLES=ON"], { cwd: p.src, timeout: 900_000 });
         await run("cmake", ["--build", "build", "--config", "Release", "-j", "2"], { cwd: p.src, timeout: 1_800_000 });
       }
-      if (!present.model) {
-        // The hash is the gate; a truncated file or an HTML error page fails it
-        // too, before it ever takes the model's name.
-        await downloadVerified(MODEL_URL, p.model, { sha256: modelPin });
-      }
       const bin = existingBin(p);
       if (!bin) throw new Error("whisper built but no CLI was produced");
-      settled = { kind: "ready", bin, ffmpeg: p.ffmpeg, model: p.model };
+      toolSettled = { kind: "ready", bin, ffmpeg: p.ffmpeg };
       console.log(`whisper: ready (${bin})`);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      settled = { kind: "unavailable", reason };
+      toolSettled = { kind: "unavailable", reason };
       console.log(`whisper: unavailable — ${reason}`);
     }
-    return settled;
-  })().finally(() => { inFlight = null; });
-  return inFlight;
+    return toolSettled;
+  })().finally(() => { toolInFlight = null; });
+  return toolInFlight;
+}
+
+/** One model file: already there and pinned, or downloaded and verified. */
+async function ensureModel(file: string): Promise<ModelState> {
+  const done = modelSettled.get(file);
+  if (done) return done;
+  const flying = modelInFlight.get(file);
+  if (flying) return flying;
+  const job = (async (): Promise<ModelState> => {
+    let state: ModelState;
+    try {
+      // The operator's hash speaks for the operator's file, and only for it.
+      const pin = modelSha256(file, file === MODEL_FILE ? process.env.SHADOK_WHISPER_MODEL_SHA256 : undefined);
+      if (!pin) throw new Error(`no pinned SHA-256 for the model ${file} — set SHADOK_WHISPER_MODEL_SHA256 to its hash`);
+      const dest = path.join(whisperDir(), file);
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      const have = fs.existsSync(dest) && modelLooksComplete(fs.statSync(dest).size, file)
+        && (await presentAndPinned(dest, pin));
+      if (!have) {
+        // The hash is the gate; a truncated file or an HTML error page fails it
+        // too, before it ever takes the model's name.
+        console.log(`whisper: downloading the model ${file}`);
+        modelProgress.set(file, 0);
+        await downloadVerified(modelUrl(file), dest, { sha256: pin, onProgress: (n) => modelProgress.set(file, n) });
+      }
+      state = { kind: "ready", path: dest };
+      lastReadyModel = file;
+      console.log(`whisper: model ready (${file})`);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      state = { kind: "unavailable", reason };
+      console.log(`whisper: model ${file} unavailable — ${reason}`);
+    }
+    modelProgress.delete(file);
+    modelSettled.set(file, state);
+    return state;
+  })().finally(() => { modelInFlight.delete(file); });
+  modelInFlight.set(file, job);
+  return job;
+}
+
+/**
+ * Provision everything, once. Returns the same answer to every later caller.
+ *
+ * `notify` is called ONCE, before the first byte moves, so the user learns that
+ * a long install started rather than watching silence.
+ */
+export async function ensureWhisper(
+  notify?: (line: string) => void,
+  modelFile: string = activeModelFile(),
+): Promise<WhisperState> {
+  const knownModel = modelSettled.get(modelFile);
+  if (!toolSettled || !knownModel) {
+    // Announced only for an install that is about to START: a caller joining
+    // one in flight, or hitting a remembered failure, has nothing new to hear.
+    const starting = !toolInFlight && !modelInFlight.has(modelFile)
+      && toolSettled?.kind !== "unavailable" && knownModel?.kind !== "unavailable";
+    if (starting) {
+      const p = whisperPaths(whisperDir(), modelFile);
+      const notice = installNotice(missingParts({
+        cmake: HAS("cmake"),
+        ffmpeg: fs.existsSync(p.ffmpeg),
+        whisper: !!existingBin(p),
+        model: fs.existsSync(p.model) && modelLooksComplete(fs.statSync(p.model).size, modelFile),
+      }), modelFile);
+      if (notice) notify?.(notice);
+    }
+  }
+  // The toolchain first: a host that cannot build whisper must not be made to
+  // download several hundred MB of model it will never run.
+  const tool = await ensureToolchain();
+  if (tool.kind !== "ready") return tool;
+  const model = await ensureModel(modelFile);
+  if (model.kind !== "ready") return model;
+  return { kind: "ready", bin: tool.bin, ffmpeg: tool.ffmpeg, model: model.path };
+}
+
+/**
+ * Pure: how many threads one transcription takes.
+ *
+ * whisper.cpp defaults to 4 whatever the machine. Measured on a 24-core host
+ * already busy with agents, 8 threads against 4 took a 4-second clip from 15.6s
+ * to 8.8s on `small` and from 77s to 41s on the turbo model — the difference
+ * between a dictation that feels slow and one that feels broken. Half the
+ * cores, never more than 8 (the gain flattens and the agents need the rest),
+ * and never fewer than whisper's own default would have used.
+ */
+export function whisperThreads(cpus: number): number {
+  const n = Math.max(1, Math.floor(cpus) || 1);
+  return Math.min(8, Math.max(Math.min(4, n), Math.floor(n / 2)));
+}
+
+/** `checking` is a file already on disk being hashed against its pin — a
+ *  second or two, and not a download: saying "downloading" for it would be a lie
+ *  about several hundred MB. */
+export type ModelAvailability = "ready" | "checking" | "downloading" | "failed" | "absent";
+
+/**
+ * Pure: the model to transcribe THIS clip with.
+ *
+ * A model picked in the cockpit takes minutes to arrive, and a download can
+ * fail. Neither should take dictation away from an instance that was
+ * transcribing a moment ago: until the chosen model is usable, the one that
+ * last worked keeps answering.
+ */
+export function modelForClip(chosen: string, state: ModelAvailability, lastReady: string | null): string {
+  if (state !== "ready" && state !== "absent" && lastReady && lastReady !== chosen) return lastReady;
+  return chosen;
+}
+
+function availability(file: string): { state: ModelAvailability; reason?: string; percent?: number } {
+  const done = modelSettled.get(file);
+  if (done?.kind === "ready") return { state: "ready" };
+  if (modelInFlight.has(file)) {
+    const total = MODELS[file] ?? 0;
+    const got = modelProgress.get(file);
+    // In flight with no byte counted yet: hashing a file that is there, or
+    // about to download one that is not.
+    if (got === undefined) return { state: fs.existsSync(path.join(whisperDir(), file)) ? "checking" : "downloading" };
+    return { state: "downloading", ...(total ? { percent: Math.min(99, Math.floor((got / total) * 100)) } : {}) };
+  }
+  if (done) return { state: "failed", reason: done.reason };
+  // Not looked at by this process yet: on disk at the right size counts as
+  // there. (Its hash is checked before first use, as always.)
+  try {
+    if (modelLooksComplete(fs.statSync(path.join(whisperDir(), file)).size, file)) return { state: "ready" };
+  } catch { /* absent */ }
+  return { state: "absent" };
+}
+
+export interface SpeechStatus {
+  model: string;
+  language: SpeechLanguageSetting;
+  models: { id: string; label: string; note: string; mb: number; state: ModelAvailability; percent?: number; reason?: string }[];
+}
+
+/** What the settings row shows: the choice in force and where each model is. */
+export function speechStatus(): SpeechStatus {
+  const active = activeModelFile();
+  const list: SpeechModel[] = [...SPEECH_MODELS];
+  // An operator's own model (env) is shown so the row never lies about what
+  // runs; it cannot be picked, only left by picking another.
+  if (!list.some((m) => m.file === MODEL_FILE)) {
+    list.push({ id: "custom", file: MODEL_FILE, label: MODEL_FILE, note: "set by SHADOK_WHISPER_MODEL" });
+  }
+  return {
+    model: list.find((m) => m.file === active)?.id ?? "small",
+    language: languageSetting,
+    models: list.map((m) => ({
+      id: m.id, label: m.label, note: m.note, mb: Math.round((MODELS[m.file] ?? 0) / 1_000_000),
+      ...availability(m.file),
+    })),
+  };
+}
+
+/**
+ * Start fetching the model in force now, in the background — called when an
+ * admin picks one, so the download is over before the next person dictates
+ * rather than starting under them. Picking is also a retry: a remembered
+ * failure is forgotten first.
+ */
+export function prefetchSpeech(): void {
+  const file = activeModelFile();
+  if (modelSettled.get(file)?.kind === "unavailable") modelSettled.delete(file);
+  if (toolSettled?.kind === "unavailable") toolSettled = null;
+  void ensureWhisper(undefined, file);
 }
 
 /**
@@ -600,20 +843,45 @@ export async function ensureWhisper(notify?: (line: string) => void): Promise<Wh
  * The WAV is written beside the source and removed afterwards: whisper.cpp
  * reads 16 kHz mono PCM and Telegram sends OGG/Opus, so the conversion is not
  * optional.
+ *
+ * `expect` is what the context says about the language (`src/speech-lang.ts`).
+ * It never replaces whisper's own detection: the clip is detected first, and
+ * transcribed a second time only when that detection was both unexpected and
+ * unsure — see `retryLanguage`.
  */
 export async function transcribe(
   audioPath: string,
   notify?: (line: string) => void,
+  opts?: { expect?: ExpectedLanguage },
 ): Promise<TranscriptionResult> {
-  const state = await ensureWhisper(notify);
+  const chosen = activeModelFile();
+  const state = await ensureWhisper(notify, modelForClip(chosen, availability(chosen).state, lastReadyModel));
   if (state.kind !== "ready") return { ok: false, kind: "unavailable", notice: installFailure(state.reason) };
   const wav = `${audioPath}.16k.wav`;
+  const keepTimestamps = SPEECH_MODELS.some((m) => m.timestamps && m.file === path.basename(state.model));
+  const whisper = (lang: string) =>
+    run(state.bin, [
+      "-m", state.model, "-f", wav, ...(keepTimestamps ? [] : ["-nt"]),
+      "-l", lang, "-t", String(whisperThreads(os.availableParallelism())),
+    ], { timeout: 600_000, maxBuffer: 1 << 24 });
   try {
     await run(state.ffmpeg, ["-nostdin", "-y", "-i", audioPath, "-ar", "16000", "-ac", "1", "-f", "wav", wav],
       { timeout: 120_000 });
-    const { stdout } = await run(state.bin, ["-m", state.model, "-f", wav, "-nt", "-l", "auto"],
-      { timeout: 600_000, maxBuffer: 1 << 24 });
-    return transcriptionOutcome(stdout);
+    const setting = languageSetting;
+    const first = await whisper(setting === "smart" || setting === "auto" ? "auto" : setting);
+    let out = transcriptionOutcome(first.stdout);
+    if (setting === "smart") {
+      const detected = parseDetectedLanguage(first.stderr);
+      const again = retryLanguage(opts?.expect, detected);
+      if (again) {
+        console.log(`whisper: detected ${detected?.lang} (p=${detected?.p.toFixed(2)}) where ${again} was expected — transcribing again in ${again}`);
+        // The first transcript is still a transcript: a second run that fails
+        // or hears nothing must not lose it.
+        const second = await whisper(again).then((r) => transcriptionOutcome(r.stdout)).catch(() => null);
+        if (second?.ok) out = second;
+      }
+    }
+    return out;
   } catch (e) {
     return { ok: false, kind: "failed", notice: `🎙 la transcription a échoué : ${e instanceof Error ? e.message.slice(0, 200) : e}` };
   } finally {

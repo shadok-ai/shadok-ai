@@ -330,13 +330,23 @@ Enter to skip; you can add it later from the web UI).
   file name or branch instead of acting on a mishearing.
   Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
   a 181 MB model — and the topic says so rather than going quiet for minutes.
-  `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  **Which model transcribes is a setting** (version menu → *Dictation*, admin):
+  *Small* (the default, fastest), *Medium* or *Large v3 turbo* (slower, and
+  clearly more accurate outside English — the menu says by how much). Picking
+  one downloads it in the background and shows the progress; until it has
+  arrived, the model that was working keeps transcribing.
+  **The language** is detected from the audio. When that detection is unsure
+  and disagrees with what you have been typing in the conversation, or with
+  your browser's / Telegram's language, the clip is transcribed again in the
+  expected one — a confident detection always stands, so switching language
+  still works. *Spoken language* in the same menu can instead pin one language
+  for the instance, or leave everything to the audio.
   Every download is checked against a SHA-256 pinned in `src/whisper.ts`
   (ffmpeg per platform, the whisper.cpp source, the model at a fixed Hugging
-  Face commit); a mismatch is refused and transcription stays off until the
-  next restart. Only `ggml-small-q5_1.bin` and `ggml-medium-q5_0.bin` have a
-  pinned hash — any other model needs `SHADOK_WHISPER_MODEL_SHA256=<hex>`, or it
-  is refused.
+  Face commit); a mismatch is refused. The three models of the menu are pinned;
+  an operator can still run another with `SHADOK_WHISPER_MODEL=<file>` +
+  `SHADOK_WHISPER_MODEL_SHA256=<hex>` (without the hash it is refused), used
+  whenever nobody chose one in the menu.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your

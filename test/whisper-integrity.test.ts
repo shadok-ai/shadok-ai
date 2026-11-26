@@ -127,3 +127,21 @@ test("a cached file is verified once, and re-verified when it changes", async ()
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a download reports its progress, and the progress is the bytes received", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "whisper-progress-"));
+  try {
+    const body = Buffer.from("x".repeat(5000));
+    const sha = createHash("sha256").update(body).digest("hex");
+    const seen: number[] = [];
+    await downloadVerified("https://example.invalid/m.bin", path.join(dir, "m.bin"), {
+      sha256: sha,
+      fetchImpl: (async () => new Response(body)) as typeof fetch,
+      onProgress: (n) => seen.push(n),
+    });
+    assert.equal(seen[seen.length - 1], body.length);
+    assert.ok(seen.every((n, i) => i === 0 || n >= seen[i - 1]));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

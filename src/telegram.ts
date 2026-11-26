@@ -33,6 +33,7 @@ import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
 import { recordSecretAudit } from "./secret-audit.js";
 import { telegramPhotoable } from "./download.js";
 import { transcribe, heardNotice } from "./whisper.js";
+import { expectedLanguage } from "./speech-lang.js";
 import { clock, lookAtVideo, MAX_FRAMES, ALBUM_FRAMES } from "./video.js";
 import { authStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { getProfile, profileNames } from "./profiles.js";
@@ -2775,7 +2776,8 @@ export function startTelegram(
           // was misheard and then acted on in silence is far worse than a voice
           // message that was ignored. The user sees what the agent received
           // while there is still time to correct it.
-          const out = await transcribe(p, (line) => { void reply(chat.id, threadId, line); });
+          const out = await transcribe(p, (line) => { void reply(chat.id, threadId, line); },
+            { expect: expectedLanguage(b.sessionId, msg.from?.language_code) });
           if (!out.ok) {
             b.typing.stop();
             await reply(chat.id, threadId, out.notice);
