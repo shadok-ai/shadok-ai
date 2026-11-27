@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   secretsPanelMode,
   secretSections,
+  secretSliceKey,
   keyGroups,
   shareTargets,
   auditLine,
@@ -60,8 +61,8 @@ test("sections: no selected group shows every own secret", () => {
 
 test("sections: garbage in gives empty sections, never a throw", () => {
   const s = secretSections(undefined, "x");
-  assert.deepEqual(s, { own: [], sharedIn: [], commons: [] });
-  assert.deepEqual(secretSections([null, { name: "Z", source: "weird" }], "x"), { own: [], sharedIn: [], commons: [] });
+  assert.deepEqual(s, { own: [], sharedIn: [], commons: [], guests: [] });
+  assert.deepEqual(secretSections([null, { name: "Z", source: "weird" }], "x"), { own: [], sharedIn: [], commons: [], guests: [] });
 });
 
 test("panelGroupOptions: restricted/private listed individually, public groups collapsed into one bucket, Main dropped", () => {
@@ -280,4 +281,34 @@ test("plusReloadPlan: the agent that asked is reloaded, but never mid-turn", () 
   // The panel opened by hand: a later Add never restarts a bystander.
   assert.equal(plusReloadPlan(null, recv).action, "none");
   assert.equal(plusReloadPlan(dev, undefined).action, "unbound");
+});
+
+// ── A guest conversation's rows in the panel (external groups, step 4) ───
+test("sections: a guest conversation's names land in their own section, scoped to the group selected", () => {
+  const rows = [
+    { name: "OWN", source: "own", ownerGroup: "door" },
+    { name: "TOKEN", source: "guest", ownerGroup: "door", conversation: "tg-77", unit: "door/tg-77" },
+    { name: "TOKEN", source: "guest", ownerGroup: "other", conversation: "tg-88", unit: "other/tg-88" },
+  ];
+  const s = secretSections(rows, "door", [{ id: "main", nature: "public" }, { id: "door", nature: "external" }]);
+  // Never folded into `own`: these are a stranger's credentials and a name here
+  // can collide with one of the group's own without being the same secret.
+  assert.deepEqual(s.own.map((x) => x.name), ["OWN"]);
+  assert.deepEqual(s.guests.map((x) => x.conversation), ["tg-77"]);
+  // Another group's door is not this panel's business.
+  assert.deepEqual(secretSections(rows, "other", [{ id: "main", nature: "public" }, { id: "other", nature: "external" }]).guests.map((x) => x.conversation), ["tg-88"]);
+});
+
+test("sections: guest rows never appear in the Public bucket view, which has no conversations", () => {
+  const rows = [{ name: "T", source: "guest", ownerGroup: "door", conversation: "tg-77", unit: "door/tg-77" }];
+  assert.deepEqual(secretSections(rows, PUBLIC_BUCKET, [{ id: "main", nature: "public" }]).guests, []);
+});
+
+test("secretSliceKey: a guest row writes to its CONVERSATION's slice, a group row to its group", () => {
+  // The external GROUP holds no slice at all, so posting `ownerGroup` for a
+  // guest row would aim the write at a tenant nobody reads.
+  assert.equal(secretSliceKey({ name: "T", ownerGroup: "door", unit: "door/tg-77" }), "door/tg-77");
+  assert.equal(secretSliceKey({ name: "T", ownerGroup: "comex" }), "comex");
+  assert.equal(secretSliceKey(null), null);
+  assert.equal(secretSliceKey({ name: "T" }), null);
 });

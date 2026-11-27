@@ -278,3 +278,12 @@ test("secretDeleteConfirmText: names the secret, says it cannot be recovered, an
   assert.match(secretDeleteConfirmText("GA4", ["A", "B"]), /these profiles: A, B will no longer receive it/);
   assert.equal(secretDeleteConfirmText("GA4", null), none);
 });
+
+test("secretDeleteConfirmText: a guest's entry names the conversation and what happens to the person", () => {
+  const t = secretDeleteConfirmText("API_KEY", [], "tg-77");
+  assert.match(t, /guest conversation tg-77/);
+  assert.match(t, /ask the person for it again/);
+  // The profile sentence never applies to a guest's slice (it is injected by
+  // slice, not by profile), so it must not appear even when profiles are passed.
+  assert.equal(/profile/.test(secretDeleteConfirmText("API_KEY", ["Dev"], "tg-77")), false);
+});

@@ -2,13 +2,16 @@
 
 Design, drafted 2026-11-26 from a cockpit conversation with the operator, and
 checked against the code as it was written (`5542f3f`). Approved 2026-11-26.
-Status: **steps 1, 2 and 3 implemented** — the box on the API (plan
+Status: **steps 1 to 4 implemented** — the box on the API (plan
 [`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md)),
 the admission ceiling (plan
-[`plans/2026-11-27-guest-admission-ceiling.md`](../plans/2026-11-27-guest-admission-ceiling.md))
-and the `external` nature with one Unix user per conversation (plan
-[`plans/2026-11-27-external-nature.md`](../plans/2026-11-27-external-nature.md));
-steps 4 and 5 not built. Points the operator
+[`plans/2026-11-27-guest-admission-ceiling.md`](../plans/2026-11-27-guest-admission-ceiling.md)),
+the `external` nature with one Unix user per conversation (plan
+[`plans/2026-11-27-external-nature.md`](../plans/2026-11-27-external-nature.md))
+and the guest's own secret slice (plan
+[`plans/2026-11-27-guest-secret-slice.md`](../plans/2026-11-27-guest-secret-slice.md));
+step 5 (the lifetime gestures — deleting ONE conversation, and the retention
+sweep) not built. Points the operator
 settled in that conversation are marked **[OPERATOR]**; a call made here that a
 builder could not settle alone is **[CALL]**; points deliberately left open are
 **[OPEN]**.
@@ -207,6 +210,20 @@ shared-in, no commons, no Main.
 
 ### 6. [OPERATOR] A guest's own secret slice
 
+*Status: **implemented** (`src/guest-vault.ts`, the vault keyed by unit in
+`src/secrets.ts`, invariant 85). Two things the build settled that this decision
+did not spell out. The seal is needed in BOTH directions, and the outward one is
+the sharp edge: `sharedWith` is read from the SHARING side, so a guest's agent
+allowed to share its own entry could lend the operator's agents a value of its
+choosing under a name of its choosing — sharing and binding are therefore
+refused for everyone, the slice's own agent included. The same reasoning moved
+the FACTORY's resolution off the group (`factoryVaultUnit`): an external group is
+never a vault key, so resolving a skill's declared secrets by group fell through
+to the commons, and the factory's secret scan — which names the secret a tree
+matched — was an oracle on the operator's values. And **the [OPEN] below is
+still open**: a member may rotate and delete, never CREATE a name in someone
+else's slice, and the refusal says which decision is missing.*
+
 A guest's agent can store a credential of its own — the point being that the
 person should not have to hand it over again on their next message.
 
@@ -370,7 +387,9 @@ Each step is independently shippable and leaves the instance honest:
   default, and **yes**, an operator may raise or lower it per door (`limits` on
   the guest setup; the panel has no field for it yet and never resets what was
   set). A malformed value reads as unset, never as a shut door.
-- **[OPEN]** Whether a member may **write into** a guest's slice (hand a
+- **[OPEN]** (step 4 built around it: rotate and delete are allowed, creating a
+  name in a guest's slice is refused with the reason stated — one branch in
+  `guestSliceWriteRefusal` reverses it) Whether a member may **write into** a guest's slice (hand a
   credential to one conversation) or only rotate and delete what the agent put
   there.
 - **[OPEN]** The Claude credential, inherited from the multi-tenant design: one

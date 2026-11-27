@@ -474,3 +474,39 @@ function SERVER_SRC_PUT_CHANNELS(): string {
   assert.ok(at > 0, "PUT /channels must exist");
   return SERVER.slice(at, at + 900);
 }
+
+// ── A guest conversation as a vault owner (external groups, step 4) ──────────
+// The owner a write lands in is now an ISOLATION UNIT, which in an external
+// group is one conversation. The MEMBERSHIP gate stays the GROUP's — who may
+// touch a guest's slice is decided by the group they knocked on — and the
+// per-operation rule is `guestSliceWriteRefusal`, tested in guest-vault.test.ts.
+const extGroups: Group[] = [
+  ...groups,
+  { id: "door", name: "Door", nature: "external", members: ["ada"], createdAt: 0 },
+];
+const DOOR_CONV = "door/tg-77";
+
+test("secretWriteDecision: a conversation unit is gated by its GROUP's membership, not by the unit", () => {
+  // The guest's own agent: the unit came from its session, and that derivation
+  // IS the authorization — allowed for any nature, as for every other agent.
+  assert.deepEqual(secretWriteDecision({ agentGroupId: DOOR_CONV, viewer: admin, groups: extGroups }), {
+    ok: true,
+    ownerGroup: DOOR_CONV,
+  });
+  // A member of the door's group may aim at that conversation's slice (to
+  // rotate or delete — `guestSliceWriteRefusal` is what forbids creating).
+  assert.deepEqual(secretWriteDecision({ requestedGroup: DOOR_CONV, viewer: ada, groups: extGroups }), {
+    ok: true,
+    ownerGroup: DOOR_CONV,
+  });
+  // Someone who is not a member of the door's group cannot, and the refusal
+  // names the GROUP rather than echoing the conversation back at them.
+  const foreign = secretWriteDecision({ requestedGroup: DOOR_CONV, viewer: bob, groups: extGroups });
+  assert.equal(foreign.ok, false);
+  assert.match(String((foreign as { error: string }).error), /group door/);
+});
+
+test("secretWriteDecision: a conversation of an UNKNOWN group is refused, never resolved to the commons", () => {
+  const r = secretWriteDecision({ requestedGroup: "ghost/tg-1", viewer: admin, groups: extGroups });
+  assert.equal(r.ok, false);
+});

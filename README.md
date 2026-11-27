@@ -1130,9 +1130,9 @@ see it:
 - **External** — for **strangers**: the group holds the conversations of people
   who write to an open door (WhatsApp, Telegram), and **each conversation is
   sealed from the others** — its own OS user, its own home, its own files and
-  attachments. Its members see them all, which is the point: you read those
-  conversations in the cockpit and take over. Chosen when you create the group
-  and never converted afterwards.
+  attachments, and its own slice of the secret vault. Its members see them all,
+  which is the point: you read those conversations in the cockpit and take over.
+  Chosen when you create the group and never converted afterwards.
 - **Public** — everyone. `Main` is the default public group.
 
 You see and drive only your own groups plus the public ones; that covers the
@@ -1142,7 +1142,23 @@ user** with its own home and secrets, never as root — per group, or per
 conversation in an External one. An External group carries no shared ledger at
 all (a stranger's conversation is nobody's coordination log), and its door's
 profile may hold **no secret**: every guest runs the same profile, so a secret
-on it would be a credential handed to every stranger. Crossing a wall is always a deliberate act:
+on it would be a credential handed to every stranger.
+
+A guest's agent CAN keep a credential of its own, so the person does not have to
+send the same token again on their next message. It goes into that
+conversation's own slice of the vault, and that slice is sealed both ways:
+nothing of yours resolves into it (not the commons, not `Main`, not a secret
+lent to the group), and nothing in it resolves out — a guest cannot share it or
+attach it to a profile. It is capped (10 entries, 4 KiB a value), the person is
+told once that you are keeping it, and **it is erased when their agent is
+deleted** — their folder and their OS user survive, their credentials do not. In
+the vault panel you see those names under *Stored by guests*, never a value, and
+you can rotate or delete them; adding one to someone else's conversation is
+refused. The group itself has no vault — every slice belongs to a conversation —
+so a secret stored on it would reach nobody, and shadok says so instead of
+storing it.
+
+Crossing a wall is always a deliberate act:
 drop a file in the shared `~/shared/` folder, record a ledger line with
 `--public`, push a branch, or message an agent (public groups freely, restricted
 ones only with a handle they gave you; private groups cannot be messaged).

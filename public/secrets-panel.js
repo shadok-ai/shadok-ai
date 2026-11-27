@@ -84,7 +84,7 @@ export function secretsPanelMode(groups) {
  * invites someone to copy a credential into a second group to "fix" it.
  */
 export function secretSections(secrets, selectedGroupId, groups) {
-  const out = { own: [], sharedIn: [], commons: [] };
+  const out = { own: [], sharedIn: [], commons: [], guests: [] };
   if (!Array.isArray(secrets)) return out;
   const pubIds = new Set(publicGroupIds(groups));
   // A concrete non-public group: a real sealed vault, which inherits the commons.
@@ -102,6 +102,12 @@ export function secretSections(secrets, selectedGroupId, groups) {
       // read there, edited in the "Public" view (`canWriteSecretGroup` would
       // refuse a write from a member of the walled group anyway).
       else if (walled && pubIds.has(owner)) out.commons.push(s);
+    } else if (s.source === "guest") {
+      // A GUEST CONVERSATION's own slice, in an external group. Its own section
+      // and never folded into `own`: these are a stranger's credentials, the
+      // members see the NAMES only, and a name here can be the same as one in
+      // the group's own slice without being the same secret.
+      if (walled && String(s.ownerGroup) === String(selectedGroupId)) out.guests.push(s);
     } else if (s.source === "shared") out.sharedIn.push(s);
     else if (s.source === "main") {
       // In "Public groups", a Main secret the caller may write is one of its
@@ -111,6 +117,22 @@ export function secretSections(secrets, selectedGroupId, groups) {
     }
   }
   return out;
+}
+
+/**
+ * The vault slice a WRITE to this row must target — `group` on the wire.
+ *
+ * A group's secret lives under the group id, so `ownerGroup` is the key and has
+ * always been. A GUEST CONVERSATION's lives under `"<group>/<conversation>"`
+ * (`src/isolation-unit.ts`), which the server sends as `unit`: posting
+ * `ownerGroup` there would aim at the external GROUP, which holds no slice at
+ * all — the write would land in a tenant nobody reads, and the stranger's entry
+ * would still be there.
+ */
+export function secretSliceKey(sec) {
+  if (!sec) return null;
+  if (typeof sec.unit === "string" && sec.unit) return sec.unit;
+  return sec.ownerGroup != null ? String(sec.ownerGroup) : null;
 }
 
 /**

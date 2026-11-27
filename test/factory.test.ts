@@ -482,12 +482,20 @@ test("pluginsDir: SHADOK_FACTORY_PLUGINS_DIR moves releases out of the factory r
   }
 });
 
-test("server: a factory skill's secrets resolve from the agent's OWN group, never bare (Main)", () => {
+test("server: a factory skill's secrets resolve from the agent's OWN unit, never bare (Main) and never its group", () => {
   // A bare `secretsFor(names)` resolves from Main: an isolated group's agent
   // would receive Main's values for the names its skills declare.
+  //
+  // The GROUP is no longer the right scope either, since an external group
+  // exists: it is never a vault key, so resolving by group fell THROUGH to the
+  // commons and handed a stranger's agent the operator's own values — and made
+  // the secret SCAN an oracle for them. `factoryVaultUnit` is the one answer,
+  // and it refuses rather than falls back.
   const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
   assert.doesNotMatch(src, /secretsFor\(\s*factory(SecretsFor\([^)]*\)|\.secrets)\s*\)/);
-  assert.match(src, /secretsFor\(factory\.secrets, group \?\? MAIN_GROUP_ID, commonsGroupIds\(\)\)/);
+  assert.doesNotMatch(src, /secretsFor\(factory\.secrets, group/);
+  assert.match(src, /secretsFor\(factory\.secrets, factoryUnit, commonsGroupIds\(\)\)/);
+  assert.match(src, /secretsFor\(factorySecretsFor\(sessionId\), unit, commonsGroupIds\(\)\)/);
 });
 
 test("prepareWorkspace: multi-tenant clone is made BY the drop user, in their HOME, and refreshes", (t) => {
