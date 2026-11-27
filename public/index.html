@@ -13186,7 +13186,7 @@
     const cur = promptInput.value;
     const at = promptInput.selectionStart ?? cur.length;
     const before = cur.slice(0, at), after = cur.slice(promptInput.selectionEnd ?? at);
-    let heard = false;
+    let heard = false, lastError = null;
     rec.onresult = (e) => {
       if (liveRec !== rec) return;
       const t = ld.liveTranscript(Array.from(e.results, (r) => ({ final: r.isFinal, text: r[0] ? r[0].transcript : "" })));
@@ -13199,18 +13199,31 @@
       autosizePrompt();
       updateSendDisabled();
     };
+    // The verdict waits for `end`, which always follows an `error`: that is
+    // where a recogniser that failed WITHOUT naming an error shows up too.
     rec.onerror = (e) => {
       if (liveRec !== rec) return;
-      const f = ld.recognitionFailure(e.error);
-      // A recogniser that refuses here will refuse again: the next click records
-      // for the server instead.
-      if (f.fallback) liveBroken = true;
-      if (f.message && !(e.error === "no-speech" && heard)) micMsg(f.message);
+      lastError = e.error || "unknown";
+      // Kept in the console: the one trace there is when a browser refuses.
+      console.warn("live dictation: recogniser error", lastError);
     };
     rec.onend = () => {
       if (liveRec !== rec) return;
+      const f = ld.recognitionEnd({ requested: rec.shadokStopRequested === true, heard, error: lastError });
       liveRec = null;
       endRecordingUI();
+      if (f.fallback) {
+        // A recogniser that refuses here will refuse again: record for the
+        // server now, in the same click, rather than leave the person to
+        // guess that a second one would work.
+        liveBroken = true;
+        if (!lastError) console.warn("live dictation: recogniser ended with no result and no error");
+        // Said only once the recording runs: a refused microphone keeps
+        // startRecording's own message.
+        startRecording().then(() => { if (micRec) micMsg(f.message); });
+        return;
+      }
+      if (f.message && !(lastError === "no-speech" && heard)) micMsg(f.message);
       promptInput.focus();
     };
     try { rec.start(); } catch { liveBroken = true; return startRecording(); }
@@ -13236,6 +13249,9 @@
       endRecordingUI();
       try { rec.abort(); } catch { /* already over */ }
     } else {
+      // Asked to finish: an end with nothing heard is then the person's own
+      // stop, not a recogniser that gave up (`recognitionEnd`).
+      rec.shadokStopRequested = true;
       try { rec.stop(); } catch { /* already over: onend clears the button */ }
     }
   }

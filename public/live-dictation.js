@@ -62,8 +62,9 @@ export function spliceDictation(before, spoken, after) {
 
 /**
  * What a recognition error means for the person. `message` is shown (null: say
- * nothing); `fallback` means the browser cannot do this at all here — the next
- * click should record for the server instead of failing the same way again.
+ * nothing); `fallback` means the browser cannot do this at all here — the page
+ * records for the server at once, and every later click does too, instead of
+ * failing the same way again.
  */
 export function recognitionFailure(error) {
   switch (error) {
@@ -74,6 +75,23 @@ export function recognitionFailure(error) {
     default:
       // network, service-not-allowed, language-not-supported, or a name this
       // list does not know: the recogniser is not usable in this browser.
-      return { message: "Browser dictation is unavailable here — click again to use the server's", fallback: true };
+      return { message: FALLBACK_MESSAGE, fallback: true };
   }
+}
+
+const FALLBACK_MESSAGE = "Browser dictation is unavailable here — recording for the server instead, speak again";
+
+/**
+ * What a recogniser that ENDED means, once its error (if any) is known. Most
+ * failures name themselves through `error`; this adds the one that does not.
+ * A recogniser that stops by itself having produced nothing and reported no
+ * error is just as unusable as one saying `network` — nothing obliges a browser
+ * to name its failure — and, read as "nothing to report", it left the button
+ * blinking back to idle with not a word said: the shape a person reports as
+ * "it does not work".
+ */
+export function recognitionEnd({ requested, heard, error }) {
+  if (error) return recognitionFailure(error);
+  if (requested || heard) return { message: null, fallback: false };
+  return { message: FALLBACK_MESSAGE, fallback: true };
 }
