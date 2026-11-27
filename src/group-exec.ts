@@ -1,4 +1,4 @@
-import { dropArgv, dropEnv, osUserFor } from "./osusers.js";
+import { dropArgv, dropEnv, osUserOf } from "./osusers.js";
 import { canSeeGroup, type Group, type Viewer } from "./groups.js";
 import type { DeploymentMode } from "./capability.js";
 
@@ -109,21 +109,31 @@ export function mayReachGroup(input: {
 /**
  * The OS user the server must act as for a channel of `groupId` — the SAME
  * answer as the spawn's drop user (`resolveSpawnIsolation` / `channelStateHome`):
- * the group's own `sk-*` user, else the commons user (null before migration,
- * meaning the server's own user, exactly as a commons agent runs then).
+ * the channel's isolation unit's own `sk-*` user, else the commons user (null
+ * before migration, meaning the server's own user, exactly as a commons agent
+ * runs then).
  * A group id that resolves to nothing is REFUSED, never mapped to the commons:
  * acting for a group we cannot identify is how a private job would end up
  * running with someone else's rights.
+ *
+ * `conversation` is the channel's guest conversation (`guestConversationKey`),
+ * and it is REQUIRED for a channel of an EXTERNAL group: the unit there is the
+ * conversation, so without it the only available answers would be the group
+ * (two strangers in one account) or the commons (a stranger in the shared one).
+ * Refused, like a dangling group.
  */
 export function osUserForChannelGroup(
   groupId: string | null | undefined,
   groups: readonly Group[],
   commonsUser: string | null,
-): { ok: true; user: string | null } | { ok: false } {
+  conversation?: string | null,
+): { ok: true; user: string | null } | { ok: false; why?: string } {
   if (!groupId) return { ok: true, user: commonsUser };
   const g = groups.find((x) => x.id === groupId);
   if (!g) return { ok: false };
-  return { ok: true, user: osUserFor(g) ?? commonsUser };
+  const r = osUserOf(g, conversation ?? null);
+  if (!r.ok) return { ok: false, why: r.why };
+  return { ok: true, user: r.user ?? commonsUser };
 }
 
 // ── Cron guard execution ────────────────────────────────────────────────────

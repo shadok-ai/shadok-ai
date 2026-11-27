@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  osUserFor,
+  osUserOf,
+  groupOsUser,
   dropArgv,
   dropEnv,
   homeForUser,
@@ -34,7 +35,7 @@ test("homeForUser: <homeBase>/<user> — the SAME derivation provisionPlan/migra
   assert.equal(homeForUser("sk-comex", "/home"), "/home/sk-comex");
   // Matches provisionPlan's home so the spawn's HOME is where the credential was
   // provisioned (a mismatch would leave auth broken while provisioning "succeeded").
-  assert.equal(provisionPlan(comex, "/home")!.home, homeForUser("sk-comex", "/home"));
+  assert.equal(provisionPlan(comex, null, "/home")!.home, homeForUser("sk-comex", "/home"));
 });
 
 test("dropEnv: a drop user sets HOME/USER/LOGNAME to that user's own", () => {
@@ -73,25 +74,79 @@ test("dropEnv: NO user → {} (mono-tenant / commons-pre-migration: HOME left as
   assert.deepEqual(dropEnv(undefined, undefined), {});
 });
 
-// ── osUserFor ────────────────────────────────────────────────────────────────
+// ── osUserOf / groupOsUser ───────────────────────────────────────────────────
 
-test("osUserFor: a public group has NO dedicated user (commons = the server's own)", () => {
-  assert.equal(osUserFor(main), null);
+const user = (r: ReturnType<typeof groupOsUser>) => (r.ok ? r.user : "REFUSED");
+
+test("groupOsUser: a public group has NO dedicated user (commons = the server's own)", () => {
+  assert.equal(user(groupOsUser(main)), null);
 });
 
-test("osUserFor: a restricted/private group gets an sk-<id> OS user", () => {
-  assert.equal(osUserFor(comex), "sk-comex");
-  assert.equal(osUserFor(adaPriv), "sk-ada-priv");
+test("groupOsUser: a restricted/private group gets an sk-<id> OS user", () => {
+  // Byte for byte what it always was: an existing instance's accounts, homes
+  // and /etc/passwd rows are untouched by the isolation unit existing.
+  assert.equal(user(groupOsUser(comex)), "sk-comex");
+  assert.equal(user(groupOsUser(adaPriv)), "sk-ada-priv");
 });
 
-test("osUserFor: the id is sanitized to a valid Linux username", () => {
+test("groupOsUser: the id is sanitized to a valid Linux username", () => {
   // spaces, punctuation and case are not valid in a username; strip/lower them.
-  assert.equal(osUserFor({ ...comex, id: "Ada Team!" }), "sk-adateam");
+  assert.equal(user(groupOsUser({ ...comex, id: "Ada Team!" })), "sk-adateam");
   // a very long id is capped (so "sk-" + 28 stays well under the 32-char limit).
   const long = "a".repeat(80);
-  const u = osUserFor({ ...comex, id: long })!;
+  const u = user(groupOsUser({ ...comex, id: long })) as string;
   assert.equal(u.startsWith("sk-"), true);
   assert.equal(u.length <= "sk-".length + 28, true);
+});
+
+const door = { ...comex, id: "door-1", nature: "external" as const };
+
+test("groupOsUser REFUSES an external group — it has no group-level user", () => {
+  // The whole point of the refusal being in the type: with a plain
+  // `string | null` this would have answered "null", i.e. THE COMMONS, and
+  // every call site would still have compiled (design decision 2).
+  const r = groupOsUser(door);
+  assert.equal(r.ok, false);
+  assert.match(r.ok === false ? r.why : "", /isolates per conversation/);
+});
+
+test("osUserOf: a conversation of an external group gets its own hashed account", () => {
+  const a = osUserOf(door, "wa-33123");
+  assert.ok(a.ok);
+  // `sk-x` marks it apart from a group's `sk-<id>` at a glance, and the whole
+  // name stays inside the 32-character username limit.
+  assert.match(a.ok ? String(a.user) : "", /^sk-x[0-9a-f]{27}$/);
+  assert.equal((a.ok ? String(a.user) : "").length, 31);
+  // Two strangers, two accounts. The same stranger, the same account — that is
+  // what brings them back to their own home.
+  const b = osUserOf(door, "wa-33999");
+  assert.notEqual(a.ok && a.user, b.ok && b.user);
+  assert.equal(a.ok && a.user, (osUserOf(door, "wa-33123") as { user: string }).user);
+  // And never the group's own name, whatever the conversation is called.
+  assert.notEqual(a.ok && a.user, "sk-door-1");
+});
+
+test("osUserOf: the same conversation name in two groups is two accounts", () => {
+  const one = osUserOf(door, "tg-7");
+  const two = osUserOf({ ...door, id: "door-2" }, "tg-7");
+  assert.notEqual(one.ok && one.user, two.ok && two.user);
+});
+
+test("osUserOf: a conversation is IGNORED outside an external group", () => {
+  // An ordinary group isolates per group, so a stray conversation must not
+  // change the account its agents have always run as.
+  assert.equal(user(osUserOf(comex, "wa-33123")), "sk-comex");
+  assert.equal(user(osUserOf(main, "wa-33123")), null);
+});
+
+test("provisionPlan: an external conversation provisions ITS account, and refuses without one", () => {
+  const plan = provisionPlan(door, "wa-33123", "/home")!;
+  assert.match(plan.user, /^sk-x/);
+  assert.equal(plan.home, homeForUser(plan.user, "/home"));
+  assert.deepEqual(plan.useradd, ["useradd", "--create-home", "--home-dir", plan.home, plan.user]);
+  // No conversation → a THROW, never a null: a null reads as "public, nothing
+  // to provision", which would admit a stranger with no account at all.
+  assert.throws(() => provisionPlan(door, null, "/home"), /isolates per conversation/);
 });
 
 // ── dropArgv ─────────────────────────────────────────────────────────────────
@@ -237,11 +292,11 @@ test("resolveSpawnIsolation: a RESUME ignores the parent group — the stored gr
 // ── provisionPlan (pure) ──────────────────────────────────────────────────────
 
 test("provisionPlan: a public group provisions NOTHING (commons = the server's own user)", () => {
-  assert.equal(provisionPlan(main, "/home"), null);
+  assert.equal(provisionPlan(main, null, "/home"), null);
 });
 
 test("provisionPlan: a restricted group yields the exact useradd argv and HOME path", () => {
-  assert.deepEqual(provisionPlan(comex, "/home"), {
+  assert.deepEqual(provisionPlan(comex, null, "/home"), {
     user: "sk-comex",
     home: "/home/sk-comex",
     useradd: ["useradd", "--create-home", "--home-dir", "/home/sk-comex", "sk-comex"],
@@ -250,7 +305,7 @@ test("provisionPlan: a restricted group yields the exact useradd argv and HOME p
 });
 
 test("provisionPlan: a private group gets its own user, HOME under the given base", () => {
-  assert.deepEqual(provisionPlan(adaPriv, "/srv/homes"), {
+  assert.deepEqual(provisionPlan(adaPriv, null, "/srv/homes"), {
     user: "sk-ada-priv",
     home: "/srv/homes/sk-ada-priv",
     useradd: ["useradd", "--create-home", "--home-dir", "/srv/homes/sk-ada-priv", "sk-ada-priv"],
@@ -815,4 +870,61 @@ test("tierStateDirAction: present but not writable → chown, the repair an exis
   // and `pilotctl` then died on EACCES inside a home `main` otherwise owns. A
   // create is a silent no-op here, which is why this is not a two-way answer.
   assert.equal(tierStateDirAction({ exists: true, writableByUser: false }), "chown");
+});
+
+// ── creating and deleting an EXTERNAL group (step 3) ────────────────────────
+
+test("createGroupFlow: an EXTERNAL group is created with its author as member, and NO group user", async () => {
+  const { deps, saved, provisioned } = createDeps();
+  const r = await createGroupFlow(okCreateInput({ nature: "external", name: "Door" }), deps);
+  assert.equal(r.status, 200);
+  const g = (r.body as { group: Group }).group;
+  assert.equal(g.nature, "external");
+  assert.deepEqual(g.members, ["ada"], "a roster, like a Private group");
+  // No group-level account: everything in it belongs to a conversation, and
+  // the accounts are minted when the door admits one.
+  assert.equal(g.osUser, null);
+  assert.equal(provisioned.length, 0, "nothing is provisioned at creation");
+  assert.equal(saved.length, 1);
+});
+
+test("createGroupFlow: mono-tenant refuses an EXTERNAL group, like every other wall", async () => {
+  // A wall the deployment cannot pose must not be drawn (invariant 47) — and
+  // this is the sharpest case: it would read as "each conversation is sealed"
+  // while every stranger shared one account.
+  const { deps, saved } = createDeps();
+  const r = await createGroupFlow(okCreateInput({ nature: "external", mode: "mono-tenant" }), deps);
+  assert.equal(r.status, 400);
+  assert.match(String(r.body.error), /isolation requires the privileged deployment/);
+  assert.equal(saved.length, 0);
+});
+
+test("deleteGroupFlow: an EXTERNAL group is member-only, like a Private one", async () => {
+  // The hole a diff review caught: the ACL named `restricted`, so an external
+  // group was deletable by ANY signed-in caller — with every conversation's
+  // account and home going with it.
+  const door: Group = { id: "x1", name: "Door", nature: "external", members: ["ada"], createdAt: 0 };
+  const torn: Group[] = [];
+  const base = {
+    loadGroups: () => [door],
+    saveGroups: () => {},
+    loadChannels: () => [] as { group?: string | null }[],
+    teardown: async (g: Group) => {
+      torn.push(g);
+      return { ok: true };
+    },
+  };
+  const input = {
+    fromBrowser: true,
+    instanceOk: true,
+    account: { name: "bob", role: "admin" as const },
+    id: "x1",
+    mode: "multi-tenant" as const,
+  };
+  const refused = await deleteGroupFlow(input, base);
+  assert.equal(refused.status, 403, "an admin who is not a member has no override");
+  assert.equal(torn.length, 0);
+  const allowed = await deleteGroupFlow({ ...input, account: { name: "ada", role: "member" } }, base);
+  assert.equal(allowed.status, 200);
+  assert.equal(torn.length, 1, "its accounts are torn down");
 });

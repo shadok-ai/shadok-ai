@@ -389,10 +389,11 @@ Enter to skip; you can add it later from the web UI).
   anyone else is told it is private. Pick **Board group + open DMs** (pair the
   bot's DMs first — **Pair Telegram**, then `/setup <code>` in a private chat
   with it; you do NOT need a board group) or **Open DMs only** (no pairing at
-  all), then a **restricted
-  group** and a **profile**: anyone who writes to the bot then gets their own
-  agent instead, on that profile, inside that group, and always the same agent
-  for the same person. The profile is what decides the job — support, a front
+  all), then a **group**
+  (**Private**, or **External** — where each conversation gets its own OS user,
+  sealed from the other guests) and a **profile**: anyone who writes to the bot
+  then gets their own agent instead, on that profile, inside that group, and
+  always the same agent for the same person. The profile is what decides the job — support, a front
   desk, whatever you set up — and its guardrails are what those people are
   driving, so choose it deliberately. You read and take over those conversations
   from the cockpit, in that group; the group runs under its own Unix user, and
@@ -406,10 +407,14 @@ Enter to skip; you can add it later from the web UI).
   id, inside that group's home — so what one agent remembers about the person
   it is talking to (Claude Code keeps a project's memory per directory) is not
   loaded by the next person's agent. Said plainly, because the FOLDER is not a
-  wall: they all run under the SAME Unix user, so an agent that goes looking can
-  still read its neighbour's folder. It stops the accident, not a determined
-  agent; a real wall would be one Unix user per person.
-  What **is** a wall is the cockpit's own API: a guest's agent is boxed to its
+  wall **in a Private group**: they all run under the SAME Unix user there, so an
+  agent that goes looking can still read its neighbour's folder. It stops the
+  accident, not a determined agent. **An External group is where that becomes a
+  real wall**: one Unix user per conversation, its own home, its own files and
+  attachments, created the first time that person writes and kept for when they
+  come back. Deleting someone's agent does not remove it — the account belongs to
+  the person, not to the session; deleting the group removes every one of them.
+  What **is** a wall in both is the cockpit's own API: a guest's agent is boxed to its
   own conversation, so it cannot see, drive or diff another guest's agent, reads
   no secret and no shared ledger row, obtains no connected account, and can
   start no agent of its own. That holds whatever group they share.
@@ -993,7 +998,9 @@ from the phone's *Linked devices* list too.
 - **One number, one instance.** Nothing stops the same account from being linked
   to two instances, and both would answer — don't.
 - **Open DMs.** Once a number is linked, the panel shows the **guest door**:
-  a switch, the **restricted group** strangers' agents are born into, and the
+  a switch, the **group** strangers' agents are born into — Private (one OS user
+  for all of them) or **External** (one per conversation, sealed from each
+  other) — and the
   **profile** they run on (the job description) — the same pickers and the same
   refusals as Telegram's open DMs, which this is the WhatsApp twin of. With the
   door open, anyone who sends a text to the number gets an agent of their own,
@@ -1117,14 +1124,25 @@ drops the lot — but the leak starts over, so a recreate is what makes it stop.
 An agent lives in a **group**, and a group is both what is isolated and who can
 see it:
 
-- **Private** — only you. One per person, sealed, invisible even to an admin.
-- **Restricted** — your team: a member list, any member can invite.
+- **Personal** — only you. One per person, sealed, invisible even to an admin.
+- **Private** — your team: a member list, any member can invite. One OS user for
+  the whole group.
+- **External** — for **strangers**: the group holds the conversations of people
+  who write to an open door (WhatsApp, Telegram), and **each conversation is
+  sealed from the others** — its own OS user, its own home, its own files and
+  attachments. Its members see them all, which is the point: you read those
+  conversations in the cockpit and take over. Chosen when you create the group
+  and never converted afterwards.
 - **Public** — everyone. `Main` is the default public group.
 
 You see and drive only your own groups plus the public ones; that covers the
-agent list, secrets, the shared ledger and messaging between agents. Private and
-restricted groups are real walls: each agent runs as its **own OS user** with its
-own home and secrets, never as root. Crossing a wall is always a deliberate act:
+agent list, secrets, the shared ledger and messaging between agents. Private,
+Personal and External groups are real walls: each agent runs as its **own OS
+user** with its own home and secrets, never as root — per group, or per
+conversation in an External one. An External group carries no shared ledger at
+all (a stranger's conversation is nobody's coordination log), and its door's
+profile may hold **no secret**: every guest runs the same profile, so a secret
+on it would be a credential handed to every stranger. Crossing a wall is always a deliberate act:
 drop a file in the shared `~/shared/` folder, record a ledger line with
 `--public`, push a branch, or message an agent (public groups freely, restricted
 ones only with a handle they gave you; private groups cannot be messaged).
@@ -1138,8 +1156,8 @@ Real isolation needs two things, checked once at boot:
 
 Both → **multi-tenant**. Anything else — `npx shadok-ai` on your machine, Docker
 without the password — stays **single-tenant**, exactly as before: it says so and
-refuses to create a private or restricted group rather than drawing one that
-protects nothing. You don't configure this; it follows from how you run it. The
+refuses to create a Private, Personal or External group rather than drawing one
+that protects nothing — the type is not even offerable there. You don't configure this; it follows from how you run it. The
 boot log prints `deployment mode: …`.
 
 An existing single-tenant instance that comes up capable is migrated

@@ -1,6 +1,6 @@
 import { BOOTSTRAP_ADMIN } from "./accounts.js";
 import { type DeploymentMode, isolationRefusal } from "./capability.js";
-import { type Group, type Viewer, lastMemberRefusal, viewerInGroup } from "./groups.js";
+import { type Group, type Viewer, isRoster, lastMemberRefusal, viewerInGroup } from "./groups.js";
 
 /**
  * Open DMs: the bot's door for people who are not its owner.
@@ -115,7 +115,8 @@ export function groupChatRefusal(s: GuestSetup): string | null {
  * be gated by the checks that guard the way in, or an operator who wants to
  * close their bot would first have to repair a group someone deleted.
  *
- * The group must be RESTRICTED, and the two rejected natures are rejected for
+ * The group must be a ROSTER — restricted, or EXTERNAL (where each conversation
+ * is walled from the others) — and the two rejected natures are rejected for
  * different reasons worth keeping apart in the message. A PUBLIC group is no
  * wall at all — every account in the cockpit would read those conversations. A
  * PRIVATE (Personal) group is sealed to its one account and the bridge could
@@ -123,6 +124,12 @@ export function groupChatRefusal(s: GuestSetup): string | null {
  * for the instance password that `loadAccounts` refuses to create, so
  * `canSeeGroup` would be false and every guest message would be refused after a
  * spawn that looked fine.
+ *
+ * An EXTERNAL door carries one extra rule, and it is the design's decision 5:
+ * its profile may hold NO secret. Every guest of a door runs the same profile,
+ * so a secret on it is a secret handed to every stranger, and one injected
+ * guest's blast radius becomes "whatever that profile can do" — which would
+ * undo the wall the external nature was chosen for, from inside.
  */
 export function guestEnableRefusal(input: {
   mode: DeploymentMode;
@@ -131,6 +138,10 @@ export function guestEnableRefusal(input: {
   profileExists: (name: string) => boolean;
   /** Has the bot's DM owner been paired yet (`loadTgOwner() !== null`)? */
   hasOwner: boolean;
+  /** The secret NAMES a profile carries — refused on an EXTERNAL door. Absent
+   *  reads as none, so a caller that cannot answer never blocks a save; the
+   *  routes answer it, which is where the profile store lives. */
+  profileSecrets?: (name: string) => readonly string[];
 }): string | null {
   const { want } = input;
   const wanted = normalizeTgMode(want.mode);
@@ -158,9 +169,14 @@ export function guestEnableRefusal(input: {
   if (!g) return "no such group — pick one from the list";
   if (g.nature === "private")
     return `"${g.name}" is a personal group: it is sealed to its account and cannot host guests`;
-  if (g.nature !== "restricted")
-    return `"${g.name}" is a public group — guests need a restricted one, so only its members read those conversations`;
+  if (!isRoster(g))
+    return `"${g.name}" is a public group — guests need a private or an external one, so only its members read those conversations`;
   if (!input.profileExists(profile)) return `no profile named "${profile}"`;
+  if (g.nature === "external") {
+    const secrets = input.profileSecrets?.(profile) ?? [];
+    if (secrets.length)
+      return `"${profile}" carries ${secrets.length === 1 ? "a secret" : `${secrets.length} secrets`} (${secrets.join(", ")}): every guest runs the SAME profile, so that is a credential handed to every stranger — an external group refuses it. Use a profile with no secrets, and let each conversation keep its own.`;
+  }
   return null;
 }
 
@@ -171,7 +187,7 @@ export function guestEnableRefusal(input: {
  * agent principal is judged on its own channel's group like everywhere else.
  */
 export function guestGroupChoices(groups: readonly Group[], viewer: Viewer | null): Group[] {
-  return groups.filter((g) => g.nature === "restricted" && viewerInGroup(g, viewer));
+  return groups.filter((g) => isRoster(g) && viewerInGroup(g, viewer));
 }
 
 /**
@@ -245,6 +261,8 @@ export function guestPatchFlow(input: {
   groups: readonly Group[];
   profileExists: (name: string) => boolean;
   hasOwner: boolean;
+  /** See `guestEnableRefusal`: an external door's profile may carry no secret. */
+  profileSecrets?: (name: string) => readonly string[];
   /**
    * The OTHER bridge's setup (WhatsApp's when this is Telegram's, and the
    * reverse). The instance's membership of a group is shared by both doors:
@@ -265,6 +283,7 @@ export function guestPatchFlow(input: {
     groups: input.groups,
     profileExists: input.profileExists,
     hasOwner: input.hasOwner,
+    profileSecrets: input.profileSecrets,
   });
   if (error) return { ok: false, status: 400, error };
   let groups = [...input.groups];

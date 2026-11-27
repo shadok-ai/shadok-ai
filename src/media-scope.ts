@@ -14,9 +14,16 @@ import { MAIN_GROUP_ID } from "./groups.js";
  * be renamed away and replaced.
  *
  * Now: a root-owned media ROOT outside the pot (0711 — traversable, not
- * listable), and one subdirectory per group, `g-<key>`, owned root:<that
- * group's OS user's group>, mode 2750. Only root writes there; only that
- * group's user (and root) reads. Mono-tenant keeps its single flat directory.
+ * listable), and one subdirectory per ISOLATION UNIT, `g-<key>`, owned
+ * root:<that unit's OS user's group>, mode 2750. Only root writes there; only
+ * that unit's user (and root) reads. Mono-tenant keeps its single flat
+ * directory.
+ *
+ * "Per unit" rather than "per group" since external groups
+ * (`src/isolation-unit.ts`): an image a stranger sends is exactly the kind of
+ * thing another stranger must not read, so in an external group the directory
+ * follows the conversation like everything else. Nothing changes for a group
+ * unit — `g-<group id>` is the same readable name it always was.
  *
  * Invariant 60.
  */
@@ -26,19 +33,21 @@ import { MAIN_GROUP_ID } from "./groups.js";
 export const MEDIA_GROUP_PREFIX = "g-";
 export const MEDIA_GROUP_DIR_RE = /^g-[A-Za-z0-9_-]{1,64}$/;
 
-/** The subdirectory name of a group. A group id that is already a safe name is
- *  used as is (readable on disk: `g-main`, `g-<uuid>`); anything else is hashed
- *  rather than sanitised, because a lossy sanitising could map two ids to ONE
- *  directory — the very sharing this exists to end. */
-export function mediaGroupKey(groupId: string | null | undefined): string {
-  const id = groupId || MAIN_GROUP_ID;
+/** The subdirectory name of an isolation UNIT. A unit that is already a safe
+ *  name — every group id — is used as is (readable on disk: `g-main`,
+ *  `g-<uuid>`); anything else is hashed rather than sanitised, because a lossy
+ *  sanitising could map two units to ONE directory, the very sharing this
+ *  exists to end. A conversation's unit carries a `/` and so always hashes,
+ *  which is also what keeps it from ever colliding with a group's name. */
+export function mediaUnitKey(unit: string | null | undefined): string {
+  const id = unit || MAIN_GROUP_ID;
   if (/^[A-Za-z0-9_-]{1,64}$/.test(id)) return MEDIA_GROUP_PREFIX + id;
   return MEDIA_GROUP_PREFIX + "h" + createHash("sha256").update(id).digest("hex").slice(0, 32);
 }
 
-/** The directory a new attachment of this group is written to. */
-export function mediaDirForGroup(root: string, groupId: string | null | undefined, multiTenant: boolean): string {
-  return multiTenant ? path.join(root, mediaGroupKey(groupId)) : root;
+/** The directory a new attachment of this unit is written to. */
+export function mediaDirForUnit(root: string, unit: string | null | undefined, multiTenant: boolean): string {
+  return multiTenant ? path.join(root, mediaUnitKey(unit)) : root;
 }
 
 /** Mode of a file the server writes into the media tree: the group's user reads
@@ -60,9 +69,17 @@ export function parseMediaRequest(segments: readonly string[]): { key: string | 
   return null;
 }
 
-/** The group a media key belongs to, among the known groups (null if none). */
-export function groupForMediaKey(key: string, groupIds: readonly string[]): string | null {
-  for (const id of [MAIN_GROUP_ID, ...groupIds]) if (mediaGroupKey(id) === key) return id;
+/**
+ * The isolation unit a media key belongs to, among the units this instance
+ * knows (null if none).
+ *
+ * The key is a hash for everything but a plain group id, so the only way back
+ * is to try the candidates — group ids, plus every live conversation of an
+ * external group. Unknown stays unknown: a key nothing matches is a 404, never
+ * a directory served on trust.
+ */
+export function unitForMediaKey(key: string, units: readonly string[]): string | null {
+  for (const id of [MAIN_GROUP_ID, ...units]) if (mediaUnitKey(id) === key) return id;
   return null;
 }
 

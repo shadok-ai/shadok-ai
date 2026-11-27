@@ -226,7 +226,10 @@ test("server: the group key store is minted at boot and wired into every drop us
   // The endpoint and the provisioner share ONE path decision.
   assert.match(src, /volumeKeyPaths\(os\.homedir\(\), user, COMMONS_USER\)/);
   // Mono-tenant collapses to the one identity rather than naming a per-group dir.
-  assert.match(src, /DEPLOYMENT_MODE === "multi-tenant" \? osUserFor\(g\) : null/);
+  // Mono-tenant collapses to the one identity rather than naming a per-group dir
+  // — and an EXTERNAL group contributes no key at all: `groupOsUser` refuses it,
+  // because a conversation's account gets no git identity of its own.
+  assert.match(src, /if \(DEPLOYMENT_MODE !== "multi-tenant"\) return null;\n\s*const r = groupOsUser\(g\);\n\s*return r\.ok \? r\.user : null;/);
   // The endpoint is filtered exactly like GET /groups — a private group stays invisible.
   assert.match(src, /app\.get\("\/groups\/ssh"[\s\S]{0,400}listableGroups\(loadGroups\(\), viewerFor\(currentAccount\(req\)\)\)/);
 });

@@ -2,11 +2,13 @@
 
 Design, drafted 2026-11-26 from a cockpit conversation with the operator, and
 checked against the code as it was written (`5542f3f`). Approved 2026-11-26.
-Status: **steps 1 and 2 implemented** — the box on the API (plan
-[`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md))
-and the admission ceiling (plan
-[`plans/2026-11-27-guest-admission-ceiling.md`](../plans/2026-11-27-guest-admission-ceiling.md));
-steps 3 to 5 not built. Points the operator
+Status: **steps 1, 2 and 3 implemented** — the box on the API (plan
+[`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md)),
+the admission ceiling (plan
+[`plans/2026-11-27-guest-admission-ceiling.md`](../plans/2026-11-27-guest-admission-ceiling.md))
+and the `external` nature with one Unix user per conversation (plan
+[`plans/2026-11-27-external-nature.md`](../plans/2026-11-27-external-nature.md));
+steps 4 and 5 not built. Points the operator
 settled in that conversation are marked **[OPERATOR]**; a call made here that a
 builder could not settle alone is **[CALL]**; points deliberately left open are
 **[OPEN]**.
@@ -123,6 +125,17 @@ Provisioning is the existing path (`provisionPlan` / `provisionGroupUser`):
 on failure, because a HOME that is not private is a broken wall. It runs when
 the door **admits** the conversation (first message), not at the agent's spawn,
 so a spawn never waits on a privileged command.
+
+*Status: **implemented** (`src/isolation-unit.ts`, `src/external-users.ts`,
+`ensureExternalUser`), with one honest deviation: the admission and the spawn
+are the SAME moment server-side — the bridge is not trusted to decide anything,
+so the only place that can admit is the `start` handler. "A spawn never waits on
+a privileged command" therefore holds per conversation and not per message: the
+FIRST message from a stranger waits for one `useradd`, every later one finds the
+account there. The refusal is total in every branch (no account, no
+conversation), and the registry refuses a collision in BOTH directions — this
+name bound to another conversation, and this conversation bound to another name,
+which is the one that would silently abandon a person's home. Invariant 84.*
 
 ### 3. [DECIDED] A cap and a rate — and they come before the wall
 
