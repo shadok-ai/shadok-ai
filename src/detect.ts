@@ -273,6 +273,16 @@ export function boxRaw(screen: string): string {
 }
 
 /**
+ * Claude Code's bypass-permissions disclaimer, by its own heading.
+ *
+ * Anchored on the title and not on the body: the three body sentences are
+ * wrapped by the terminal's width, so any of them can be split across lines on
+ * a narrow pane, while the heading is one short line. Taken verbatim from the
+ * CLI bundle (2.1.x, the `BypassPermissionsModeDialog` strings).
+ */
+const BYPASS_CONSENT = /Claude Code running in Bypass Permissions mode/i;
+
+/**
  * Why a screen refused a prompt — named, when the shape is recognisable.
  *
  * `submit` reports "the text never appeared in the input box", which describes
@@ -287,6 +297,8 @@ export function boxRaw(screen: string): string {
  */
 export function describeStuckScreen(screen: string): string | null {
   switch (stuckScreenKind(screen)) {
+    case "bypass-consent":
+      return "the agent is sitting on Claude Code's bypass-permissions disclaimer, so it never reached a prompt — this instance spawns with `--permission-mode bypassPermissions` and that HOME has not recorded the acceptance (`skipDangerousModePermissionPrompt` in its ~/.claude/settings.json)";
     case "first-run":
       return "the agent is sitting on Claude Code's first-run screen, so it never reached a prompt — its onboarding state (~/.claude.json) was missing when it started";
     case "masked":
@@ -303,7 +315,7 @@ export function describeStuckScreen(screen: string): string | null {
 }
 
 /** The recognisable blocking states, as a value rather than a sentence. */
-export type StuckKind = "first-run" | "masked" | "question" | "box-full";
+export type StuckKind = "bypass-consent" | "first-run" | "masked" | "question" | "box-full";
 
 /**
  * WHICH recognisable state a screen that refused a prompt is in, or null.
@@ -314,6 +326,11 @@ export type StuckKind = "first-run" | "masked" | "question" | "box-full";
  * would break the day someone rewords a message.
  */
 export function stuckScreenKind(screen: string): StuckKind | null {
+  // FIRST, because it is the most specific and because the two tests below
+  // would both miss it: its options carry no numbers (so the `question` rule
+  // does not fire) and it is not the welcome screen. An agent sat on it with
+  // the cockpit reporting "the text never appeared in the input box".
+  if (BYPASS_CONSENT.test(screen)) return "bypass-consent";
   if (/Welcome to Claude Code/i.test(screen)) return "first-run";
   // A masked field echoes every pasted character as an asterisk, so the text is
   // physically on screen yet unreadable — and unreadable is what breaks submit.

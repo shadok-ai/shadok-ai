@@ -119,9 +119,21 @@ export function isResumeSummaryDialog(d: TuiDialog): boolean {
  */
 const FRAME_LINE = /^[─═╌╍┄┅┈┉╭╮╰╯│□⏺←→]/u;
 
+/** One rendered dialog box's options, as scanned off the screen. Module-scoped
+ *  so the numbered scan and the bare one (`bareGroup`) produce the same thing
+ *  and share every line of the question walk below. */
+interface Group {
+  options: TuiDialogOption[];
+  hasSelector: boolean;
+  multi: boolean;
+  firstLine: number;
+}
+
 /**
  * Detects an interactive TUI dialog (multiple-choice question, permission
- * prompt…): numbered options, one of which carries the "❯" selector.
+ * prompt…): numbered options, one of which carries the "❯" selector — or, when
+ * there are none, a BARE select (`bareGroup`), which is how Claude Code draws
+ * its bypass-permissions disclaimer among others.
  */
 export function detectDialog(screen: string): TuiDialog | null {
   // AskUserQuestion can render a preview (chart, code…) in a right-hand column
@@ -137,12 +149,6 @@ export function detectDialog(screen: string): TuiDialog | null {
   // single list merged both option sets — corrupting the numbering, forcing
   // multi=true from a leftover checkbox, and surfacing the wrong question. We
   // keep only the group carrying the ❯ cursor: the dialog the user is on.
-  interface Group {
-    options: TuiDialogOption[];
-    hasSelector: boolean;
-    multi: boolean;
-    firstLine: number;
-  }
   const groups: Group[] = [];
   let group: Group | null = null;
   let current: TuiDialogOption | null = null;
@@ -190,7 +196,7 @@ export function detectDialog(screen: string): TuiDialog | null {
 
   // The active dialog is the option group with the ❯ cursor (bottom-most wins if
   // two ever show one). A stale scrollback dialog has no cursor → it's dropped.
-  const chosen = [...groups].reverse().find((g) => g.hasSelector);
+  const chosen = [...groups].reverse().find((g) => g.hasSelector) ?? bareGroup(lines);
   if (!chosen || chosen.options.length < 2) return null;
   const { options, multi, firstLine: firstOptionLine } = chosen;
 
@@ -234,6 +240,100 @@ export function detectDialog(screen: string): TuiDialog | null {
   }
   const body = boxTop >= 0 ? dialogBody(lines.slice(boxTop + 1, questionStart), width) : "";
   return { question: questionLines.join(" "), options, multi, ...(body ? { body } : {}) };
+}
+
+/**
+ * The TUI's own footer under a select. `detectDialog`'s one piece of evidence
+ * that a cursor and some aligned lines are a QUESTION and not prose.
+ *
+ * Verbatim from the CLI (2.1.x) — the wording varies by dialog ("Enter to
+ * confirm, a to select all…"), so this matches the stable part. Deliberately
+ * NOT "Esc to cancel" alone, which appears under plenty of non-dialog chrome.
+ */
+const SELECT_FOOTER = /\bEnter to confirm\b/i;
+
+/** How many options a bare select may have before we stop believing it is one. */
+const BARE_MAX_OPTIONS = 8;
+
+/**
+ * An option group with NO NUMBERS — a bare `❯ Label` with its siblings aligned
+ * under it. Claude Code's bypass-permissions disclaimer is one
+ * ("❯ No, exit" / "  Yes, I accept"), and so is any other select it renders
+ * without numbering.
+ *
+ * Tried ONLY when the numbered scan found no cursor group, so every screen that
+ * works today is matched byte for byte by the code above and never reaches
+ * here. And gated on the TUI's own `Enter to confirm` footer, which is the
+ * difference between a question and an agent writing a line that starts with
+ * `❯` — the false positive this function must not have, because it would
+ * publish an invented question to the chat and to Telegram, where a person
+ * would answer it.
+ *
+ * The shape is deliberately rigid: one cursor line, its neighbours CONTIGUOUS
+ * and at exactly the cursor's label column (that alignment is what the TUI
+ * draws and what prose does not), nothing blank or framed in between, and a
+ * small number of short labels.
+ */
+function bareGroup(lines: readonly string[]): Group | null {
+  if (!lines.some((l) => SELECT_FOOTER.test(l))) return null;
+  // From the BOTTOM, for the same reason the numbered scan keeps the bottom-most
+  // cursor group: the xterm scrollback above can still hold an earlier dialog —
+  // or an agent's own line that begins with `❯` — and the live select is always
+  // the last one drawn. Taking the first match read the scrollback instead.
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*❯\s+\S/.test(lines[i]) && !/^\s*❯\s*\d+\.\s/.test(lines[i])) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return null;
+  const m = /^(\s*)❯(\s+)(\S.*)$/.exec(lines[at]);
+  if (!m) return null;
+  // The column the LABEL starts at — `❯` plus its gap. A sibling is a line whose
+  // text begins exactly there.
+  const col = [...m[1]].length + 1 + [...m[2]].length;
+  const label = (l: string): string | null => {
+    const t = l.replace(/\s+$/, "");
+    if ([...t].length <= col) return null;
+    if (t.slice(0, col).trim() !== "") return null; // not blank padding → not a sibling
+    const text = t.slice(col);
+    if (!text.trim() || /^\s/.test(text)) return null; // mis-aligned, or deeper: a hint, not an option
+    if (FRAME_LINE.test(text.trim())) return null;
+    return [...text.trim()].length <= 120 ? text.trim() : null;
+  };
+  const before: string[] = [];
+  for (let i = at - 1; i >= 0; i--) {
+    const t = label(lines[i]);
+    if (t === null) break;
+    // The QUESTION, when the box indents it to the same column as its options
+    // — a shape the bypass screen does not have (a blank line separates them
+    // there) but a boxed dialog easily does. Without this the sentence above
+    // becomes option 1, every later index is off by one, and `choose` moves the
+    // cursor one step too far. A trailing "?" or ":" is the cheap discriminator
+    // and it is the TUI's own punctuation: an option label is a choice, not a
+    // sentence. It STOPS the walk rather than skipping the line, because
+    // anything further up is the question's own earlier lines.
+    if (/[?:]$/.test(t)) break;
+    before.unshift(t);
+  }
+  const after: string[] = [];
+  for (let i = at + 1; i < lines.length; i++) {
+    const t = label(lines[i]);
+    if (t === null) break;
+    after.push(t);
+  }
+  const labels = [...before, m[3].trim(), ...after];
+  if (labels.length < 2 || labels.length > BARE_MAX_OPTIONS) return null;
+  return {
+    // Numbered 1..k by POSITION, because that is all a bare select has — and it
+    // is enough: `choose` walks the ❯ with arrow keys for preview-style dialogs
+    // already, and a bare select ignores digit keys exactly like those.
+    options: labels.map((l, i) => ({ n: i + 1, label: l, hint: "" })),
+    hasSelector: true,
+    multi: false,
+    firstLine: at - before.length,
+  };
 }
 
 /** Box furniture that is never body text: `FRAME_LINE` minus the "│" gutter

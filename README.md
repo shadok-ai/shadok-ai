@@ -136,6 +136,15 @@ Enter to skip; you can add it later from the web UI).
   Telegram. The card carries the prompt's own text too — what it will run or
   read, and Claude Code's warnings such as a read leaving the working directory
   through a symlink — so you approve what the terminal would have shown you.
+  Questions whose answers are **not numbered** reach the chat too, which is how
+  a screen like Claude Code's bypass-permissions disclaimer stops being
+  something only the engine-room view can show you.
+- **Bypass permissions mode** — picking it in ⋯ → *Permission mode* is your
+  acceptance of Claude Code's own disclaimer, and shadok records it in each
+  agent's home so no agent sits on a warning nobody is there to answer. It is
+  recorded **only** when you choose that mode; every other mode leaves it
+  untouched. Each isolated group — and each conversation of an External group —
+  has a home of its own, so each gets the acceptance when it is created.
 - **Thinking effort** — how hard an agent thinks before answering (`--effort`),
   set on a role in the Profiles panel and overridable per agent from its menu.
   Higher levels cost more tokens, and thinking tokens are billed even when they

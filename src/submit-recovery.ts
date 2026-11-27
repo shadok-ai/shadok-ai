@@ -87,11 +87,15 @@ export function submitRecoveryVerdict(i: SubmitRecoveryInput): SubmitRecoveryVer
   // A question on screen is a state the PERSON resolves, and a respawn would
   // throw the question away. The submit error already tells them to answer it.
   if (i.dialogOpen || i.stuck === "question") return none("waiting on a question");
-  // The first-run screen and a masked field are a sign-in / onboarding state:
-  // a new process lands on the very same screen. Only a human can fix that, so
-  // skip the pointless respawn and go straight to telling one.
-  if (i.stuck === "first-run" || i.stuck === "masked")
-    return { action: "escalate", why: "the agent is not signed in or not onboarded — a restart lands on the same screen" };
+  // The first-run screen, a masked field and the bypass disclaimer are all
+  // sign-in / onboarding state HELD IN THE HOME: a new process lands on the
+  // very same screen. Only a human can fix that, so skip the pointless respawn
+  // and go straight to telling one. The disclaimer belongs here for exactly the
+  // same reason as the first-run screen, and leaving it out would have made the
+  // cockpit restart an agent once per attempt, for ever, on a screen a restart
+  // cannot clear.
+  if (i.stuck === "first-run" || i.stuck === "masked" || i.stuck === "bypass-consent")
+    return { action: "escalate", why: "the agent is not signed in, not onboarded, or waiting on the bypass-permissions disclaimer — a restart lands on the same screen" };
   if (i.sinceLastRecoveryMs < i.cooldownMs)
     return { action: "escalate", why: "it was already restarted automatically a moment ago and stopped taking input again" };
   return { action: "restart" };

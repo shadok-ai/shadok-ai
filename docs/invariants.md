@@ -487,6 +487,39 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     (`SHADOK_HOME_BASE`, default `/home`) on the volume — the invariant-19 move for
     the SSH key — so the HOMEs (trust AND the `login`-mode credentials) survive a
     recreate instead of being rebuilt at all.
+    **A THIRD blocking screen joined the family the day an operator picked
+    bypass mode**, and it is worth keeping because every detail of it was a
+    separate trap. `claude --permission-mode bypassPermissions` opens on a
+    "WARNING: Claude Code running in Bypass Permissions mode" select, ONCE PER
+    HOME — so flipping that switch in the cockpit wedged every new agent at
+    once, and the external nature multiplies the cost by one fresh HOME per
+    stranger. The gate reads `skipDangerousModePermissionPrompt` from
+    **policySettings or userSettings** (`<HOME>/.claude/settings.json`), or the
+    legacy `bypassPermissionsModeAccepted` in `~/.claude.json` — which the CLI
+    MIGRATES into the former and then deletes, so seeding the legacy key would
+    be undone and re-seeded for ever. And the trap that would have cost the most
+    time: the CLI's own text says the dialog is skipped by consent in
+    `.claude/settings.local.json` or via `--settings`, "which does not count
+    here" — shadok already passes a `--settings` file for a profile's
+    guardrails, so putting the key there would look right and change nothing.
+    It is written **only** when the operator has actually chosen that mode (the
+    cockpit choice IS the acceptance, given by a person), stays additive so an
+    explicit `false` is respected, and is applied before every spawn and not
+    only at boot, because the mode can be switched at runtime.
+    Two things the screen also taught about the cockpit's own heuristics, both
+    fixed here. Its options carry **no numbers**, so `detectDialog` — whose
+    option regex requires `\d+\.` — never surfaced it and the question could not
+    be answered from the chat at all; a bare `❯ Label` group is now read too,
+    but only when the numbered scan found nothing AND the TUI's own
+    `Enter to confirm` footer is on screen, because without that evidence an
+    agent writing a line beginning with `❯` would publish an invented question
+    to the chat and to Telegram, where a person would answer it. It is taken
+    bottom-most, like the numbered one, or a `❯` left in the scrollback wins over
+    the live select. And `stuckScreenKind` did not recognise it either, so the
+    submit error blamed the input box — the very failure `describeStuckScreen`
+    exists to prevent. It is now named, and `submitRecoveryVerdict` escalates on
+    it instead of respawning: the state lives in the HOME, so a restart lands on
+    the identical screen.
 
 <a id="inv-24"></a>
 
