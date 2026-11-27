@@ -1,14 +1,13 @@
 // Live dictation through the BROWSER's own speech recognition (the Web Speech
-// API), the alternative to recording a clip and sending it to the server's
-// whisper. Pure helpers only: the wiring (the recognition object, the composer)
-// lives in index.html. ESM — loaded by the browser AND imported by
+// API) — the web Dictate button's only engine. Pure helpers only: the wiring
+// (the recognition object, the composer) lives in index.html. ESM — loaded by the browser AND imported by
 // test/live-dictation.test.ts.
 //
 // Why it exists: whisper on a CPU answers a four-second sentence in ten to
 // forty seconds, and says nothing until then. A browser's recogniser writes the
 // words while they are spoken. The price is that the audio goes to whoever
-// makes the browser: the default, and a setting an admin can turn back to the
-// server (Web dictation → On this server) to keep the audio on the instance.
+// makes the browser. The server path (record, upload, whisper) and the setting
+// that chose it were removed: a browser without a recogniser has no button.
 
 /** The recognition constructor of this browser, or null (Firefox has none). */
 export function recognitionCtor(win) {
@@ -61,37 +60,38 @@ export function spliceDictation(before, spoken, after) {
 }
 
 /**
- * What a recognition error means for the person. `message` is shown (null: say
- * nothing); `fallback` means the browser cannot do this at all here — the page
- * records for the server at once, and every later click does too, instead of
- * failing the same way again.
+ * What a recognition error means for the person: the sentence to show, or
+ * null to say nothing. There is no fallback — the web Dictate button is the
+ * browser's recogniser and nothing else — so each failure says what is wrong
+ * in terms the person can act on.
  */
 export function recognitionFailure(error) {
   switch (error) {
-    case "aborted": return { message: null, fallback: false };
-    case "no-speech": return { message: "Didn't catch that — try again", fallback: false };
-    case "not-allowed": return { message: "Microphone access denied", fallback: false };
-    case "audio-capture": return { message: "No microphone available", fallback: false };
+    case "aborted": return { message: null };
+    case "no-speech": return { message: "Didn't catch that — try again" };
+    case "not-allowed": return { message: "Microphone access denied" };
+    case "audio-capture": return { message: "No microphone available" };
+    case "network": return { message: "Dictation can't reach the browser's speech service — check the network" };
+    case "language-not-supported": return { message: "This browser can't dictate in this language" };
     default:
-      // network, service-not-allowed, language-not-supported, or a name this
-      // list does not know: the recogniser is not usable in this browser.
-      return { message: FALLBACK_MESSAGE, fallback: true };
+      // service-not-allowed, a refused start, or a name this list does not know.
+      return { message: UNAVAILABLE };
   }
 }
 
-const FALLBACK_MESSAGE = "Browser dictation is unavailable here — recording for the server instead, speak again";
+const UNAVAILABLE = "Dictation is unavailable in this browser — try Chrome, Edge or Safari";
 
 /**
  * What a recogniser that ENDED means, once its error (if any) is known. Most
  * failures name themselves through `error`; this adds the one that does not.
  * A recogniser that stops by itself having produced nothing and reported no
- * error is just as unusable as one saying `network` — nothing obliges a browser
- * to name its failure — and, read as "nothing to report", it left the button
- * blinking back to idle with not a word said: the shape a person reports as
- * "it does not work".
+ * error has failed just as surely — nothing obliges a browser to name its
+ * failure — and, read as "nothing to report", it left the button blinking
+ * back to idle with not a word said: the shape a person reports as "it does
+ * not work".
  */
 export function recognitionEnd({ requested, heard, error }) {
   if (error) return recognitionFailure(error);
-  if (requested || heard) return { message: null, fallback: false };
-  return { message: FALLBACK_MESSAGE, fallback: true };
+  if (requested || heard) return { message: null };
+  return { message: UNAVAILABLE };
 }

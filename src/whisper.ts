@@ -7,8 +7,9 @@ import {
 } from "./speech-lang.js";
 
 /**
- * Local speech-to-text: Telegram and WhatsApp voice notes, the web composer's
- * Dictate button, the sound track of a shared video.
+ * Local speech-to-text: Telegram and WhatsApp voice notes and the sound track
+ * of a shared video. (The web composer's Dictate button is the browser's own
+ * recogniser, not this.)
  *
  * Provisioned ON DEMAND, at the first voice message, never at boot. The live
  * VPS builds its images from a host-side Dockerfile of its own (see CLAUDE.md),
@@ -90,39 +91,28 @@ export const MODEL_FILE = process.env.SHADOK_WHISPER_MODEL?.trim() || "ggml-smal
 
 /**
  * What the cockpit chose, pushed in by the server at boot and on every change
- * (`setSpeechSettings`). Module state rather than a parameter because four
- * unrelated callers transcribe (web, Telegram, WhatsApp, video) and none of
+ * (`setSpeechSettings`). Module state rather than a parameter because three
+ * unrelated callers transcribe (Telegram, WhatsApp, video) and none of
  * them should have to know there is a setting.
  */
 let chosenModelId: string | null = null;
 let languageSetting: SpeechLanguageSetting = "smart";
-let webEngine: WebDictationEngine = "browser";
 
-/**
- * Who transcribes a Dictate click in the WEB composer: this server's whisper,
- * or the browser's own recogniser (live, but the audio goes to the browser's
- * maker). The browser is the DEFAULT: a wait of ten to forty seconds per
- * sentence is what made dictation unusable, and no whisper model on a CPU
- * removes it. Only an instance that stored nothing takes the default — an
- * admin's explicit "server" stands, which is how an instance keeps its audio
- * at home. Voice notes from Telegram and WhatsApp are files and always come
- * here.
- */
-export type WebDictationEngine = "server" | "browser";
-export function normalizeWebEngine(v: unknown): WebDictationEngine {
-  return v === "server" ? "server" : "browser";
-}
+// The web composer's Dictate button never comes here: it is the BROWSER's own
+// recogniser, always (public/live-dictation.js). A whisper on a CPU answers a
+// sentence in ten to forty seconds, which is what made web dictation unusable,
+// so the server path and the setting that chose it were removed. What comes
+// here is files — Telegram and WhatsApp voice notes, videos.
 
-export function setSpeechSettings(s: { model?: string | null; language?: unknown; web?: unknown }): void {
+export function setSpeechSettings(s: { model?: string | null; language?: unknown }): void {
   chosenModelId = SPEECH_MODELS.some((m) => m.id === s.model) ? (s.model as string) : null;
   languageSetting = normalizeLanguageSetting(s.language);
-  webEngine = normalizeWebEngine(s.web);
 }
 
-/** The language rule and the web engine in force, for the routes that answer
- *  a browser about to dictate. */
-export function speechSettings(): { language: SpeechLanguageSetting; web: WebDictationEngine } {
-  return { language: languageSetting, web: webEngine };
+/** The language rule in force, for the route that answers a browser about to
+ *  dictate (its recogniser must be TOLD the language). */
+export function speechSettings(): { language: SpeechLanguageSetting } {
+  return { language: languageSetting };
 }
 
 /** Pure: the model file in force — the cockpit's choice, else the default. */
@@ -330,31 +320,6 @@ export function transcriptionOutcome(text: string): TranscriptionResult {
  */
 export function heardNotice(text: string): string {
   return `🎙 « ${text} »`;
-}
-
-/**
- * The temp-file extension for an audio clip the web composer records with
- * MediaRecorder. ffmpeg sniffs the container by content, so this is only
- * cosmetic — but a truthful extension keeps the temp file honest and costs
- * nothing. Unknown types fall back to `webm`, the usual MediaRecorder output.
- * Pure/testable.
- */
-export function audioClipExtension(contentType: string): string {
-  const t = contentType.split(";")[0].trim().toLowerCase();
-  switch (t) {
-    case "audio/ogg":
-    case "audio/ogg; codecs=opus":
-      return "ogg";
-    case "audio/mp4":
-    case "audio/mpeg":
-    case "audio/aac":
-      return "m4a";
-    case "audio/wav":
-    case "audio/x-wav":
-      return "wav";
-    default:
-      return "webm";
-  }
 }
 
 /** Is a downloaded model plausibly the model, rather than an error page? */
@@ -825,7 +790,6 @@ function availability(file: string): { state: ModelAvailability; reason?: string
 export interface SpeechStatus {
   model: string;
   language: SpeechLanguageSetting;
-  web: WebDictationEngine;
   models: { id: string; label: string; note: string; mb: number; state: ModelAvailability; percent?: number; reason?: string }[];
 }
 
@@ -841,7 +805,6 @@ export function speechStatus(): SpeechStatus {
   return {
     model: list.find((m) => m.file === active)?.id ?? "small",
     language: languageSetting,
-    web: webEngine,
     models: list.map((m) => ({
       id: m.id, label: m.label, note: m.note, mb: Math.round((MODELS[m.file] ?? 0) / 1_000_000),
       ...availability(m.file),
