@@ -65,6 +65,17 @@ export interface GuestSetup {
    * setup never removes anyone.
    */
   joined?: boolean;
+  /**
+   * What this door admits at most: live guest conversations, and new ones per
+   * hour (`guestLimitsOf`, src/guest-admit.ts). Absent — the normal case — means
+   * the defaults, and so does any value that is not a positive integer: the
+   * file is hand-editable and a typo must not shut a bot in silence.
+   *
+   * Stored per DOOR and applied per GROUP: two doors onto one group share the
+   * ceiling, because the group is where a conversation costs something. Raising
+   * it is the operator's call; there is no route an agent can reach it through.
+   */
+  limits?: { live?: number; perHour?: number };
 }
 
 /** The classic instance: a board group, and DMs for their one owner. */
@@ -205,6 +216,11 @@ export function normalizeGuestSetup(want: GuestSetup): GuestSetup {
   const mode = normalizeTgMode(want.mode);
   const out: GuestSetup = { mode: mode !== "group" && (!group || !profile) ? "group" : mode, group, profile };
   if (want.joined === true) out.joined = true;
+  // Carried through, never interpreted here: `guestLimitsOf` is the one place
+  // that reads these numbers, and it treats anything malformed as unset. A
+  // normalizer that dropped the field would silently reset an operator's
+  // ceiling on the next panel save (invariant 6's family).
+  if (want.limits && typeof want.limits === "object") out.limits = { ...want.limits };
   return out;
 }
 
@@ -257,6 +273,12 @@ export function guestPatchFlow(input: {
   const ours = guestsOpen(input.previous) && input.previous.joined === true && old ? old : null;
   const target = guestsOpen(want) ? want.group : null;
   const setup: GuestSetup = { mode: want.mode, group: want.group, profile: want.profile };
+  // The admission ceiling is ASSERT-only, like `branch` / `repo` / `parent`
+  // (invariant 19): a patch that does not name it must never erase the numbers
+  // the operator set — and the panel does not name it. An explicitly EMPTY
+  // ceiling is the way back to the defaults.
+  const limits = want.limits ?? input.previous.limits;
+  if (limits?.live || limits?.perHour) setup.limits = limits;
   const otherTarget = input.other && guestsOpen(normalizeGuestSetup(input.other)) ? input.other.group?.trim() || null : null;
   let handOver = false;
   if (ours && ours !== target) {
@@ -441,6 +463,7 @@ export type GuestNotice =
   | "exited"          // the agent's process is gone
   | "upload-failed"   // a file the agent sent could not be delivered
   | "tool-activity"   // the running commentary of tool calls
+  | "door-full"       // the door is at its ceiling: no agent was created
   // WhatsApp (step 3) — the occasions only that bridge has:
   | "unreadable"      // a message arrived with no content for this device
   | "too-large"       // a file over the bridge's ceiling
@@ -480,6 +503,13 @@ export function guestNotice(kind: GuestNotice): string | null {
       return "⚠️ Your message didn't go through — please send it again.";
     case "no-keyboard":
       return "⚠️ I couldn't show you the options — just tell me your answer in words.";
+    // The door is at its ceiling (`guestAdmitVerdict`). NOT "send that again":
+    // nothing they can do changes it, and a retry they were told to make would
+    // fail for as long as the ceiling holds — the lesson `unresponsive` learned.
+    // What is true is that no conversation was opened, that it is not about them,
+    // and that later is a real answer: the ceiling is on conversations held NOW.
+    case "door-full":
+      return "⚠️ I can't take on a new conversation right now — there are too many open on my side. It's not about you: please try again later.";
     // Nothing to act on: a new message starts the conversation up again, and a
     // failed upload or a tool trace is the operator's business, not theirs.
     case "exited":

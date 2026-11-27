@@ -68,9 +68,13 @@ test("start: the guest decision is the pure plan, fed the proof and the config",
   // The rules themselves (unproven marker ignored, resume ignored, shut door
   // refused) are tested for real in test/tg-guests.test.ts.
   assert.match(START, /guestSpawnPlan\(\{/);
-  assert.match(START, /fromBridge: isTelegramBridge/);
+  assert.match(START, /fromBridge: isWhatsAppBridge \|\| isTelegramBridge/);
   assert.match(START, /resuming: !!msg\.resume/);
-  assert.match(START, /setup: msg\.guest === true \? guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\) : GUEST_SETUP_OFF/);
+  // The setup is the one of the door this socket PROVED, read once and shared
+  // with the admission ceiling below — a Telegram socket never spawns on the
+  // WhatsApp door's profile, nor the reverse.
+  assert.match(START, /const doorSetup =\s*\n\s*msg\.guest === true\s*\n\s*\? isWhatsAppBridge\s*\n\s*\? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)\s*\n\s*: guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)\s*\n\s*: GUEST_SETUP_OFF;/);
+  assert.match(START, /setup: doorSetup,/);
   assert.match(START, /if \(guestPlan\.kind === "refused"\) return fail\(guestPlan\.message, guestPlan\.code\)/);
 });
 
@@ -89,7 +93,7 @@ test("start: a guest's agent lands in the configured group or nowhere (invariant
 test("start: a guest gets no worktree, and runs in its group's own home", () => {
   assert.match(START, /if \(msg\.worktree && !resumed && !guestSetup && isGitRepo\(cwd\)\)/);
   // …inside that home, in a directory of its own — see below.
-  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), sub, earlyUser\)/);
+  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), guestDir, earlyUser\)/);
 });
 
 // ── the bridge's call sites use those rules ───────────────────────────────
@@ -294,10 +298,63 @@ test("telegram: a guest's spawn says WHICH guest, and only then", () => {
 });
 
 test("start: a guest lands in a directory of its own, or nowhere", () => {
-  assert.match(START, /const sub = guestWorkDirName\(msg\.guestKey\);/);
+  // ONE name per conversation, resolved once: the ceiling and the folder must
+  // agree, or someone admitted under one name would be filed under another's.
+  assert.match(START, /guestDir = isWhatsAppBridge \? waGuestWorkDirName\(msg\.guestKey\) : guestWorkDirName\(msg\.guestKey\);/);
   // A silent fallback to the shared home is exactly the mixing this closes.
-  assert.match(START, /if \(!sub\) return fail\(.*"guest-key"\)/);
-  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), sub, earlyUser\)/);
+  assert.equal((START.match(/if \(!guestDir\) return fail\([^)]*"guest-key"\)/g) ?? []).length, 2);
+  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), guestDir, earlyUser\)/);
+});
+
+// ── the door's admission ceiling (the design's step 2) ────────────────────
+test("start: the ceiling is asked before anything is created, on a FRESH spawn only", () => {
+  const i = START.indexOf("guestAdmitVerdict({");
+  assert.ok(i >= 0, "the admission verdict is not asked at all");
+  // Before the id is chosen, before the working directory is created, before
+  // the isolation is resolved and before a process exists: a refusal must cost
+  // nothing but the refusal.
+  for (const later of ["ensureGuestWorkDir(", "resolveSpawnIsolation({", "--session-id"])
+    assert.ok(START.indexOf(later) > i, `the ceiling must be asked before ${later}`);
+  // Inside the one block that resolves the conversation's name, so the gate
+  // can never be reached with a name the directory will not get.
+  assert.match(START, /if \(!guestDir\) return fail\([^)]*"guest-key"\);\s*\n\s*if \(freshSpawn\) \{/);
+});
+
+test("start: the ceiling is counted from the registry, per group, and refused with its own code", () => {
+  const i = START.indexOf("guestAdmitVerdict({");
+  const block = START.slice(i, START.indexOf("chargeAdmission(", i));
+  // The live count is READ, never remembered: the registry is the authority on
+  // which conversations exist, so a restart cannot widen the door.
+  assert.match(block, /live: liveGuestKeys\(loadChannels\(\), guestSetup\.group\)/);
+  assert.match(block, /limits: guestLimitsOf\(doorSetup\)/);
+  assert.match(block, /key: guestDir/);
+  assert.match(block, /recent: admissionsOf\(guestSetup\.group\)/);
+  // A machine-readable refusal, so a bridge classifies it without matching on
+  // the message text (the `busy` convention).
+  assert.match(block, /return fail\(verdict\.message, GUEST_FULL_CODE\)/);
+  // A returning conversation is never charged — it took no new slot.
+  assert.match(START, /if \(!verdict\.returning\) chargeAdmission\(guestSetup\.group\)/);
+});
+
+test("the hourly window is pruned as it is read, and keyed by group", () => {
+  const i = SRC.indexOf("function admissionsOf(");
+  assert.ok(i >= 0, "admissionsOf not found");
+  const body = SRC.slice(i, SRC.indexOf("\n}", i));
+  assert.match(body, /GUEST_RATE_WINDOW_MS/);
+  assert.match(body, /guestAdmissions\.delete\(groupId\)/, "an empty group leaves no row behind");
+});
+
+test("both bridges turn the ceiling into the one guest line, and stop waiting", () => {
+  // `guestNotice("door-full")` is tested for real in test/tg-guests.test.ts,
+  // and the WhatsApp path end to end in test/wa-bridge.test.ts.
+  const tgCase = TG.slice(TG.indexOf('case "error":'), TG.indexOf('case "exited":'));
+  assert.match(tgCase, /if \(m\.code === GUEST_FULL_CODE\) \{/);
+  assert.match(tgCase, /sendOps\(b, "\u26a0\ufe0f " \+ m\.message, "door-full"\)/);
+  // Closed, so the person's NEXT message asks the server again instead of
+  // queueing in `pending` for ever.
+  assert.match(tgCase, /if \(m\.code === GUEST_FULL_CODE\) \{[\s\S]*?ws\.close\(\)/);
+  const WA = fs.readFileSync(new URL("../src/wa-bridge.ts", import.meta.url), "utf8");
+  assert.match(WA, /if \(m\.code === GUEST_FULL_CODE\) noticeTo\(b\.to, "door-full"\)/);
 });
 
 test("the guest's directory is never created through a symlink", () => {

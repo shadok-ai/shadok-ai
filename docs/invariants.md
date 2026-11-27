@@ -2846,3 +2846,50 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
     step 1 of 5. The filesystem half (a Unix user per conversation) is a later
     step; this one needs no multi-tenant, no provisioning and no migration.
+
+
+<a id="inv-87"></a>
+
+83. **An open door is a resource allocator driven by strangers — so its ceiling
+    is counted from what EXISTS, and a returning conversation is never subject
+    to it.** Both guest doors (Telegram's open DMs, then WhatsApp's) were
+    deliberately uncapped: "no cap on the number of guests, no queue, no
+    per-person block". That was tenable while a guest cost a directory, and it
+    stops being tenable twice over. It already costs a `claude` process and a
+    tmux pane per stranger, so anyone who knows the number can make the
+    instance spawn until it falls over; and the external-group design turns a
+    guest into a `useradd`, i.e. a row in `/etc/passwd`, which is not a scratch
+    resource. The ceiling therefore ships BEFORE the wall that creates that
+    cost — the design's step 2 built before step 3, on purpose.
+    Three things in its shape are the ones worth not relearning. **The live
+    count is READ from the channel registry** (`liveGuestKeys(loadChannels(),
+    group)`), never remembered: a counter in memory would widen the door on
+    every restart, and auto-update restarts this server routinely. Only the
+    hourly rate lives in memory, where a restart clearing it is the right way
+    round — it is a burst guard, and the durable ceiling is the count. **A
+    RETURNING conversation is exempt inside the verdict**: the ceiling bounds
+    new strangers, and a cap that refuses someone the instance is already
+    talking to has turned a resource guard into a conversation killer. That
+    includes a guest whose agent the operator deleted, who comes back through
+    the very same fresh-spawn path, which is why "returning" is asked on the
+    conversation key and not on the presence of an agent. And the key is the
+    one that already names the person's **directory** (`tg-<id>` / `wa-<digits>`,
+    resolved once and reused): two spellings of one person would charge a
+    returning guest as a new one, and a ceiling that disagreed with the folder
+    would file someone under another's name.
+    It is counted **per group, not per door** — the group is where a
+    conversation costs a Unix user and a home, so two doors onto one group share
+    one ceiling — and charged when the door ADMITS rather than when the agent
+    reaches `ready`, because a spawn costs its work whether or not it completes.
+    The refusal carries its own code (`guest-full`) so a bridge classifies it
+    without matching on text, and reaches the person through the single
+    guest-wording door (`guestNotice("door-full")`) with the wording
+    `unresponsive` already had to learn: **never "send that again"** — no retry
+    of theirs clears a ceiling, and the bridge is CLOSED so that "later" is an
+    instruction that actually works instead of queueing their next message for
+    ever. The numbers (200 live, 30 per hour) are defaults the operator settled
+    and may raise per door; a malformed value reads as unset, never as a shut
+    door, because the config file is hand-editable and closing a door is what
+    the MODE is for.
+    Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
+    decision 3.

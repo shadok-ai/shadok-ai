@@ -2,9 +2,11 @@
 
 Design, drafted 2026-11-26 from a cockpit conversation with the operator, and
 checked against the code as it was written (`5542f3f`). Approved 2026-11-26.
-Status: **step 1 (the box on the API) implemented** — plan
-[`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md);
-steps 2 to 5 not built. Points the operator
+Status: **steps 1 and 2 implemented** — the box on the API (plan
+[`plans/2026-11-26-guest-conversation-box.md`](../plans/2026-11-26-guest-conversation-box.md))
+and the admission ceiling (plan
+[`plans/2026-11-27-guest-admission-ceiling.md`](../plans/2026-11-27-guest-admission-ceiling.md));
+steps 3 to 5 not built. Points the operator
 settled in that conversation are marked **[OPERATOR]**; a call made here that a
 builder could not settle alone is **[CALL]**; points deliberately left open are
 **[OPEN]**.
@@ -139,6 +141,15 @@ So an external door gets, as a pure verdict (`externalAdmitVerdict`):
 
 This is the first thing to build, before any of the rest: it is the cost the
 wall creates.
+
+*Status: **implemented**, and deliberately wider than this decision asked: the
+ceiling applies to EVERY guest door from now on, not only to an external one —
+settled with the operator so the guard is live and verifiable today instead of
+waiting dormant for step 3, and because a stranger already costs a `claude`
+process and a pane. It is counted per GROUP rather than per door (two doors onto
+one group share the cost of a conversation), the live count is read from the
+channel registry rather than remembered, and a RETURNING conversation is exempt.
+Invariant 83.*
 
 ### 4. [DECIDED] The box on the API — the keystone, and a hole that exists today
 
@@ -341,8 +352,11 @@ Each step is independently shippable and leaves the instance honest:
 ## Open decisions
 
 - **[OPEN]** The retention age for an untouched conversation (decision 7).
-- **[OPEN]** The exact caps and rate (decision 3) — a default that is safe on a
-  small VPS, and whether an operator may raise it.
+- ~~**[OPEN]** The exact caps and rate (decision 3)~~ — **[OPERATOR]**,
+  settled 2026-11-27: **200 live conversations and 30 new ones per hour** by
+  default, and **yes**, an operator may raise or lower it per door (`limits` on
+  the guest setup; the panel has no field for it yet and never resets what was
+  set). A malformed value reads as unset, never as a shut door.
 - **[OPEN]** Whether a member may **write into** a guest's slice (hand a
   credential to one conversation) or only rotate and delete what the agent put
   there.
