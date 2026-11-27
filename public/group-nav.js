@@ -123,3 +123,44 @@ export function groupMoveRefusal(from, to) {
     return `An agent can’t be moved into ${label(to)}: that space is walled off (its own system account, its own files). Create the agent from inside it instead.`;
   return null;
 }
+
+/**
+ * What a member grid's current ticks would CHANGE, against the roster the
+ * server holds. Pure, so the panel and test/group-nav.test.ts share it.
+ *
+ * The owner/self tile is never in either list: it is locked and implicit, and
+ * returning it would make the panel re-POST an add of the owner on every save.
+ * Callers pass a `current` that already excludes them (`readMemberGrid` does
+ * the same on the other side).
+ */
+export function memberDiff(current, now) {
+  const has = (list, n) => (Array.isArray(list) ? list : []).includes(n);
+  const a = Array.isArray(now) ? now : [];
+  const b = Array.isArray(current) ? current : [];
+  return { add: a.filter((n) => !has(b, n)), remove: b.filter((n) => !has(a, n)) };
+}
+
+/** True when a member grid holds edits the server has not been told about. */
+export function memberDiffPending(d) {
+  return !!d && (d.add.length > 0 || d.remove.length > 0);
+}
+
+/**
+ * The pending change, in words, for the panel's footer — "" when there is none.
+ *
+ * It exists because a Save button that merely lights up is easy to miss: an
+ * operator ticked tiles, did not see the button at the bottom of a scrolling
+ * list, and closed the panel believing membership had changed. Saying WHAT is
+ * waiting, next to the button that commits it, is what makes the pending state
+ * legible rather than inferable.
+ *
+ * Counts and not names: a roster can be long, and the names are on the tiles.
+ */
+export function memberDiffLabel(d) {
+  if (!memberDiffPending(d)) return "";
+  const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  const parts = [];
+  if (d.add.length) parts.push(n(d.add.length, "person to add", "people to add"));
+  if (d.remove.length) parts.push(n(d.remove.length, "person to remove", "people to remove"));
+  return parts.join(" · ") + " — not saved yet";
+}

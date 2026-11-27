@@ -302,7 +302,10 @@ test("roster panel: avatar grid + 'Save members' that diffs and POSTs /groups/me
   const restricted = s.slice(s.indexOf("isRosterNature(g.nature)"));
   assert.match(restricted, /renderMemberGrid\(grid,/);
   assert.match(restricted, /Save members/);
-  assert.match(restricted, /save\.disabled = !d\.add\.length && !d\.remove\.length/);
+  // The enable rule moved to the shared pure helper, which also feeds the
+  // footer's wording and the tiles' marks — one source for "is anything
+  // pending", so the button and the sentence beside it cannot disagree.
+  assert.match(restricted, /save\.disabled = !window\.memberDiffPending\(d\)/);
   assert.match(restricted, /post\(\{ group: g\.id, add: n \}\)/);
   assert.match(restricted, /post\(\{ group: g\.id, remove: n \}\)/);
   assert.match(restricted, /return openGroupPanel\(groupId\)/);
@@ -378,4 +381,42 @@ test("deleting an EXTERNAL group warns about the conversations, not 'its agents'
   assert.ok(fn);
   assert.match(fn![0], /isRosterNature\(group\.nature\)/);
   assert.match(fn![0], /Every conversation in it is destroyed, with its files and its system account/);
+});
+
+// ── The group panel's member Save (scan: index.html is not importable) ───
+
+test("group panel: the Save button lives OUTSIDE the scrolling body", () => {
+  // `.modal-body` is `overflow: auto`, so a button appended into it scrolls
+  // away on a long roster — which is how ticking tiles came to look like the
+  // whole act. The footer is `flex: 0 0 auto`, so it cannot.
+  assert.match(html, /<div class="modal-foot" id="groupPanelFoot" hidden><\/div>/);
+  assert.match(html, /foot\.append\(pending, save\);/);
+  // And NOT into the body any more: that spelling is the bug.
+  assert.doesNotMatch(html, /body\.append\(grid, save\)/);
+});
+
+test("group panel: the pending change is said in words and marked on the tiles", () => {
+  assert.match(html, /pending\.textContent = window\.memberDiffLabel\(d\)/);
+  assert.match(html, /tile\.dataset\.pending = "add"/);
+  assert.match(html, /tile\.dataset\.pending = "remove"/);
+  // The tile style has to exist, or `data-pending` is invisible.
+  assert.match(html, /\.member-tile\[data-pending\]/);
+});
+
+test("group panel: EVERY door out of it goes through the unsaved-changes guard", () => {
+  // Three ways to close a modal, and a guard on two of them is not a guard:
+  // Escape is the fastest way to lose a roster edit.
+  const doors = html.match(/groupPanelOverlay"\)\.hidden = true/g) ?? [];
+  // Exactly one assignment remains — inside `closeGroupPanel` itself.
+  assert.equal(doors.length, 1, "a close path still hides the panel without asking");
+  assert.match(html, /\$\("groupPanelClose"\)\.addEventListener\("click", \(\) => \{ closeGroupPanel\(\); \}\)/);
+  assert.match(html, /if \(e\.target === \$\("groupPanelOverlay"\)\) closeGroupPanel\(\)/);
+  assert.match(html, /if \(!\$\("groupPanelOverlay"\)\.hidden\) \{ closeGroupPanel\(\); e\.preventDefault\(\); return; \}/);
+});
+
+test("group panel: a reopen after a successful save is not stopped by the guard", () => {
+  // The save path reopens the panel to show the server's truth. Leaving the
+  // closure in place would make that reopen ask whether to discard changes
+  // that have just been written.
+  assert.match(html, /groupPanelPending = null;\n        return openGroupPanel\(groupId\)/);
 });

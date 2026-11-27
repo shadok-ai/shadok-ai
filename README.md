@@ -1555,7 +1555,11 @@ carries a **scope**, chosen when you invite:
 agent is judged on its NAME exactly like a person, and an admin has no override
 there, so it reaches a Private group the way a person does: a member of that
 group adds it from the group's **gear ▸ members** picker, where invited agents
-appear beside the accounts, marked `agent`. Added, it is a full member — it sees
+appear beside the accounts, marked `agent`. That picker is a DRAFT until you
+press **Save members**: ticking a tile changes nothing on the server, the tile
+is outlined and labelled *add* or *remove* while it waits, the footer counts
+what is pending, and closing the panel with changes left asks before throwing
+them away. Added, it is a full member — it sees
 and drives that group's agents, starts more **under the group's own Unix user**,
 and reads *and writes* the group's secrets — but it can never change the group or
 who belongs to it (every group write is browser-only). A `restricted`-scope agent
