@@ -4948,8 +4948,10 @@
   window.focusTarget = focusTarget;
   window.groupMoveRefusal = groupMoveRefusal;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
-  import { newFolderId, canMoveFolder, folderChildren, effectiveFolder, removeFolder } from "/agent-folders.js?v=__ASSET_V__";
+  import { newFolderId, canMoveFolder, folderChildren, effectiveFolder, removeFolder, levelOrder, anchorsFromOrder } from "/agent-folders.js?v=__ASSET_V__";
   window.newFolderId = newFolderId;
+  window.levelOrder = levelOrder;
+  window.anchorsFromOrder = anchorsFromOrder;
   window.canMoveFolder = canMoveFolder;
   window.folderChildren = folderChildren;
   window.effectiveFolder = effectiveFolder;
@@ -5325,6 +5327,10 @@
     folderChildren: () => () => [],
     effectiveFolder: () => null,
     removeFolder: (folders) => ({ folders, refile: new Map() }),
+    // Folders first, as before they could sit among agents; and no anchor read
+    // off the screen, so nothing is rewritten until the module is in.
+    levelOrder: (items, kids) => [...(kids || []).map((folder) => ({ folder })), ...(items || []).map((_, item) => ({ item }))],
+    anchorsFromOrder: () => new Map(),
     // Families before the module lands: a flat column, every agent a root.
     familyParents: () => new Map(),
     familyChildren: () => () => [],
@@ -6822,6 +6828,7 @@
     if (tab.roomId) return closeRoom(tab);
     if (tab.isMain) return; // the environment's main channel is never closed
     if (!confirmEndAgent(tab)) return;
+    releaseFolderAnchor(tab);
     // Full close: end the channel everywhere (stop the agent, delete its
     // Telegram topic, drop it from the registry). Use the HTTP endpoint so it
     // works even when the session is dead (no live WebSocket) — a zombie channel
@@ -7057,7 +7064,7 @@
       fetch("/agent-folders", {
         method: "PUT",
         headers: { "Content-Type": "application/json", "x-shadok-instance": instanceKey },
-        body: JSON.stringify(folders.map(({ id, name, icon, parent, group }) => ({ id, name, icon, parent, group }))),
+        body: JSON.stringify(folders.map(({ id, name, icon, parent, group, after }) => ({ id, name, icon, parent, group, after }))),
       }).then((r) => {
         if (r.status === 409) return handleSwap();
         foldersDirtyUntil = 0;
@@ -7070,7 +7077,7 @@
     if (tabbar.querySelector(".folder-head input.rename")) return;
     folders = list
       .filter((f) => f && f.id != null)
-      .map((f) => ({ id: String(f.id), name: f.name || "folder", icon: f.icon, parent: f.parent ?? null, group: f.group ?? null }));
+      .map((f) => ({ id: String(f.id), name: f.name || "folder", icon: f.icon, parent: f.parent ?? null, group: f.group ?? null, after: f.after ?? undefined }));
     layoutFolders();
   }
   const folderById = (id) => folders.find((f) => f.id === String(id)) || null;
@@ -7159,8 +7166,10 @@
   /**
    * Put every agent of every group in its folder. The DOM stays the source of
    * the ORDER (as for groups and tabs); this only nests it: at each level the
-   * sub-folders (by name) come first, then the agents in their own order. A
-   * no-op when the column already matches, so it can run on every repaint.
+   * agents keep their own order and each sub-folder sits right after the item
+   * it was dropped below (its `after`, public/agent-folders.js `levelOrder`) —
+   * first when it has none. A no-op when the column already matches, so it can
+   * run on every repaint.
    */
   function layoutFolders() {
     if (dragTabEl || dragFolderId != null) return;
@@ -7197,9 +7206,13 @@
       const k = kidEls(b);
       return "t" + (b._tab?.id ?? "") + (k.length ? ",[" + k.map(tabSig).join(",") + "]" : "");
     };
+    // A level, in order: its root agents interleaved with its folders.
+    const level = (parent) => {
+      const roots = tabEls.filter((b) => place(b) === parent && isRoot(b));
+      return window.levelOrder(roots.map(tabAnchor), kids(parent)).map((e) => (e.folder ? e : { tab: roots[e.item] }));
+    };
     const desired = (parent) =>
-      [...kids(parent).map((f) => "f" + f.id + "(" + desired(f.id) + ")"),
-       ...tabEls.filter((b) => place(b) === parent && isRoot(b)).map(tabSig)].join(",");
+      level(parent).map((e) => (e.folder ? "f" + e.folder.id + "(" + desired(e.folder.id) + ")" : tabSig(e.tab))).join(",");
     const actual = (box) =>
       [...box.children].map((ch) =>
         ch.classList.contains("agent-folder") ? "f" + ch.dataset.folder + "(" + actual(ch._folderBody) + ")"
@@ -7218,12 +7231,12 @@
       for (const c of k) putTab(body, c);
     };
     const build = (box, parent) => {
-      for (const f of kids(parent)) {
-        const rec = folderEl(f);
+      for (const e of level(parent)) {
+        if (!e.folder) { putTab(box, e.tab); continue; }
+        const rec = folderEl(e.folder);
         box.appendChild(rec.el);
-        build(rec.body, f.id);
+        build(rec.body, e.folder.id);
       }
-      for (const b of tabEls) if (place(b) === parent && isRoot(b)) putTab(box, b);
     };
     const keep = new Set();
     const mark = (parent) => { for (const f of kids(parent)) { keep.add(f.id); mark(f.id); } };
@@ -7234,6 +7247,61 @@
     for (const el of [...scope.querySelectorAll(".agent-folder")]) if (!keep.has(el.dataset.folder)) el.remove();
     // Same for a family body whose parent closed or lost its last child.
     for (const el of [...scope.querySelectorAll(".kin-body")]) if (!usedKin.has(el)) el.remove();
+  }
+
+  /** What a folder can sit right after: an agent, or a chat room (null: a tab
+   *  not keyed yet, which nothing can anchor on). */
+  function tabAnchor(b) {
+    const t = b && b._tab;
+    if (!t) return null;
+    if (t.roomId) return "r:" + t.roomId;
+    return t.sessionId ? "a:" + t.sessionId : null;
+  }
+  /** A level box's entries in screen order: its folders and its root tabs
+   *  (a family body only nests children, it is not an entry). */
+  function levelEntries(box) {
+    const out = [];
+    for (const ch of box.children) {
+      if (ch.classList.contains("agent-folder")) out.push({ folder: ch.dataset.folder });
+      else if (ch.classList.contains("tab")) out.push({ item: tabAnchor(ch) });
+    }
+    return out;
+  }
+  /**
+   * Read every folder's place back off the screen after a drag — the DOM is the
+   * source of the order. A folder whose stored anchor already lands it where it
+   * shows is left alone, even when the screen would name another anchor: a
+   * viewer who cannot see the agent a folder follows must not rewrite it.
+   */
+  function syncFolderAnchors() {
+    let changed = false;
+    const boxes = [ungroupedEl, ...groups.map((g) => g.bodyEl), ...[...folderEls.values()].map((r) => r.body)];
+    for (const box of boxes) {
+      const entries = levelEntries(box);
+      const shownAnchors = new Set(entries.map((e) => (e.folder != null ? "f:" + e.folder : e.item)).filter(Boolean));
+      for (const [id, anchor] of window.anchorsFromOrder(entries)) {
+        const f = folderById(id);
+        if (!f) continue;
+        const effective = f.after && shownAnchors.has(f.after) ? f.after : null;
+        if (effective === anchor) continue;
+        if (anchor) f.after = anchor; else delete f.after;
+        changed = true;
+      }
+    }
+    if (changed) persistFolders();
+  }
+  /** An agent about to close hands its followers to what sits above it, so a
+   *  folder below it stays put instead of jumping to the top of its level. */
+  function releaseFolderAnchor(tab) {
+    const key = tabAnchor(tab.btnEl);
+    const box = tab.btnEl.parentNode;
+    if (!key || !box || !folders.some((f) => f.after === key)) return;
+    const entries = levelEntries(box);
+    const at = entries.findIndex((e) => e.item === key);
+    let prev = null;
+    for (let i = at - 1; i >= 0 && prev == null; i--) prev = entries[i].folder != null ? "f:" + entries[i].folder : entries[i].item;
+    for (const f of folders) if (f.after === key) { if (prev) f.after = prev; else delete f.after; }
+    persistFolders();
   }
 
   /** The fold toggle of every parent: caret + count, and — folded — the mood of
@@ -7477,7 +7545,19 @@
     // The folder an agent was dropped in is read off where it landed. A room is
     // not an agent: it has no folder, and the next layout puts it back at its root.
     if (dragTabEl && dragTabEl._tab && !draggedRoom) dragTabEl._tab.folder = domFolderOf(dragTabEl);
-    if (dragFolderId != null) folderEls.get(dragFolderId)?.el.classList.remove("dragging");
+    if (dragFolderId != null) {
+      // Same for a folder: its parent is wherever it was left on screen (only a
+      // valid target ever moves it there, see the dragover).
+      const rec = folderEls.get(dragFolderId);
+      const f = folderById(dragFolderId);
+      if (rec) rec.el.classList.remove("dragging");
+      if (rec && f) {
+        const parent = domFolderOf(rec.el);
+        // A new level: the old anchor means nothing there (syncFolderAnchors,
+        // below, reads the new one off the screen).
+        if ((f.parent ?? null) !== parent) { f.parent = parent; delete f.after; persistFolders(); }
+      }
+    }
     document.querySelectorAll(".folder-head.drop-target").forEach((h) => h.classList.remove("drop-target"));
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
@@ -7487,6 +7567,7 @@
     document.querySelectorAll(".rail-item.drop-target, .rail-item.dragging").forEach((r) => r.classList.remove("drop-target", "dragging"));
     persistChannels();
     if (wasGroup) persistGroups();
+    if (!wasGroup) syncFolderAnchors();
     layoutFolders();
     railSig = "";
     renderRail();
@@ -7515,6 +7596,29 @@
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (target != null) folderEls.get(target)?.head.classList.add("drop-target");
+      // Live-sort, as for agents: the folder moves where it would land, so it
+      // can sit above, between or below the agents of its level. What the
+      // screen shows on release is what is kept (endDrag reads it back).
+      const moving = folderEls.get(dragFolderId)?.el;
+      if (!moving) return;
+      const overHead = e.target.closest(".folder-head");
+      const overTab = e.target.closest(".tab");
+      const overFolder = !overHead && e.target.closest(".agent-folder");
+      if (overHead) {
+        const rec = folderEls.get(target);
+        // Unfolded, so the folder stays in sight once it is inside.
+        if (rec && foldedFolders.delete(String(target))) { saveFolded(); paintFolderHeads(); }
+        if (rec && moving.parentNode !== rec.body) rec.body.appendChild(moving);
+      } else if (overTab && overTab.parentNode && !overTab.parentNode.classList.contains("kin-body") && !overTab.classList.contains("tweak")) {
+        const r = overTab.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        // A tab with a family body: "after" means after its children too.
+        const next = after ? (overTab.nextElementSibling?.classList.contains("kin-body") ? overTab.nextElementSibling.nextSibling : overTab.nextSibling) : overTab;
+        if (next !== moving && moving.nextSibling !== next) overTab.parentNode.insertBefore(moving, next);
+      } else if (!overFolder) {
+        const zone = e.target.closest("#ungrouped, .group-body, .folder-body");
+        if (zone && moving.parentNode !== zone && !moving.contains(zone)) zone.appendChild(moving);
+      }
       return;
     }
     e.preventDefault();

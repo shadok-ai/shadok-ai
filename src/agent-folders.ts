@@ -19,6 +19,14 @@ export interface Folder {
   parent: string | null;
   /** The group the folder lives in; null = Main (the commons). */
   group: string | null;
+  /**
+   * What the folder sits right after, among its level's items: an agent
+   * (`a:<sessionId>`), a chat room (`r:<roomId>`) or another folder
+   * (`f:<id>`). Absent = first, where every folder sat before folders could be
+   * placed among agents. An anchor that is gone is resolved by the client
+   * (public/agent-folders.js `levelOrder`), so it is stored as given.
+   */
+  after?: string;
 }
 
 /** An agent as far as folders care: its id and the folder it is filed in. */
@@ -33,6 +41,7 @@ export const MAX_FOLDER_DEPTH = 8;
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const NAME_MAX = 60;
+const AFTER_RE = /^[afr]:[A-Za-z0-9_.:-]{1,100}$/;
 
 /** null and "main" both mean the commons — one spelling on disk. */
 export function folderGroupKey(g: unknown): string | null {
@@ -74,6 +83,7 @@ export function sanitizeFolders(raw: unknown): Folder[] {
     };
     const icon = cleanIcon(row.icon);
     if (icon) f.icon = icon;
+    if (typeof row.after === "string" && AFTER_RE.test(row.after) && row.after !== "f:" + id) f.after = row.after;
     out.push(f);
   }
   const byId = new Map(out.map((f) => [f.id, f]));
@@ -151,6 +161,8 @@ export function mergeFoldersPut(
     const merged: Folder = { ...f, name: next.name, parent: next.parent };
     if (next.icon) merged.icon = next.icon;
     else delete merged.icon;
+    if (next.after) merged.after = next.after;
+    else delete merged.after;
     out.push(merged);
   }
   for (const r of rows) {

@@ -56,16 +56,23 @@ surviving ancestor (`refileItems`), so no agent points at a dead id.
 
 ## UI (agents column)
 
-- At each level of a group: its sub-folders (alphabetical), then its agents
-  (manual order). A folder's body is indented with a guide line.
+- At each level of a group: its agents and chat rooms in their manual order,
+  with each sub-folder right after the item it was dropped below — its `after`
+  anchor (`a:<sessionId>`, `r:<roomId>` or `f:<folderId>`). A folder with no
+  anchor, or whose anchor is no longer at that level (closed, moved, hidden from
+  this viewer), leads the level, alphabetically — where every folder sat before
+  folders could be placed among agents. Closing an agent first hands its
+  followers to the item above it, so they do not jump. A folder's body is
+  indented with a guide line.
 - Folder header: caret, icon (📂/📁), name, mood dot + agent count of the whole
   subtree when folded; click folds/unfolds, double-click on the name renames,
   double-click on the icon picks an icon, ＋ makes a sub-folder, × removes it
   (contents move up a level, nothing is lost — no confirmation).
 - Drag an agent onto a folder header → it goes inside. Onto another agent → it
   sits beside it (in that agent's folder). Drag a folder onto a folder header →
-  nested; onto an agent or the group's empty space → beside it / to the root. A
-  folder can't leave its group, nor go into itself or a descendant.
+  nested; onto an agent or the group's empty space → above or below it / to the
+  end of the level, live-sorted while dragging like an agent. A folder can't
+  leave its group, nor go into itself or a descendant.
 - "📁 new folder" sits under "＋ new agent" and creates in the group on screen
   (Main on a phone, which has no groups column).
 - A folded folder that holds the agent on screen is outlined, so the selection
@@ -73,4 +80,7 @@ surviving ancestor (`refileItems`), so no agent points at a dead id.
 
 The DOM stays the source of truth for ORDER (as before for groups and tabs);
 `layoutFolders` only nests it, and is a no-op when the column already matches —
-so it runs on every repaint of the column.
+so it runs on every repaint of the column. After a drag, `syncFolderAnchors`
+reads each folder's anchor back off the screen (`anchorsFromOrder`), but leaves a
+stored anchor alone when it already lands the folder where it shows: a viewer
+who cannot see the agent a folder follows must not rewrite it.
