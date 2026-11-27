@@ -202,12 +202,16 @@ export function seedPlanForCwds(
 
 export interface ClaudeSettings {
   tui?: string;
+  /** "Whether the user has accepted the bypass permissions mode dialog" — the
+   *  CLI's own words for it (settings schema, 2.1.x). See `settingsPlan`. */
+  skipDangerousModePermissionPrompt?: boolean;
   [k: string]: unknown;
 }
 
 /**
  * Pure: `~/.claude/settings.json` after adding the keys that suppress a
- * first-run *upsell*, or null when nothing is missing.
+ * first-run *upsell* and, when the operator has chosen bypass mode, the one
+ * that answers its disclaimer — or null when nothing is missing.
  *
  * The fullscreen upsell ("Flicker-free output · Mouse support · Selected text
  * auto-copies") is not gated by the onboarding flags — it appears AFTER the
@@ -217,13 +221,50 @@ export interface ClaudeSettings {
  * durable answer, because a choice already made cannot be upsold. Evidence: a
  * developer machine with `tui` set has never accumulated that counter in 792
  * startups.
+ *
+ * `bypassAccepted` is the BYPASS DISCLAIMER, and it is the one key here that is
+ * not a cosmetic suppression — so it is written only when the operator has
+ * actually put the instance in `bypassPermissions`, never by default.
+ *
+ * Why it is needed at all: `claude --permission-mode bypassPermissions` opens
+ * on a blocking "WARNING: Claude Code running in Bypass Permissions mode"
+ * single-select, ONCE PER HOME, and shadok's agents have nobody to answer it —
+ * they sit on it exactly like the first-run screen of invariant 23. The
+ * operator's choice in the cockpit IS the acceptance; a machine is then not
+ * asked again for a decision a person already made.
+ *
+ * Why THIS key and THIS file, verified against the CLI's own bundle (2.1.x):
+ * the gate reads `skipDangerousModePermissionPrompt` from **policySettings or
+ * userSettings** (`<HOME>/.claude/settings.json`), or the legacy
+ * `bypassPermissionsModeAccepted` in `~/.claude.json`, which it MIGRATES into
+ * this key and then deletes — so seeding the legacy one would be undone, and
+ * re-seeded, for ever. The trap worth writing down: the same bundle says the
+ * dialog is skipped by consent in `.claude/settings.local.json` or via
+ * `--settings` "which does not count here". shadok already passes a
+ * `--settings` file for a profile's guardrails, and putting the key THERE
+ * would look right and change nothing.
+ *
+ * Additive like the rest: an explicit `false` is somebody's decision to be
+ * asked, and it is left alone.
  */
-export function settingsPlan(existing: ClaudeSettings): ClaudeSettings | null {
-  if ("tui" in existing) return null; // the user's own choice, never overridden
-  // "fullscreen" is the value both working installations run — shadok reads
-  // content from the transcript, not the screen, so the TUI's rendering mode
-  // does not affect it either way.
-  return { ...existing, tui: "fullscreen" };
+export function settingsPlan(
+  existing: ClaudeSettings,
+  opts: { bypassAccepted?: boolean } = {},
+): ClaudeSettings | null {
+  const out: ClaudeSettings = { ...existing };
+  let changed = false;
+  if (!("tui" in out)) {
+    // "fullscreen" is the value both working installations run — shadok reads
+    // content from the transcript, not the screen, so the TUI's rendering mode
+    // does not affect it either way.
+    out.tui = "fullscreen";
+    changed = true;
+  }
+  if (opts.bypassAccepted && !("skipDangerousModePermissionPrompt" in out)) {
+    out.skipDangerousModePermissionPrompt = true;
+    changed = true;
+  }
+  return changed ? out : null;
 }
 
 const homeFile = (): string => path.join(os.homedir(), ".claude.json");
@@ -288,14 +329,15 @@ function seed(cwd?: string): void {
   }
 }
 
-/** Called once at boot: the globals, plus the settings that kill the upsell. */
-export function ensureClaudeHome(): void {
+/** Called once at boot: the globals, plus the settings that kill the upsell —
+ *  and, when the instance runs in bypass mode, the disclaimer's answer. */
+export function ensureClaudeHome(opts: { bypassAccepted?: boolean } = {}): void {
   seed();
-  seedSettings();
+  seedSettings(opts);
 }
 
 /** Apply `settingsPlan` to `~/.claude/settings.json`. Same rules as `seed`. */
-function seedSettings(): void {
+function seedSettings(opts: { bypassAccepted?: boolean } = {}): void {
   try {
     const file = settingsFile();
     let existing: ClaudeSettings | null = {};
@@ -309,7 +351,7 @@ function seedSettings(): void {
       }
     }
     if (existing === null) return;
-    const plan = settingsPlan(existing);
+    const plan = settingsPlan(existing, opts);
     if (!plan) return;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.shadok-${process.pid}.tmp`;
@@ -326,8 +368,14 @@ function seedSettings(): void {
  * This cannot be a boot-time-only concern: a worktree is a brand-new directory
  * for every agent, therefore a brand-new trust dialog every time.
  */
-export function ensureProjectTrusted(cwd: string): void {
+export function ensureProjectTrusted(cwd: string, opts: { bypassAccepted?: boolean } = {}): void {
   seed(cwd);
+  // The settings too, and before every spawn rather than only at boot: the
+  // operator can switch the instance into bypass mode at any moment from the
+  // cockpit, and the next agent to start must not be the one that discovers the
+  // disclaimer. `settingsPlan` returns null when nothing is missing, so the
+  // steady state is one read and no write.
+  seedSettings(opts);
 }
 
 /**

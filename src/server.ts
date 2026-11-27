@@ -8899,6 +8899,19 @@ let permissionMode: string = (() => {
   return env && isPermissionMode(env) ? env : "auto";
 })();
 
+/**
+ * Has the operator put this instance in bypass mode — i.e. is the "WARNING:
+ * Claude Code running in Bypass Permissions mode" disclaimer already answered
+ * by a person?
+ *
+ * A function and not a constant: `permissionMode` is changed at runtime by
+ * `POST /permission-mode`, and the next spawn must see the new answer without
+ * waiting for a restart.
+ */
+function bypassAccepted(): boolean {
+  return permissionMode === "bypassPermissions";
+}
+
 /** Send a message to every connected client, regardless of session. */
 function broadcastAll(msg: object): void {
   const data = JSON.stringify(msg);
@@ -10629,6 +10642,11 @@ function ensureAgentSshKey(user: string, home: string): void {
  * opened on Claude Code's theme picker + per-directory trust dialog and never
  * reached a prompt (the zombie shape of invariant 23).
  *
+ * In bypass mode it also carries the DISCLAIMER's answer into that HOME
+ * (`settingsPlan`, `skipDangerousModePermissionPrompt`): one fresh HOME per
+ * group — and, in an external group, per CONVERSATION — is one more copy of a
+ * blocking screen nobody is there to answer.
+ *
  * Runs AS THE GROUP USER (never root writing into a HOME it does not own),
  * SYNCHRONOUSLY (the files must exist before claude reads them) and ADDITIVELY
  * (reuses the pure `seedPlan`/`settingsPlan`, so a value the agent already set is
@@ -10637,7 +10655,7 @@ function ensureAgentSshKey(user: string, home: string): void {
  * seed the shadok SKILLS into the group HOME (they live only in the server's
  * ~/.claude/skills); that gap is tracked separately.
  */
-function seedHomeTrust(user: string, home: string, cwds: readonly string[]): void {
+function seedHomeTrust(user: string, home: string, cwds: readonly string[], bypass = false): void {
   const version = currentClaudeVersion() ?? "0.0.0";
   const readObj = (file: string): Record<string, unknown> | null => {
     const r = spawnAsUserSync(user, "cat", [file]);
@@ -10665,7 +10683,7 @@ function seedHomeTrust(user: string, home: string, cwds: readonly string[]): voi
     const settingsJson = `${home}/.claude/settings.json`;
     const sExisting = readObj(settingsJson);
     if (sExisting) {
-      const splan = settingsPlan(sExisting as ClaudeSettings);
+      const splan = settingsPlan(sExisting as ClaudeSettings, { bypassAccepted: bypass });
       if (splan) writeAsUserAtomic(user, settingsJson, JSON.stringify(splan, null, 2));
     }
   } catch (e) {
@@ -10750,7 +10768,7 @@ function seedGroupAgentHome(user: string, home: string, cwd: string, extraTruste
   const cwds = new Set<string>([cwd, ...extraTrusted]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
-  seedHomeTrust(user, home, [...cwds]);
+  seedHomeTrust(user, home, [...cwds], bypassAccepted());
   ensureTierStateDir(user, home);
 }
 
@@ -10802,7 +10820,7 @@ function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
     const home = homeForUser(user, GROUP_HOME_BASE);
-    seedHomeTrust(user, home, [...cwds]);
+    seedHomeTrust(user, home, [...cwds], bypassAccepted());
     ensureTierStateDir(user, home);
     // `~/.ssh` too, at BOOT and not only at the next spawn. `/home` is NOT on the
     // volume (invariant 19's whole reason), so a docker recreate wipes every HOME
@@ -10849,7 +10867,7 @@ function makePilot(
 ): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
-  ensureProjectTrusted(cwd);
+  ensureProjectTrusted(cwd, { bypassAccepted: bypassAccepted() });
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
@@ -14705,7 +14723,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 // Before anything can spawn: make sure `claude` will not open on its first-run
 // screens. reconcileOnBoot respawns sessions ~1s after boot, so this has to
 // happen first — that race is exactly what produced the zombie agents.
-ensureClaudeHome();
+ensureClaudeHome({ bypassAccepted: bypassAccepted() });
 // Persistent per-container SSH identity: in Docker, generate/reuse a key on the
 // shadok-data volume and point ~/.ssh at it so agents' git/ssh survive a
 // recreate. No-op on a normal host. Its GIT_SSH_COMMAND fallback is merged into
