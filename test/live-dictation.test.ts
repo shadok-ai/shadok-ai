@@ -50,16 +50,13 @@ test("dictation lands at the cursor with spaces only where words would touch", (
   assert.equal(spliceDictation("Say", "", "there"), "Saythere");
 });
 
-test("only an unusable recogniser sends the next click to the server", () => {
-  assert.deepEqual(recognitionFailure("aborted"), { message: null, fallback: false });
-  for (const e of ["no-speech", "not-allowed", "audio-capture"]) {
-    const f = recognitionFailure(e);
-    assert.equal(f.fallback, false, e);
-    assert.ok(f.message, e);
+test("every recogniser failure says something the person can act on, an abort says nothing", () => {
+  assert.deepEqual(recognitionFailure("aborted"), { message: null });
+  for (const e of ["no-speech", "not-allowed", "audio-capture", "network", "service-not-allowed", "language-not-supported", "something-new"]) {
+    assert.ok(recognitionFailure(e).message, e);
   }
-  for (const e of ["network", "service-not-allowed", "language-not-supported", "something-new"]) {
-    assert.equal(recognitionFailure(e).fallback, true, e);
-  }
+  // A network failure is not the browser's absence: the two read differently.
+  assert.notEqual(recognitionFailure("network").message, recognitionFailure("service-not-allowed").message);
 });
 
 test("the language to listen in: a fixed one is an order, else typed, else the client's", () => {
@@ -71,24 +68,17 @@ test("the language to listen in: a fixed one is an order, else typed, else the c
   assert.equal(listenLanguage("smart", {}), null);
 });
 
-test("the web engine defaults to the browser, an explicit server stands, the write is admin-gated", async () => {
-  const w = await import("../src/whisper.js");
-  try {
-    // An instance that chose nothing dictates live.
-    w.setSpeechSettings({});
-    assert.equal(w.speechStatus().web, "browser");
-    // Keeping the audio on the instance is a choice that must survive.
-    w.setSpeechSettings({ web: "server" });
-    assert.equal(w.speechStatus().web, "server");
-    w.setSpeechSettings({ web: "browser" });
-    assert.equal(w.speechStatus().web, "browser");
-  } finally {
-    w.setSpeechSettings({});
-  }
+test("the web dictation is the browser's only: no server engine, no upload route, no setting", () => {
   const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-  const put = src.slice(src.indexOf('app.put("/speech"'));
-  assert.ok(put.indexOf("accountAdmin(req, res, true") < put.indexOf("req.body?.web"), "the admin gate comes before the engine is read");
-  assert.match(put.slice(0, put.indexOf("setSpeechForCwd(")), /unknown web dictation engine/);
+  assert.doesNotMatch(src, /app\.post\("\/transcribe"/, "the recorded-clip route is gone");
+  const listen = src.slice(src.indexOf('app.get("/speech/listen"'), src.indexOf('app.put("/speech"'));
+  assert.doesNotMatch(listen, /engine/, "the browser is not told an engine to choose between");
+  assert.doesNotMatch(src.slice(src.indexOf('app.put("/speech"')).slice(0, 1500), /req\.body\?\.web/);
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /sttWebSel/, "the Web dictation row is gone");
+  assert.doesNotMatch(html, /fetch\("\/transcribe"/);
+  // No recogniser, no button — never one that fails on its first click.
+  assert.match(html, /if \(micBtn && !\(window\.SpeechRecognition \|\| window\.webkitSpeechRecognition\)\) micBtn\.hidden = true;/);
 });
 
 test("the page stops a live dictation when the composer stops being its own", () => {
@@ -102,22 +92,19 @@ test("the page stops a live dictation when the composer stops being its own", ()
   assert.doesNotMatch(start, /\bawait\b/);
 });
 
-test("a recogniser that ends with nothing heard and no error is read as unusable", () => {
-  // Gave up by itself, silently: the page records for the server instead.
-  assert.equal(recognitionEnd({ requested: false, heard: false, error: null }).fallback, true);
+test("a recogniser that ends with nothing heard and no error says so", () => {
+  // Gave up by itself, silently: the person is told, not left with an idle button.
   assert.ok(recognitionEnd({ requested: false, heard: false, error: null }).message);
   // The person's own stop, or a dictation that wrote words, is a normal end.
-  assert.deepEqual(recognitionEnd({ requested: true, heard: false, error: null }), { message: null, fallback: false });
-  assert.deepEqual(recognitionEnd({ requested: false, heard: true, error: null }), { message: null, fallback: false });
-  // A named error decides, as before.
-  assert.equal(recognitionEnd({ requested: false, heard: false, error: "network" }).fallback, true);
-  assert.equal(recognitionEnd({ requested: false, heard: false, error: "no-speech" }).fallback, false);
-  assert.equal(recognitionEnd({ requested: true, heard: false, error: "not-allowed" }).fallback, false);
+  assert.deepEqual(recognitionEnd({ requested: true, heard: false, error: null }), { message: null });
+  assert.deepEqual(recognitionEnd({ requested: false, heard: true, error: null }), { message: null });
+  // A named error decides.
+  assert.equal(recognitionEnd({ requested: false, heard: false, error: "network" }).message, recognitionFailure("network").message);
+  assert.deepEqual(recognitionEnd({ requested: true, heard: false, error: "aborted" }), { message: null });
 });
 
-test("the page wires the end verdict, falls back in the same click, and marks its own stops", () => {
+test("the page wires the end verdict and marks its own stops", () => {
   const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.match(html, /ld\.recognitionEnd\(\{ requested: rec\.shadokStopRequested === true, heard, error: lastError \}\)/);
-  assert.match(html, /if \(f\.fallback\) \{[\s\S]{0,400}liveBroken = true;[\s\S]{0,400}startRecording\(\)/);
   assert.match(html, /rec\.shadokStopRequested = true;\s*\n\s*try \{ rec\.stop\(\); \}/);
 });

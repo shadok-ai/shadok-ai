@@ -359,22 +359,14 @@ Enter to skip; you can add it later from the web UI).
   whenever nobody chose one in the menu.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
-- **Live dictation** — by default the 🎙 button uses the browser's own speech
-  recognition (Chrome, Edge, Safari): the words appear in the composer while
-  you speak, in the language of the conversation. The audio then goes to the
-  browser's maker. To keep it on your server, an admin picks version menu →
-  *Web dictation* → *On this server (whisper)*: the clip is transcribed by the
-  local model, after a wait. Other browsers and Telegram/WhatsApp voice notes
-  always use the local model, and so does a browser whose recogniser fails
-  (a network that cannot reach its speech service, say): the same click
-  switches to recording for the server, and says so.
-- **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
-  microphone and transcribes it with the **same local whisper.cpp** the voice
-  notes use (nothing leaves the machine). The text drops into the composer
-  **editable**, never auto-sent, so a misheard word is fixed before it goes —
-  click to start, click to stop, a red timer runs while recording. Needs a
-  secure context (localhost or HTTPS) for the browser to grant the mic; the
-  first use pays the same one-time whisper install as the voice notes above.
+- **Dictate a prompt on the web** — the 🎙 button beside *Send* uses the
+  browser's own speech recognition (Chrome, Edge, Safari): the words appear in
+  the composer while you speak, in the language of the conversation, **editable
+  and never auto-sent** — click to start, click to stop. The audio goes to the
+  browser's maker, not to your server. A browser without speech recognition
+  (Firefox) shows no button; a recogniser that fails says why (no microphone,
+  no network to its speech service…). The local model above is for voice notes
+  only.
 - **Videos on Telegram** — share a video (or a GIF, or a round video note) and
   the agent actually sees it: shadok pulls a handful of stills out of the clip
   for it to look at, and transcribes the sound when there is speech. Both run

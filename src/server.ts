@@ -188,7 +188,7 @@ import {
   type TelegramHandle,
 } from "./telegram.js";
 import {
-  transcribe, audioClipExtension, setSpeechSettings, speechStatus, speechSettings, normalizeWebEngine, prefetchSpeech, SPEECH_MODELS,
+  setSpeechSettings, speechStatus, speechSettings, prefetchSpeech, SPEECH_MODELS,
 } from "./whisper.js";
 import { expectedLanguage, typedLanguages, normalizeLanguageSetting, listenLanguage } from "./speech-lang.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
@@ -2835,84 +2835,34 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   }
 });
 
-/**
- * Speech-to-text for the composer's microphone button. The browser records a
- * short clip (MediaRecorder → webm/opus) and POSTs the raw bytes here; we run
- * the SAME local whisper.cpp pipeline the Telegram voice path uses
- * (`transcribe`) and return the text for the client to drop into the composer.
- *
- * The text is NEVER auto-sent — it lands in the editable composer so the user
- * reads it before acting, because a misheard instruction acted on in silence is
- * worse than a voice note that was ignored (the reason `heardNotice` exists).
- *
- * `requestFromBrowser` like `/paste`: this writes a file and records the mic, a
- * browser-only capability with no business being reachable by a script on
- * loopback. The clip is TRANSIENT — written to the OS temp dir and removed in
- * `finally`, never kept in `MEDIA_DIR`: it is spoken input, not a file to hand
- * the agent.
- *
- * The first call on a fresh instance provisions whisper (ffmpeg / model / build
- * via `ensureWhisper` inside `transcribe`), which can take minutes; the client
- * shows a working state and we simply wait. The French whisper notices are kept
- * server-side — the client maps `kind` to its own English UI copy, so the web
- * stays English while Telegram keeps its spoken-language notices.
- */
-app.post("/transcribe", express.raw({ type: () => true, limit: PASTE_LIMIT }), async (req, res) => {
-  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: "empty body" });
-  const ext = audioClipExtension(String(req.headers["content-type"] ?? ""));
-  const tmp = path.join(os.tmpdir(), `shadok-stt-${randomUUID()}.${ext}`);
-  try {
-    await fs.promises.writeFile(tmp, body);
-    // What to expect of the language: what was typed in the conversation being
-    // dictated into, and the browser's own. Both are only a bias on whisper's
-    // detection (src/speech-lang.ts), which is why a session id is taken at its
-    // word here — the worst a made-up one buys is a second opinion on a clip.
-    const expect = expectedLanguage(String(req.headers["x-shadok-session"] ?? "") || null, req.headers["x-shadok-lang"]);
-    const out = await transcribe(tmp, undefined, { expect });
-    if (out.ok) return res.json({ ok: true, text: out.text });
-    return res.json({ ok: false, kind: out.kind });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-  } finally {
-    await fs.promises.rm(tmp, { force: true }).catch(() => {});
-  }
-});
-
-// Dictation settings, per launch directory: which whisper model transcribes,
-// and how the language is chosen. Read at boot so the first clip already uses
-// them; nothing is downloaded until someone dictates or an admin picks a model.
+// Dictation settings, per launch directory: which whisper model transcribes
+// voice notes, and how the language is chosen (the web Dictate button, the
+// browser's recogniser, is told that language too). Read at boot so the first
+// clip already uses them; nothing is downloaded until a voice note arrives or
+// an admin picks a model.
 setSpeechSettings(speechForCwd(loadConfig(), process.cwd()));
 app.get("/speech", (_req, res) => {
   res.json(speechStatus());
 });
 /**
- * What a browser about to dictate needs BEFORE the click: who transcribes (its
- * own recogniser or this server), and in which language to listen — a browser
- * recogniser detects nothing, it is told. Asked ahead of time, per
- * conversation, because the recogniser is best started inside the click itself.
- * The session id is taken at its word like `/transcribe` does: all it can buy
- * is which of a few languages was typed in a conversation whose id the caller
- * already holds.
+ * What a browser about to dictate needs BEFORE the click: in which language to
+ * listen — a browser recogniser detects nothing, it is told. Asked ahead of
+ * time, per conversation, because the recogniser is best started inside the
+ * click itself. The session id is taken at its word: all it can buy is which
+ * of a few languages was typed in a conversation whose id the caller already
+ * holds.
  */
 app.get("/speech/listen", (req, res) => {
-  const { language, web } = speechSettings();
+  const { language } = speechSettings();
   const q = (v: unknown) => (typeof v === "string" ? v : "");
   const expect = expectedLanguage(q(req.query.session) || null, q(req.query.lang));
-  res.json({ engine: web, lang: listenLanguage(language, expect) });
+  res.json({ lang: listenLanguage(language, expect) });
 });
 app.put("/speech", (req, res) => {
   // One model serves every voice note and every dictation of the instance, and
   // picking one starts a download of several hundred MB: admin only.
   if (!accountAdmin(req, res, true, "change the dictation settings")) return;
-  const patch: { model?: string; language?: string; web?: string } = {};
-  if (req.body?.web !== undefined) {
-    // Refused rather than normalised: a typo must not silently read as "keep
-    // the audio on this server" when the admin asked for something else.
-    if (req.body.web !== "browser" && req.body.web !== "server") return res.status(400).json({ error: "unknown web dictation engine" });
-    patch.web = normalizeWebEngine(req.body.web);
-  }
+  const patch: { model?: string; language?: string } = {};
   if (req.body?.model !== undefined) {
     const id = String(req.body.model);
     // An id from the closed list, never a file name: it ends up in a path and
