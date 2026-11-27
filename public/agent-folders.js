@@ -96,3 +96,63 @@ export function removeFolder(folders, items, id) {
   for (const it of items || []) if (it.folder != null && String(it.folder) === sid) refile.set(String(it.id), up);
   return { folders: next, refile };
 }
+
+/** The anchor that names a folder, as another folder's `after`. */
+export const folderAnchor = (id) => "f:" + id;
+
+/**
+ * One level of the agents column, in order: its root items interleaved with its
+ * folders. `items` are the anchors of the level's root tabs in their own order
+ * (`a:<sessionId>`, `r:<roomId>`, null for a tab not yet keyed); `kids` are the
+ * level's folders, sorted by name. A folder sits right after its `after`; one
+ * with no anchor, or an anchor that is not at this level (an agent closed or
+ * moved elsewhere, an agent this viewer cannot see, a loop of folders) goes
+ * first — where every folder sat before they could be placed among agents, so
+ * nothing is ever hidden. Returns `{folder}` / `{item: index}` entries.
+ */
+export function levelOrder(items, kids) {
+  const present = new Set((items || []).filter((k) => k != null));
+  for (const f of kids || []) present.add(folderAnchor(f.id));
+  const byAnchor = new Map();
+  const first = [];
+  for (const f of kids || []) {
+    const a = f.after ?? null;
+    if (a == null || a === folderAnchor(f.id) || !present.has(a)) first.push(f);
+    else (byAnchor.get(a) || byAnchor.set(a, []).get(a)).push(f);
+  }
+  const done = new Set();
+  const emitFolder = (out, f) => {
+    if (done.has(f.id)) return;
+    done.add(f.id);
+    out.push({ folder: f });
+    for (const g of byAnchor.get(folderAnchor(f.id)) || []) emitFolder(out, g);
+  };
+  const out = [];
+  for (const f of first) emitFolder(out, f);
+  (items || []).forEach((k, i) => {
+    out.push({ item: i });
+    if (k != null) for (const g of byAnchor.get(k) || []) emitFolder(out, g);
+  });
+  // Folders anchored on each other in a loop are reached from nothing: first.
+  const lost = [];
+  for (const f of kids || []) if (!done.has(f.id)) emitFolder(lost, f);
+  return lost.length ? [...lost, ...out] : out;
+}
+
+/**
+ * The anchors a level's folders get from where they sit on screen — the DOM is
+ * the source of the order, as for agents. `entries` in screen order are
+ * `{folder: id}` / `{item: anchor|null}`; each folder anchors on the nearest
+ * KEYED entry above it, or nothing when it leads the level.
+ */
+export function anchorsFromOrder(entries) {
+  const out = new Map();
+  let prev = null;
+  for (const e of entries || []) {
+    if (e.folder != null) {
+      out.set(String(e.folder), prev);
+      prev = folderAnchor(e.folder);
+    } else if (e.item != null) prev = e.item;
+  }
+  return out;
+}

@@ -3,7 +3,7 @@ import test from "node:test";
 import { sanitizeFolders, foldersForViewer, mergeFoldersPut, refileItems, channelFolder, MAX_FOLDER_DEPTH } from "../src/agent-folders.js";
 import { mergeChannels } from "../src/channels.js";
 // @ts-ignore — plain ESM shared with the browser
-import { canMoveFolder, folderChildren, effectiveFolder, removeFolder, folderDepth, newFolderId } from "../public/agent-folders.js";
+import { canMoveFolder, folderChildren, effectiveFolder, removeFolder, folderDepth, newFolderId, levelOrder, anchorsFromOrder } from "../public/agent-folders.js";
 
 test("sanitize: dangling parents, loops, cross-group parents and over-deep chains are re-rooted", () => {
   const out = sanitizeFolders([
@@ -124,4 +124,57 @@ test("client: removing a folder moves its sub-folders and agents up a level", ()
   assert.deepEqual(r.folders.map((f: any) => [f.id, f.parent]), [["b", null], ["c", null], ["o", null]]);
   assert.deepEqual([...r.refile], [["s1", null]]);
   assert.match(newFolderId(() => 0.5, () => 1000), /^[A-Za-z0-9_-]{1,64}$/);
+});
+
+// ── A folder's place among the agents of its level ──
+const lay = (items: (string | null)[], kids: any[]) =>
+  levelOrder(items, kids).map((e: any) => (e.folder ? "F" + e.folder.id : items[e.item] ?? "?"));
+
+test("order: a folder with no anchor leads its level, as every folder used to", () => {
+  assert.deepEqual(lay(["a:1", "a:2"], [{ id: "x" }, { id: "y" }]), ["Fx", "Fy", "a:1", "a:2"]);
+});
+
+test("order: a folder sits right after the agent or chat it was dropped below", () => {
+  assert.deepEqual(lay(["a:1", "r:9", "a:2"], [{ id: "x", after: "a:1" }, { id: "y", after: "a:2" }]), ["a:1", "Fx", "r:9", "a:2", "Fy"]);
+  assert.deepEqual(lay(["a:1", "r:9"], [{ id: "x", after: "r:9" }]), ["a:1", "r:9", "Fx"]);
+});
+
+test("order: folders chain after each other, in the order they were left", () => {
+  assert.deepEqual(lay(["a:1", "a:2"], [{ id: "x", after: "f:y" }, { id: "y", after: "a:1" }]), ["a:1", "Fy", "Fx", "a:2"]);
+});
+
+test("order: a gone anchor, a self-anchor or a loop never hides a folder — it leads", () => {
+  assert.deepEqual(lay(["a:1"], [{ id: "x", after: "a:closed" }]), ["Fx", "a:1"]);
+  assert.deepEqual(lay(["a:1"], [{ id: "x", after: "f:x" }]), ["Fx", "a:1"]);
+  const out = lay(["a:1"], [{ id: "x", after: "f:y" }, { id: "y", after: "f:x" }]);
+  assert.deepEqual([...out].sort(), ["Fx", "Fy", "a:1"]);
+  assert.equal(out[out.length - 1], "a:1");
+});
+
+test("order: a tab not keyed yet keeps its place and anchors nothing", () => {
+  assert.deepEqual(lay(["a:1", null, "a:2"], [{ id: "x", after: "a:2" }]), ["a:1", "?", "a:2", "Fx"]);
+});
+
+test("anchors read off the screen: the nearest keyed entry above, nothing when leading", () => {
+  const m = anchorsFromOrder([{ folder: "x" }, { item: "a:1" }, { item: null }, { folder: "y" }, { folder: "z" }]);
+  assert.deepEqual([...m], [["x", null], ["y", "a:1"], ["z", "f:y"]]);
+});
+
+test("anchors round-trip: what the screen shows is what the next layout draws", () => {
+  const screen = [{ item: "a:1" }, { folder: "x" }, { item: "r:2" }, { folder: "y" }, { item: "a:3" }];
+  const anchors = anchorsFromOrder(screen);
+  const kids = ["x", "y"].map((id) => ({ id, after: anchors.get(id) ?? undefined }));
+  assert.deepEqual(lay(["a:1", "r:2", "a:3"], kids), ["a:1", "Fx", "r:2", "Fy", "a:3"]);
+});
+
+test("server: a folder's anchor is kept, validated, and cleared by a write that drops it", () => {
+  const rows = sanitizeFolders([
+    { id: "a", name: "a", after: "a:3f2c-11" },
+    { id: "b", name: "b", after: "f:b" },
+    { id: "c", name: "c", after: "<script>" },
+    { id: "d", name: "d", after: "r:room_1" },
+  ]);
+  assert.deepEqual(rows.map((f) => f.after), ["a:3f2c-11", undefined, undefined, "r:room_1"]);
+  const next = mergeFoldersPut(rows, [{ id: "a", name: "a" }, { id: "d", name: "d", after: "f:a" }], new Set());
+  assert.deepEqual(next.map((f) => [f.id, f.after]), [["a", undefined], ["d", "f:a"]]);
 });

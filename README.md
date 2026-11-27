@@ -118,7 +118,8 @@ Enter to skip; you can add it later from the web UI).
   (under *＋ new agent*) makes one in the group on screen, its ＋ makes a
   sub-folder, and folders nest up to 8 levels. Drag an agent onto a folder to put
   it inside, or onto another agent to sit beside it; drag a folder onto a folder
-  to nest it. A click folds a folder (folded, it shows the mood and agent count of
+  to nest it, or between agents and chats to place it there — a folder no longer
+  has to sit above them. A click folds a folder (folded, it shows the mood and agent count of
   all it holds); × removes it and what it held moves up a level. Folders are only
   an arrangement: they change nothing about who sees an agent or where it runs —
   a folder belongs to its group and is seen exactly by those who see the group.
