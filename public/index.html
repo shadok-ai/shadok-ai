@@ -1306,6 +1306,15 @@
   .member-tile { border: 0; background: none; padding: 6px 2px 4px; border-radius: 10px; cursor: pointer; color: inherit; font: inherit;
     display: flex; flex-direction: column; align-items: center; gap: 7px; transition: background .12s; }
   .member-tile:hover { background: var(--bg-inset); }
+  /* A tile whose tick is NOT yet saved. The pressed state alone says "member",
+     which is exactly what an unsaved change is not — so a pending tile is
+     outlined and labelled, and the footer counts them. */
+  .member-tile[data-pending] { background: var(--bg-inset); box-shadow: inset 0 0 0 1px var(--amber); }
+  .member-tile[data-pending] .member-nm { color: var(--amber); }
+  .member-tile[data-pending]::after {
+    content: attr(data-pending); font-size: 10px; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--amber);
+  }
   .member-av { position: relative; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
     font-weight: 600; font-size: 18px; color: #fff; box-shadow: inset 0 0 0 2px transparent;
     transition: box-shadow .12s, filter .12s; filter: grayscale(.35) brightness(.82); }
@@ -4016,6 +4025,10 @@
       <button id="groupPanelClose" title="Close">✕</button>
     </div>
     <div class="modal-body" id="groupPanelBody"></div>
+    <!-- OUTSIDE the scrolling body on purpose: the Save button used to be
+         appended into the member grid, so on a long roster it scrolled out of
+         sight and the panel looked as if ticking a tile was the whole act. -->
+    <div class="modal-foot" id="groupPanelFoot" hidden></div>
   </div>
 </div>
 
@@ -4942,7 +4955,7 @@
   window.buildRoomMessageLink = buildRoomMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget, groupMoveRefusal } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget, groupMoveRefusal, memberDiff, memberDiffLabel, memberDiffPending } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
@@ -4953,6 +4966,9 @@
   window.groupIsDirty = groupIsDirty;
   window.focusTarget = focusTarget;
   window.groupMoveRefusal = groupMoveRefusal;
+  window.memberDiff = memberDiff;
+  window.memberDiffLabel = memberDiffLabel;
+  window.memberDiffPending = memberDiffPending;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   import { newFolderId, canMoveFolder, folderChildren, effectiveFolder, removeFolder, levelOrder, anchorsFromOrder } from "/agent-folders.js?v=__ASSET_V__";
   window.newFolderId = newFolderId;
@@ -5318,6 +5334,14 @@
     // A drop is a user gesture, long after the module lands; allowing it here
     // costs nothing — the server enforces the same rule (src/groups.ts).
     groupMoveRefusal: () => null,
+    // The group panel is opened by a click, long after the module lands — but
+    // the rule is the rule (invariant 10), and the stub's values are the safe
+    // ones: no pending change, so Save stays disabled and the close guard has
+    // nothing to protect. A dead panel beats a thrown exception that would stop
+    // the grid from drawing at all.
+    memberDiff: () => ({ add: [], remove: [] }),
+    memberDiffPending: () => false,
+    memberDiffLabel: () => "",
     // A group switch is a user click, long after the module lands; the stub
     // mirrors the real "remembered-or-first" so even a race keeps today's
     // top-agent fallback.
@@ -13951,7 +13975,11 @@
     // must change nothing (neither save nor restart).
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
-    if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
+    // Escape goes through the same guard as the ✕ and the backdrop: it is the
+    // fastest way to lose a roster edit, so it must not be the one door that
+    // does it without asking. `preventDefault` either way — the key was handled,
+    // whether the person then kept the panel open or not.
+    if (!$("groupPanelOverlay").hidden) { closeGroupPanel(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
@@ -14980,11 +15008,38 @@
     return (me && me.name) || null;
   }
   // BEGIN group-panel
+  /**
+   * Does the open group panel hold member ticks the server has not been told
+   * about? Null when there is nothing to lose (no panel, or not a roster one).
+   *
+   * A roster change is the one edit in this panel that is NOT written as it is
+   * made, so it is the one a close can silently discard — and the ticks look
+   * identical to saved membership while they are pending, which is how someone
+   * walks away believing the roster changed.
+   */
+  let groupPanelPending = null;
+
+  /** Close the group panel, asking first when ticks would be thrown away. */
+  function closeGroupPanel() {
+    if (groupPanelPending && groupPanelPending() &&
+        !confirm("This group's members have unsaved changes.\n\nClose anyway and lose them?")) return false;
+    groupPanelPending = null;
+    $("groupPanelOverlay").hidden = true;
+    return true;
+  }
+
   // Group settings: name + type, and the member list for a Private group only.
   async function openGroupPanel(groupId) {
     const body = $("groupPanelBody");
+    const foot = $("groupPanelFoot");
     const hdr = $("groupPanelTitle");
     $("groupPanelOverlay").hidden = false;
+    // A fresh panel owns nothing yet: cleared here, and only the roster branch
+    // below sets it again. Leaving a stale closure behind would guard a panel
+    // that no longer exists.
+    groupPanelPending = null;
+    foot.textContent = "";
+    foot.hidden = true;
     let g = null;
     try {
       const r = await fetch("/groups");
@@ -15050,15 +15105,34 @@
       const save = document.createElement("button");
       save.type = "button"; save.id = "gpSave"; save.className = "primary";
       save.textContent = "Save members";
+      // The pending count, in words, beside the button that commits it. The
+      // button alone was missable: it sits under the grid, and on a long roster
+      // the body scrolls it away — someone ticked tiles, saw the ticks, closed
+      // the panel and believed the roster had changed. Nothing had been sent.
+      const pending = document.createElement("span");
+      pending.className = "foot-note"; pending.id = "gpPending";
+      pending.setAttribute("role", "status");
       // Self is locked/implicit: never part of the diff.
       const current = members.filter((m) => m !== self);
-      const diff = () => {
-        const now = readMemberGrid(grid);
-        return { add: now.filter((n) => !current.includes(n)), remove: current.filter((n) => !now.includes(n)) };
+      const diff = () => window.memberDiff(current, readMemberGrid(grid));
+      const refresh = () => {
+        const d = diff();
+        save.disabled = !window.memberDiffPending(d);
+        pending.textContent = window.memberDiffLabel(d);
+        // And on the tiles themselves, so the change is visible where it was
+        // made and not only at the bottom of the panel.
+        for (const tile of grid.querySelectorAll(".member-tile")) {
+          const n = tile.dataset.name;
+          if (d.add.includes(n)) tile.dataset.pending = "add";
+          else if (d.remove.includes(n)) tile.dataset.pending = "remove";
+          else delete tile.dataset.pending;
+        }
       };
-      const refresh = () => { const d = diff(); save.disabled = !d.add.length && !d.remove.length; };
       renderMemberGrid(grid, { accounts, selected: current, lockedSelf: self, onChange: refresh, agents });
       refresh();
+      // What the close guards read. Set while this panel is the one open, and
+      // cleared by `openGroupPanel` at the top of every call.
+      groupPanelPending = () => window.memberDiffPending(diff());
       save.addEventListener("click", async () => {
         const d = diff();
         save.disabled = true;
@@ -15073,15 +15147,20 @@
           const i = current.indexOf(n);
           if (i >= 0) current.splice(i, 1);
         }
+        // Saved: nothing is pending any more, so the reopen below must not be
+        // stopped by the guard.
+        groupPanelPending = null;
         return openGroupPanel(groupId);
       });
-      body.append(grid, save);
+      body.append(grid);
+      foot.append(pending, save);
+      foot.hidden = false;
       return;
     }
     note("Anyone can see this — it is a label.");
   }
-  $("groupPanelClose").addEventListener("click", () => { $("groupPanelOverlay").hidden = true; });
-  $("groupPanelOverlay").addEventListener("click", (e) => { if (e.target === $("groupPanelOverlay")) $("groupPanelOverlay").hidden = true; });
+  $("groupPanelClose").addEventListener("click", () => { closeGroupPanel(); });
+  $("groupPanelOverlay").addEventListener("click", (e) => { if (e.target === $("groupPanelOverlay")) closeGroupPanel(); });
   // END group-panel
   /** The vault, opened on ONE name an agent asked for: the name filled in (or the
    *  existing secret in edit mode), the asking agent's profile pre-ticked so the
