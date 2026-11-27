@@ -355,7 +355,9 @@ Enter to skip; you can add it later from the web UI).
   browser's maker. To keep it on your server, an admin picks version menu →
   *Web dictation* → *On this server (whisper)*: the clip is transcribed by the
   local model, after a wait. Other browsers and Telegram/WhatsApp voice notes
-  always use the local model.
+  always use the local model, and so does a browser whose recogniser fails
+  (a network that cannot reach its speech service, say): the same click
+  switches to recording for the server, and says so.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
   microphone and transcribes it with the **same local whisper.cpp** the voice
   notes use (nothing leaves the machine). The text drops into the composer

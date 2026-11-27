@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 // @ts-ignore — plain ESM shared with the browser
-import { recognitionCtor, recognitionLang, liveTranscript, spliceDictation, recognitionFailure } from "../public/live-dictation.js";
+import { recognitionCtor, recognitionLang, liveTranscript, spliceDictation, recognitionFailure, recognitionEnd } from "../public/live-dictation.js";
 import { listenLanguage } from "../src/speech-lang.js";
 
 test("a browser without a recogniser has none, prefixed or not", () => {
@@ -100,4 +100,24 @@ test("the page stops a live dictation when the composer stops being its own", ()
   // The recogniser starts inside the click: no await between the two.
   const start = html.slice(html.indexOf("function startLiveDictation("), html.indexOf("function stopLiveDictation("));
   assert.doesNotMatch(start, /\bawait\b/);
+});
+
+test("a recogniser that ends with nothing heard and no error is read as unusable", () => {
+  // Gave up by itself, silently: the page records for the server instead.
+  assert.equal(recognitionEnd({ requested: false, heard: false, error: null }).fallback, true);
+  assert.ok(recognitionEnd({ requested: false, heard: false, error: null }).message);
+  // The person's own stop, or a dictation that wrote words, is a normal end.
+  assert.deepEqual(recognitionEnd({ requested: true, heard: false, error: null }), { message: null, fallback: false });
+  assert.deepEqual(recognitionEnd({ requested: false, heard: true, error: null }), { message: null, fallback: false });
+  // A named error decides, as before.
+  assert.equal(recognitionEnd({ requested: false, heard: false, error: "network" }).fallback, true);
+  assert.equal(recognitionEnd({ requested: false, heard: false, error: "no-speech" }).fallback, false);
+  assert.equal(recognitionEnd({ requested: true, heard: false, error: "not-allowed" }).fallback, false);
+});
+
+test("the page wires the end verdict, falls back in the same click, and marks its own stops", () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /ld\.recognitionEnd\(\{ requested: rec\.shadokStopRequested === true, heard, error: lastError \}\)/);
+  assert.match(html, /if \(f\.fallback\) \{[\s\S]{0,400}liveBroken = true;[\s\S]{0,400}startRecording\(\)/);
+  assert.match(html, /rec\.shadokStopRequested = true;\s*\n\s*try \{ rec\.stop\(\); \}/);
 });
