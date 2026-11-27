@@ -196,6 +196,7 @@ import {
   GUEST_SETUP_OFF,
   guestGroupChoices,
   guestPatchFlow,
+  guestNotice,
   guestSpawnPlan,
   guestWorkDirName,
   normalizeTgMode,
@@ -442,7 +443,16 @@ import {
   ANY_PROFILE,
   agentOverwriteRefusal,
   secretNameRefusal,
+  deleteVaultSlice,
+  guestSlicesOf,
 } from "./secrets.js";
+import {
+  GUEST_SECRET_LIMITS,
+  guestSecretQuotaRefusal,
+  guestSliceWriteRefusal,
+  externalGroupSliceRefusal,
+  isGuestSlice,
+} from "./guest-vault.js";
 import {
   recordSecretAudit,
   readSecretAudit,
@@ -1090,9 +1100,18 @@ type GuardEnvPlan =
  */
 function cronGuardEnv(sessionId: string, target: SessionTarget): GuardEnvPlan {
   const profile = target.profile ? getProfile(target.profile) : undefined;
-  // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
-  // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-  const secrets = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
+  // Resolve the guard's secrets from the agent's REAL SLICE — its group's (own
+  // → shared-in → Main), or its own conversation's in an external group — and
+  // never always Main (T9 carry). Mono-tenant leaves `group` null → Main. The
+  // channel is what names the conversation, and it is also what
+  // `resolveCronTarget` resolved `target` from, so the guard and the agent read
+  // the same one.
+  const secrets = agentSecretEnv(
+    target.profile,
+    profile?.secrets,
+    target.group,
+    guestConversationKey(loadChannels().find((c) => c.sessionId === sessionId)),
+  );
   // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
   // multi-tenant — with the server's whole environment: a root shell for
   // anyone able to write a cron, holding the GUI password and every token the
@@ -2163,23 +2182,54 @@ function mayActFor(req: Caller & { body?: unknown }, targetId: string): boolean 
 
 /**
  * The identity a secret WRITE is scoped by, resolved SERVER-SIDE (never the
- * body). An AGENT (carrying its per-session key) owns its channel's group —
- * `agentGroupId` present (possibly null = its agent has no group → Main). A
- * browser leaves `agentGroupId` undefined and is resolved by `spawnGroupFor`
- * from its account. The `viewer` is the authorization principal either way (an
- * agent's viewer is the agent itself, member of its own group only).
+ * body). An AGENT (carrying its per-session key) owns its channel's ISOLATION
+ * UNIT — `agentGroupId` present (possibly null = its agent has no group →
+ * Main). In an EXTERNAL group that unit is the agent's own CONVERSATION, so a
+ * stranger writes into a slice of their own and can name no other. A browser
+ * leaves `agentGroupId` undefined and is resolved by `spawnGroupFor` from its
+ * account. The `viewer` is the authorization principal either way (an agent's
+ * viewer is the agent itself, member of its own group only).
+ *
+ * `refused` is the external group whose conversation we cannot name: the caller
+ * gets no slice rather than the group's, which every stranger on the door would
+ * share (design decision 2).
  */
 function secretCaller(req: Caller & { body?: unknown }): {
   agentGroupId?: string | null;
   viewer: Viewer | null;
+  refused?: string;
 } {
   const viewer = viewerFor(currentAccount(req));
   const agentId = callerOf(req).id;
   if (agentId) {
-    const group = loadChannels().find((c) => c.sessionId === agentId)?.group ?? null;
-    return { agentGroupId: group, viewer };
+    const chan = loadChannels().find((c) => c.sessionId === agentId);
+    const u = vaultUnitOfChannel(chan);
+    if (!u.ok) return { viewer, refused: u.why };
+    return { agentGroupId: chan?.group ? u.unit : null, viewer };
   }
   return { viewer };
+}
+
+/**
+ * Tell a GUEST, in their own chat, that a credential they handed over is kept.
+ *
+ * Through the session's own `stream-text` broadcast, which is how the server
+ * already speaks into a conversation (see the transcript-fork lines): every
+ * client of that `Live` gets it, and the Telegram and WhatsApp bridges ARE
+ * clients of it, so the line arrives where the person is without either bridge
+ * learning anything about the vault. The wording is `guestNotice`'s and not
+ * this route's — one place says things to strangers.
+ *
+ * Best-effort on purpose: the secret is already stored, and failing the write
+ * because a notice could not be delivered would be the wrong trade. A session
+ * that has already gone is simply nobody to tell.
+ */
+function tellGuestSecretKept(agentId: string | null | undefined): void {
+  if (!agentId) return;
+  const s = sessions.get(agentId);
+  const line = guestNotice("secret-kept");
+  if (!s || !line) return;
+  broadcast(s, { type: "stream-text", text: line, at: Date.now() });
 }
 
 /** The `createdBy` STAMPED on a secret — the agent's session id, or the signed-in
@@ -2201,8 +2251,15 @@ function secretCreatedBy(req: Caller & { body?: unknown }): string {
  */
 function secretWriteTarget(
   req: Caller & { body?: unknown; query?: Record<string, unknown> },
-): { ownerGroup: string } | { refused: string } {
+): { ownerGroup: string; callerUnit: string | null } | { refused: string } {
   const caller = secretCaller(req);
+  // An external agent whose conversation cannot be named writes nowhere.
+  if (caller.refused) return { refused: caller.refused };
+  // The caller's OWN unit travels with the target, so the guest-slice rule
+  // (`guestSliceWriteRefusal`) is applied to the same identity this resolved
+  // the target from — re-deriving it per route is how a refused caller would
+  // come back as "a person" and get a person's rights.
+  const callerUnit = caller.agentGroupId !== undefined ? caller.agentGroupId ?? MAIN_GROUP_ID : null;
   const groups = loadGroups();
   if (DEPLOYMENT_MODE === "multi-tenant") {
     // The client may REQUEST a target group (the panel's selected group), in the
@@ -2213,9 +2270,16 @@ function secretWriteTarget(
     const raw = (req.body as { group?: unknown } | undefined)?.group ?? req.query?.group;
     const requestedGroup = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
     const decision = secretWriteDecision({ ...caller, requestedGroup, groups });
-    return decision.ok ? { ownerGroup: decision.ownerGroup } : { refused: decision.error };
+    if (!decision.ok) return { refused: decision.error };
+    // The whole GROUP of an external door is not a slice anybody reads — the
+    // panel offers it like any other walled group, so this is the one place
+    // that says so instead of storing a credential nothing will ever resolve.
+    const nature = groups.find((x) => x.id === unitGroup(decision.ownerGroup))?.nature;
+    const nowhere = externalGroupSliceRefusal({ unit: decision.ownerGroup, external: nature === "external" });
+    if (nowhere) return { refused: nowhere };
+    return { ownerGroup: decision.ownerGroup, callerUnit };
   }
-  return { ownerGroup: secretOwnerGroup({ ...caller, groups }) };
+  return { ownerGroup: secretOwnerGroup({ ...caller, groups }), callerUnit };
 }
 
 /**
@@ -4693,6 +4757,71 @@ function commonsGroupIds(): string[] {
   return [...commonsGroupIdsOf(loadGroups())];
 }
 
+/**
+ * The VAULT SLICE an agent belongs to: its group's, or its own conversation's in
+ * an external group (`src/isolation-unit.ts`). The same unit its OS user, its
+ * HOME and its media directory already follow, so every store an agent touches
+ * is keyed the same way.
+ *
+ * A REFUSAL, not a fallback — the rule the whole external nature is built on
+ * (design decision 2). An external group whose conversation we cannot name gets
+ * NO slice, because both available answers are wrong: the group's slice is
+ * shared by every stranger on the door, and the commons is the operator's own.
+ */
+function vaultUnitOf(
+  group: string | null | undefined,
+  conversation: string | null,
+): { ok: true; unit: string } | { ok: false; why: string } {
+  if (!group) return { ok: true, unit: MAIN_GROUP_ID };
+  const g = loadGroups().find((x) => x.id === group);
+  // A group we cannot READ is not an external group we are failing to isolate:
+  // it is a stale channel row. Its own id as the key is today's answer and the
+  // one that keeps a pre-groups instance resolving its secrets.
+  if (!g) return { ok: true, unit: group };
+  return unitFor(g, conversation);
+}
+
+/** The same, from a CHANNEL — the only authority on which conversation an agent
+ *  belongs to (`guestConversationKey` reads its own Telegram/WhatsApp binding),
+ *  never a value a client sent. */
+function vaultUnitOfChannel(
+  chan: Pick<Channel, "group" | "telegram" | "whatsapp"> | null | undefined,
+): { ok: true; unit: string } | { ok: false; why: string } {
+  return vaultUnitOf(chan?.group ?? null, guestConversationKey(chan));
+}
+
+/**
+ * The `{NAME: value}` env an agent of this group and conversation receives — the
+ * ONE builder, so a caller cannot resolve an agent's secrets from the wrong
+ * slice by passing a group where a unit belongs. An unnameable conversation
+ * yields NO secrets at all, which is the refusal above and not an oversight: an
+ * agent with no credentials asks for them, an agent with someone else's uses
+ * them.
+ */
+function agentSecretEnv(
+  profileName: string | null | undefined,
+  profileSecrets: string[] | undefined,
+  group: string | null | undefined,
+  conversation: string | null,
+): Record<string, string> {
+  const u = vaultUnitOf(group, conversation);
+  if (!u.ok) return {};
+  return secretsForProfile(profileName, profileSecrets, u.unit, commonsGroupIds());
+}
+
+/** The NAMES of that same env (the reload signal, the audit row) — same slice,
+ *  same refusal, so what we report can never disagree with what we injected. */
+function agentSecretNames(
+  profileName: string | null | undefined,
+  profileSecrets: string[] | undefined,
+  group: string | null | undefined,
+  conversation: string | null,
+): string[] {
+  const u = vaultUnitOf(group, conversation);
+  if (!u.ok) return [];
+  return secretNamesForProfile(loadVault(), u.unit, profileName ?? "", profileSecrets, commonsGroupIds());
+}
+
 /** The state HOME for a CHANNEL that may not be live (e.g. GET /download of a
  *  past session, or pruning a worktree as the session ends): a live session's
  *  own `transcriptHome` when we have it, else re-derived from the channel's
@@ -5937,6 +6066,17 @@ async function teardownGroupOrConversations(g: Group): Promise<{ ok: boolean; wa
     });
   const rows = loadExternalUsers();
   const mine = externalUsersOfGroup(rows, g.id);
+  // The VAULT first, while the group still exists to name its slices. A
+  // `userdel --remove` takes the HOME with it but knows nothing of the central
+  // vault, which lives outside every agent's reach — so a credential a stranger
+  // handed over would survive the group it was given to, as a slice keyed to a
+  // conversation nothing can reach any more. Before the accounts, deliberately:
+  // a failing `userdel` must not be what leaves those values on disk.
+  for (const slice of guestSlicesOf(loadVault(), g.id)) {
+    const gone = deleteVaultSlice(slice.unit);
+    if (gone.length)
+      recordSecretAudit({ action: "deleted", secrets: gone, actor: "server", via: "system", instance: process.cwd(), detail: `guest conversation slice wiped with group ${g.id.slice(0, 8)}` });
+  }
   // The agents go first, once: every conversation of this group runs under its
   // own account, and a `userdel` cannot remove an account a process holds open.
   try {
@@ -6031,7 +6171,10 @@ function body_id(req: { body?: any }): string {
 // group (identity-derived, never the body) and requires owner-group membership.
 // Mono-tenant resolves everyone to Main, so this is byte-for-byte today.
 app.get("/secrets", (req, res) => {
-  const { viewer } = secretCaller(req);
+  const { viewer, agentGroupId, refused } = secretCaller(req);
+  // An external agent we cannot place reads nothing — the same refusal the write
+  // path makes, for the same reason: the alternative is the door's shared slice.
+  if (refused) return res.status(403).json({ error: refused });
   // A public non-Main group's secrets are visible to everyone who sees the group
   // (operator decision 2026-11-03: "public = commun") — `secretOwnGroupIds` adds
   // them to the member set, so a secret added to a public group no longer
@@ -6040,7 +6183,17 @@ app.get("/secrets", (req, res) => {
   // Same rule as the write gate (`secretWriteDecision`), so the panel only
   // offers to edit Main to whoever the PUT would let through.
   const mainGroup = groups.find((g) => g.id === MAIN_GROUP_ID) ?? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group);
-  const list = visibleSecrets(loadVault(), secretOwnGroupIds(groups, viewer), !isAgentViewer(viewer) && canWriteSecretGroup(mainGroup, viewer));
+  // `agentGroupId` is the caller's own UNIT when an agent signs the request. For
+  // a guest's conversation that boxes the listing to its own slice: its viewer
+  // belongs to the external group, so without it a stranger would read every
+  // other stranger's NAMES on the same door. For every other agent the unit IS
+  // its group, which `visibleSecrets` treats as no box at all — unchanged.
+  const list = visibleSecrets(
+    loadVault(),
+    secretOwnGroupIds(groups, viewer),
+    !isAgentViewer(viewer) && canWriteSecretGroup(mainGroup, viewer),
+    agentGroupId ?? null,
+  );
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });
@@ -6132,11 +6285,23 @@ app.put("/secrets", (req, res) => {
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   const ownerGroup = target.ownerGroup;
-  const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
+  const names = secretNames(ownerGroup);
+  const verdict = secretWriteVerdict(names.includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
   if (verdict === "created") {
     const bad = secretNameRefusal(key);
     if (bad) return res.status(400).json({ error: bad, name: key });
+  }
+  // A GUEST CONVERSATION's slice: who may write it (its own agent freely; a
+  // member may rotate, not add — the design's one open point, named in the
+  // refusal), and how much a stranger may put on the operator's disk. Both
+  // decided BEFORE anything is stored, and the quota refusal is RETURNED: an
+  // agent told "stored" while nothing was asks the person again for ever.
+  const slice = guestSliceWriteRefusal({ unit: ownerGroup, op: verdict === "created" ? "create" : "overwrite", callerUnit: target.callerUnit });
+  if (slice) return res.status(403).json({ error: slice, name: key });
+  if (isGuestSlice(ownerGroup)) {
+    const over = guestSecretQuotaRefusal({ names, value, creating: verdict === "created" });
+    if (over) return res.status(413).json({ error: over, name: key, limits: GUEST_SECRET_LIMITS });
   }
   // `attach: true` — the shadok-secrets skill's `set --attach`: create the
   // secret AND bind it to the caller's own profile in ONE write (invariant 37).
@@ -6167,6 +6332,13 @@ app.put("/secrets", (req, res) => {
   // `creatorProfile` reads it back, and it is never rewritten on an overwrite.
   setSecret(key, value, ownerGroup, secretCreatedBy(req), attachTo ? [attachTo] : []);
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
+  // THE GUEST IS TOLD (design decision 6). They cannot see the vault and may
+  // well believe a chat message stops existing once it is answered, so a
+  // credential of theirs landing on someone's disk is said out loud, in guest
+  // words (`guestNotice`, the one place that wording lives) rather than left to
+  // each bridge. A CREATION only: saying it again every time the same token is
+  // refreshed teaches them to skip the line that matters.
+  if (verdict === "created" && isGuestSlice(ownerGroup)) tellGuestSecretKept(callerOf(req).id);
   if (attachTo)
     recordSecretAudit({ action: "attached", secrets: [key], ...auditActorOf(req), profile: attachTo, instance: process.cwd() });
   res.json({ names: secretNames(ownerGroup), result: verdict, ...(attachTo ? { attached: attachTo } : {}) });
@@ -6179,6 +6351,8 @@ app.put("/secrets/share", (req, res) => {
   if (!name) return res.status(400).json({ error: "name required" });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const sealed = guestSliceWriteRefusal({ unit: target.ownerGroup, op: "share", callerUnit: target.callerUnit });
+  if (sealed) return res.status(403).json({ error: sealed, name });
   if (!setSecretSharing(name, target.ownerGroup, sharedWith))
     return res.status(404).json({ error: "no such secret in your group", name });
   res.json({ ok: true });
@@ -6198,6 +6372,8 @@ app.put("/secrets/profiles", (req, res) => {
     return res.status(403).json({ error: "Only a person, from the web UI, can choose which profiles receive a secret." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const sealed = guestSliceWriteRefusal({ unit: target.ownerGroup, op: "bind", callerUnit: target.callerUnit });
+  if (sealed) return res.status(403).json({ error: sealed, name });
   // The binding BEFORE the write, so the audit can name the direction. Read
   // here and not from the body: the client sends the whole set, so "added" and
   // "removed" exist only as a difference with what the vault currently holds.
@@ -6237,6 +6413,8 @@ app.delete("/secrets", (req, res) => {
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   const ownerGroup = target.ownerGroup;
+  const sealed = guestSliceWriteRefusal({ unit: ownerGroup, op: "delete", callerUnit: target.callerUnit });
+  if (sealed) return res.status(403).json({ error: sealed, name });
   if (name && secretNames(ownerGroup).includes(name)) {
     if (DEPLOYMENT_MODE !== "multi-tenant") {
       const r = monoSecretRefusal({ op: "delete", role: currentAccount(req)?.role ?? null });
@@ -10017,9 +10195,9 @@ function ledgerReflex(): string | null {
  */
 /** The backend an agent on this profile talks to — the same inputs
  *  `makePilot` hands the process, so the verdict cannot disagree with it. */
-function sessionBackend(profileName?: string | null, groupId?: string | null): Backend {
+function sessionBackend(profileName?: string | null, groupId?: string | null, conversation: string | null = null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
-  const secretEnv = secretsForProfile(profileName, profile?.secrets, groupId ?? MAIN_GROUP_ID, commonsGroupIds());
+  const secretEnv = agentSecretEnv(profileName, profile?.secrets, groupId, conversation);
   return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
@@ -10196,11 +10374,45 @@ function factoryMayDrive(req: Caller, sessionId: string): boolean {
  */
 function factoryVaultFor(req: Caller & { body?: unknown }): Record<string, string> {
   const agent = callerOf(req);
-  const gid = DEPLOYMENT_MODE !== "multi-tenant"
+  const unit = DEPLOYMENT_MODE !== "multi-tenant"
     ? MAIN_GROUP_ID
-    : agent.id ? factoryAgentGroup(agent.id) : factoryPersonGroup(req);
+    : agent.id ? factoryVaultUnit(agent.id, null) : factoryPersonGroup(req);
+  // A conversation we cannot name resolves NOTHING, so the scan compares against
+  // an empty vault: it can then only report "no secret matched", which is the
+  // safe direction — the unsafe one is answering from the commons' values.
+  if (unit === null) return {};
   const names = [...new Set(Object.keys(loadVault()).flatMap((g) => secretNames(g)))];
-  return secretsFor(names, gid, commonsGroupIds());
+  return secretsFor(names, unit, commonsGroupIds());
+}
+
+/**
+ * The vault slice the FACTORY resolves an agent's secrets from: its isolation
+ * UNIT, not its group.
+ *
+ * Group-level was right until an external group existed, and then stopped
+ * being: an external group is never a vault key, so resolving by group fell
+ * THROUGH to shared-in and the commons — handing a stranger's agent the
+ * operator's own values for whatever names a skill declares, and turning the
+ * factory's secret SCAN into an oracle for them (it names the secret a tree
+ * matched). A conversation's slice is own-only (`resolveSecretEntry`), so the
+ * same names now resolve to nothing, which is decision 4's answer.
+ *
+ * Null = an external conversation we cannot name: no slice at all, never the
+ * group's. `group` is the fallback for a session with no channel row, which is
+ * what this used to read.
+ */
+function factoryVaultUnit(sessionId: string | null | undefined, group: string | null | undefined): string | null {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return MAIN_GROUP_ID;
+  // The GROUP still comes from `agentCtxFor`, which falls back to the SPAWN's
+  // pending context: an agent mid-spawn has no channel row yet, and reading the
+  // registry alone would resolve it to the commons — widening, the wrong
+  // direction. The CONVERSATION can only come from the channel's own binding,
+  // and an external agent that has no row yet therefore has no slice at all,
+  // which is the safe answer rather than a widening one.
+  const chan = sessionId ? loadChannels().find((c) => c.sessionId === sessionId) : undefined;
+  const gid = (sessionId ? agentCtxFor(sessionId).group : null) ?? group ?? null;
+  const u = vaultUnitOf(gid, guestConversationKey(chan));
+  return u.ok ? u.unit : null;
 }
 
 /** The secret names an agent's factory skills are granted (accepted releases only). */
@@ -10210,13 +10422,16 @@ function factorySecretsFor(sessionId?: string | null): string[] {
 
 /**
  * The `{NAME: value}` env an agent's factory skills are granted, resolved from
- * the agent's OWN isolation group (own → shared-in → Main), exactly like
- * `secretsForProfile`. A bare `secretsFor(names)` resolves from Main: an agent
- * of an isolated group would receive Main's VALUES for the names its skills
- * declare (a cross-group leak), and never its own group's.
+ * the agent's OWN isolation UNIT (own → shared-in → Main for a group; own and
+ * nothing else for a guest conversation), exactly like `secretsForProfile`. A
+ * bare `secretsFor(names)` resolves from Main: an agent of an isolated group
+ * would receive Main's VALUES for the names its skills declare (a cross-group
+ * leak), and never its own group's. See `factoryVaultUnit`.
  */
 function factorySecretEnv(sessionId: string | null | undefined, group: string | null | undefined): Record<string, string> {
-  return secretsFor(factorySecretsFor(sessionId), group ?? MAIN_GROUP_ID, commonsGroupIds());
+  const unit = factoryVaultUnit(sessionId, group);
+  if (unit === null) return {};
+  return secretsFor(factorySecretsFor(sessionId), unit, commonsGroupIds());
 }
 
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
@@ -10240,7 +10455,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null, se
     // The profile's names AND those its factory skills were granted — what the
     // process really receives, so a newly granted name also lights the reload.
     secretNames: [...new Set([
-      ...secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
+      ...agentSecretNames(profileName, profile?.secrets, groupId, guestConversationKey(loadChannels().find((c) => c.sessionId === sessionId))),
       ...Object.keys(factorySecretEnv(sessionId, groupId)),
     ])],
     capabilities: installedCapabilities(),
@@ -10650,9 +10865,13 @@ function makePilot(
   for (const d of factory.dropped)
     console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
+  // A factory skill's declared secrets resolve from the agent's own UNIT, so a
+  // guest conversation's own slice and nothing else; a conversation we cannot
+  // name gets none at all rather than the commons' (`factoryVaultUnit`).
+  const factoryUnit = factoryVaultUnit(id, group);
   const secretEnv = {
-    ...secretsFor(factory.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
-    ...secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
+    ...(factoryUnit === null ? {} : secretsFor(factory.secrets, factoryUnit, commonsGroupIds())),
+    ...agentSecretEnv(profileName, profile?.secrets, group, conversation ?? null),
   };
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
@@ -10839,6 +11058,12 @@ interface Live {
   /** The isolation group this agent runs in (null = commons / mono-tenant) —
    *  the scope its profile's secrets resolve from (own → shared-in → Main). */
   group: string | null;
+  /** The guest CONVERSATION it belongs to, when its group isolates per
+   *  conversation (an EXTERNAL group) — null everywhere else. Stored on the
+   *  session because the vault slice, like the OS user and the media directory,
+   *  follows the conversation and not the group, and a live session must be able
+   *  to say which one it is without going back to the channel registry. */
+  conversation: string | null;
   pilot: Pilot;
   clients: Set<WebSocket>;
   busy: boolean;
@@ -11276,7 +11501,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
     action: "injected",
     secrets: Object.keys({
       ...factorySecretEnv(s.id, s.group),
-      ...secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds()),
+      ...agentSecretEnv(s.profile, profile?.secrets, s.group, s.conversation),
     }),
     ...by,
     agent: s.id,
@@ -11453,6 +11678,29 @@ function forgetChannelTriggers(sessionId: string): TriggerCount {
 }
 
 /**
+ * Wipe the vault slice of a GUEST CONVERSATION as its agent is deleted — a
+ * no-op for every other channel, so the caller need not ask whether it applies.
+ *
+ * One audit row for what went: the vault keeps no history, so a credential that
+ * disappears unrecorded is the one move in it nobody could account for.
+ */
+function dropGuestSliceOf(ch: Channel): void {
+  const u = vaultUnitOfChannel(ch);
+  if (!u.ok || !isGuestSlice(u.unit)) return;
+  const gone = deleteVaultSlice(u.unit);
+  if (!gone.length) return;
+  recordSecretAudit({
+    action: "deleted",
+    secrets: gone,
+    actor: "server",
+    via: "system",
+    instance: process.cwd(),
+    agent: ch.sessionId,
+    detail: "guest conversation slice wiped with its agent",
+  });
+}
+
+/**
  * End a channel by id, whichever interface asked — works even when the session
  * isn't live (a dead/zombie channel after a crash): always drops it from the
  * registry and deletes its Telegram topic, and tears down the live session +
@@ -11477,6 +11725,17 @@ async function endChannel(sessionId: string): Promise<boolean> {
   // an irreversible delete must not ride on a guess. That caller decides for
   // itself (`onChannelClosed`).
   if (ch) forgetChannelTriggers(sessionId);
+  // THE VAULT SLICE DIES WITH THE AGENT (design decision 7). The split is
+  // deliberate and it is the whole decision: the conversation's Unix USER and
+  // HOME survive this — `guestWorkDirName` keeps a person's folder across their
+  // agent's deletion on purpose, and a `userdel` under a surviving folder would
+  // hand its files to whoever gets that uid next — while the credentials they
+  // handed over do not. Minimum retention, no orphaned stranger credentials.
+  // Tearing the USER down is its own gesture: deleting the conversation.
+  //
+  // Same guard as every other per-conversation store: only a slice we can NAME,
+  // never the group's as a consolation (`vaultUnitOfChannel` refuses instead).
+  if (ch) dropGuestSliceOf(ch);
   if (ch?.telegram?.threadId) closeTelegramTopic(ch.telegram.chatId, ch.telegram.threadId);
   const s = sessions.get(sessionId);
   const worktreeBranch = s?.worktree?.branch ?? ch?.branch;
@@ -11597,8 +11856,8 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
  *  SHADOK_CONTEXT_WINDOW says it, and without it the usual assumption stands
  *  (and `effectiveWindow` still promotes on proof). Shared by the spawn and
  *  `GET /channels/glance`, so a row's pre-resume % matches the live one. */
-function assumedContextWindow(profile?: string | null, model?: string | null, group?: string | null): number {
-  const backend = sessionBackend(profile, group);
+function assumedContextWindow(profile?: string | null, model?: string | null, group?: string | null, conversation: string | null = null): number {
+  const backend = sessionBackend(profile, group, conversation);
   return (backend.kind === "custom" ? backend.contextWindow : null) ?? windowForModel(sessionModelSetting(profile, model));
 }
 
@@ -11637,13 +11896,14 @@ async function createSession(
     sessionFilePath(cwd, id, transcriptHome),
   );
   const seededUsage = new Map([...seededSamples].map(([mid, s]) => [mid, s.usage] as const));
-  const backend = sessionBackend(profile, group);
-  const contextWindow = assumedContextWindow(profile, model, group);
+  const backend = sessionBackend(profile, group, conversation);
+  const contextWindow = assumedContextWindow(profile, model, group, conversation);
   const s: Live = {
     id,
     cwd,
     transcriptHome,
     group,
+    conversation,
     pilot,
     profile,
     appliedProfile: profile,   // the process we just spawned did receive it

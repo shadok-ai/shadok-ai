@@ -236,8 +236,15 @@ export function secretUsers(profiles, name) {
  * it says what actually breaks — their agents stop receiving it at the next
  * spawn or reload.
  */
-export function secretDeleteConfirmText(name, users) {
+export function secretDeleteConfirmText(name, users, conversation) {
   const list = Array.isArray(users) ? users.filter((u) => typeof u === "string" && u) : [];
+  // A GUEST's own entry: say whose it is and what happens to them. "No profile
+  // uses it" would be true and useless here — a guest conversation's secrets are
+  // injected by slice, not by profile, so the profile sentence below never
+  // applies and the consequence that does matter is the person being asked again.
+  if (typeof conversation === "string" && conversation)
+    return "Remove the secret " + name + ", stored by the guest conversation " + conversation + "?\n\n" +
+      "Its value cannot be recovered, and that conversation's agent will have to ask the person for it again.";
   const head = "Remove the secret " + name + " from the vault?\n\nIts value cannot be recovered afterwards.";
   if (!list.length) return head;
   return head + "\n\nAgents running " + (list.length === 1 ? "the profile " + list[0] : "these profiles: " + list.join(", ")) +

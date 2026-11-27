@@ -2,16 +2,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MAIN_GROUP_ID, canWriteSecretGroup, spawnGroupFor, type Group, type Viewer } from "./groups.js";
+import { unitConversation, unitGroup, type UnitId } from "./isolation-unit.js";
+import { isGuestSlice } from "./guest-vault.js";
 
 /**
  * Central secret vault: named secrets stored OUTSIDE any repo at
  * ~/.shadok-ai/secrets.json (600) and injected as environment variables into an
  * agent's `claude` process at spawn — never written into the working directory.
  *
- * Per-GROUP: `{ groupId: { NAME: SecretEntry } }`. One server-owned file with
- * policy scoping (not one file per group). Names are unique PER GROUP, never
+ * Per ISOLATION UNIT: `{ unit: { NAME: SecretEntry } }`. One server-owned file
+ * with policy scoping (not one file per unit). Names are unique PER UNIT, never
  * global. A group may SHARE a secret by reference (`sharedWith`), and `Main`
  * is the instance-wide fallback. A profile lists the NAMES it wants injected.
+ *
+ * The unit is a GROUP id for every group but an external one, byte for byte as
+ * it always was — an existing instance's file is untouched by this. In an
+ * EXTERNAL group it is `"<group>/<conversation>"` (`src/isolation-unit.ts`), so
+ * a stranger gets a slice of their own, sealed from every other conversation:
+ * see `src/guest-vault.ts` for the policy that seals it, and the design's
+ * decisions 4 and 6.
  */
 /**
  * In a secret's `profiles`: "every profile" — injected into EVERY agent the
@@ -114,17 +123,24 @@ const ownOf = <T>(obj: Record<string, T> | undefined, key: string): T | undefine
  */
 export function resolveSecretEntry(
   vault: Vault,
-  groupId: string,
+  unit: UnitId,
   name: string,
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): SecretEntry | undefined {
-  const mine = ownOf(ownOf(vault, groupId), name);
+  const mine = ownOf(ownOf(vault, unit), name);
   if (mine) return mine;
+  // A GUEST CONVERSATION's slice resolves to ITSELF and nothing else — no
+  // shared-in, no public commons, no Main (design decision 4: "an external
+  // agent's resolution chain is its own slice and nothing else"). The refusal
+  // lives here, in the one selection rule, so no caller can forget it: every
+  // tier below hands a credential to an agent nobody chose to give it to, and
+  // in an external group that agent is a stranger's.
+  if (isGuestSlice(unit)) return undefined;
   // When two groups share the same name with the caller, the winner is
   // insertion-order-deterministic: the first such group in `Object.entries` order.
   for (const [gid, gv] of Object.entries(vault)) {
     const e = ownOf(gv, name);
-    if (gid !== groupId && e && e.sharedWith.includes(groupId)) return e;
+    if (gid !== unit && e && e.sharedWith.includes(unit)) return e;
   }
   // The COMMONS tier: Main, plus every PUBLIC non-Main group — a public group is
   // visible-to-all (operator decision 2026-11-03: "public = commun"), so its
@@ -132,7 +148,7 @@ export function resolveSecretEntry(
   // by the server (it owns the group natures); it defaults to Main alone, so a
   // caller that does not know the natures keeps today's own→shared→Main behaviour.
   for (const cid of commonsIds) {
-    if (cid === groupId) continue; // own already checked above
+    if (cid === unit) continue; // own already checked above
     const e = ownOf(ownOf(vault, cid), name);
     if (e) return e;
   }
@@ -141,13 +157,13 @@ export function resolveSecretEntry(
 
 export function resolveSecretValues(
   vault: Vault,
-  groupId: string,
+  unit: UnitId,
   names: readonly string[],
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of names) {
-    const e = resolveSecretEntry(vault, groupId, name, commonsIds);
+    const e = resolveSecretEntry(vault, unit, name, commonsIds);
     if (e) out[name] = e.value;
   }
   return out;
@@ -165,11 +181,23 @@ export function resolveSecretValues(
  */
 export function secretNamesForProfile(
   vault: Vault,
-  groupId: string,
+  unit: UnitId,
   profileName: string,
   profileSecrets: readonly string[] = [],
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): string[] {
+  // A GUEST CONVERSATION: every name in its OWN slice, and nothing else.
+  //
+  // No profile binding, on purpose. `entry.profiles` exists to say WHICH agents
+  // of a group receive a credential, and inside a conversation's slice that
+  // question has one answer — the conversation's own agents, which is every
+  // agent that can resolve this unit at all. A binding would only be a way to
+  // get it wrong. The legacy `profileSecrets` list is dropped for the same
+  // reason it must be: those names resolve from the profile, which is shared by
+  // every stranger on the door, and an external door already refuses a profile
+  // that carries secrets (`guestEnableRefusal`).
+  if (isGuestSlice(unit))
+    return filterReserved(Object.keys(vault[unit] ?? {}).filter((n) => Object.hasOwn(vault[unit], n)));
   const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
   const names = new Set<string>();
   for (const slice of Object.values(vault)) {
@@ -177,7 +205,7 @@ export function secretNamesForProfile(
     for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
   }
   for (const name of names) {
-    const e = resolveSecretEntry(vault, groupId, name, commonsIds);
+    const e = resolveSecretEntry(vault, unit, name, commonsIds);
     if (!e) continue;
     // `ANY_PROFILE` reaches an agent without a profile too: "any" is every agent
     // the secret resolves for, which is the only thing still gating it.
@@ -223,12 +251,16 @@ export function normalizeVault(raw: unknown, now: number = Date.now()): Vault {
   return out;
 }
 
-export type SecretSource = "own" | "shared" | "main";
+export type SecretSource = "own" | "shared" | "main" | "guest";
 export interface VisibleSecret {
   name: string;
   source: SecretSource;
   /** The group that OWNS the secret — omitted for a Main secret (`source:"main"`). */
   ownerGroup?: string;
+  /** Only on `source:"guest"` — the conversation whose slice holds it, and the
+   *  unit a write must target. The name is all a member ever sees of it. */
+  conversation?: string;
+  unit?: string;
   /** Audit fields — metadata only, never the value. */
   createdBy: string;
   createdAt: number;
@@ -290,9 +322,42 @@ export function longLivedTokenInfo(
  * own > shared > main. In mono-tenant the caller resolves to Main only, so this
  * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
  */
-export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>, mainWritable = false): VisibleSecret[] {
-  const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
+export function visibleSecrets(
+  vault: Vault,
+  ownGroupIds: ReadonlySet<string>,
+  mainWritable = false,
+  ownUnit: UnitId | null = null,
+): VisibleSecret[] {
+  // A GUEST's own agent asking what it holds sees its OWN slice and nothing
+  // else — not the group's, and above all not another conversation's. Its
+  // viewer is a member of its group (`Viewer.onlySession`), so without this it
+  // would come through `ownGroupIds` below and read every stranger's NAMES on
+  // the door. A name is not a value, and it is still someone else's.
+  if (ownUnit && isGuestSlice(ownUnit)) {
+    const slice = vault[ownUnit] ?? {};
+    return Object.keys(slice)
+      .filter((n) => Object.hasOwn(slice, n) && !RESERVED_SECRET_NAMES.has(n))
+      .map((name) => {
+        const e = slice[name];
+        return {
+          name,
+          source: "own" as const,
+          ownerGroup: ownUnit,
+          createdBy: e.createdBy,
+          createdAt: e.createdAt,
+          updatedAt: e.updatedAt,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2, guest: 3 };
   const chosen = new Map<string, VisibleSecret>();
+  // Guest rows are collected apart and keyed by UNIT+name, never folded into
+  // `chosen`: that map is keyed by name alone (one name resolves to one value
+  // for a group), and a stranger who stores `GITHUB_TOKEN` must not displace —
+  // or be displaced by — the group's own `GITHUB_TOKEN`. They are different
+  // secrets in different slices and the panel lists them as such.
+  const guests = new Map<string, VisibleSecret>();
   const consider = (cand: VisibleSecret) => {
     const prev = chosen.get(cand.name);
     if (!prev || rank[cand.source] < rank[prev.source]) chosen.set(cand.name, cand);
@@ -304,6 +369,17 @@ export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>, m
       if (RESERVED_SECRET_NAMES.has(name)) continue;
       const e = slice[name];
       const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
+      // A GUEST CONVERSATION's slice, seen by the GROUP's members: the names,
+      // never the values — the vault's existing rule, applied to a stranger's
+      // data because the operator is accountable for what their instance holds
+      // (design decision 6). Not shared, not bindable, and not creatable by a
+      // member: see `guestSliceWriteRefusal`.
+      const conv = unitConversation(gid);
+      if (conv !== null) {
+        if (ownGroupIds.has(unitGroup(gid)))
+          guests.set(`${gid}\u0000${name}`, { name, source: "guest", ownerGroup: unitGroup(gid), conversation: conv, unit: gid, ...audit });
+        continue;
+      }
       // Main stays tagged `main` (every view lists it as inherited), but a caller
       // who may WRITE Main gets its sharing/profiles too, so the "Public groups"
       // view can edit it: Main is the first public group, not a read-only tier.
@@ -319,7 +395,28 @@ export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>, m
         consider({ name, source: "shared", ownerGroup: gid, ...audit });
     }
   }
-  return [...chosen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [
+    ...[...chosen.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    // After the group's own, always: a member reads their own vault first, and
+    // a busy door's conversations would otherwise bury it.
+    ...[...guests.values()].sort((a, b) => (a.conversation ?? "").localeCompare(b.conversation ?? "") || a.name.localeCompare(b.name)),
+  ];
+}
+
+/**
+ * Pure: the units a secret may ACTUALLY be lent to, from what a caller asked.
+ *
+ * Its own owner is dropped because a secret is already resolvable by its owner.
+ * A GUEST CONVERSATION is dropped because a conversation's slice resolves to
+ * ITSELF only (`resolveSecretEntry`), so a row claiming to lend a secret to one
+ * would be stored, listed as shared — and reach nobody: a grant that reads as
+ * real and is not, which is the worst way for an access listing to be wrong.
+ * The panel cannot even offer it (`shareTargets` lists groups), so this only
+ * ever catches a hand-made call — which is exactly why it belongs in the data's
+ * own rule rather than in the UI.
+ */
+export function shareableTargets(asked: readonly unknown[], owner: UnitId): string[] {
+  return [...new Set(asked.filter((g): g is string => typeof g === "string" && !!g && g !== owner && !isGuestSlice(g)))];
 }
 
 export type SecretWrite = "created" | "updated" | "refused";
@@ -339,10 +436,12 @@ export function secretWriteVerdict(exists: boolean, overwrite: boolean): SecretW
  * The group a secret WRITE lands in. For an agent this is derived SERVER-SIDE
  * from identity and is NON-NEGOTIABLE; for a browser it may be a client REQUEST
  * that the authorization gate (`secretWriteDecision`) still has to clear.
- *   - an AGENT (`agentGroupId` present, even as null): its OWN channel's group,
- *     or Main when it has none. A `requestedGroup` that differs is IGNORED — an
- *     agent must never aim another tenant's vault by naming it in the body; it writes only its own group
- *     (Task 10's agent-own-group rule, private included).
+ *   - an AGENT (`agentGroupId` present, even as null): its OWN channel's
+ *     ISOLATION UNIT — its group, or its own conversation in an external group
+ *     — or Main when it has none. A `requestedGroup` that differs is IGNORED —
+ *     an agent must never aim another tenant's vault by naming it in the body;
+ *     it writes only its own unit (Task 10's agent-own-group rule, private
+ *     included, and now one stranger's conversation at a time).
  *   - a BROWSER (`agentGroupId` undefined): the group it REQUESTED (the panel's
  *     selected group — a request, authorized separately), or, when omitted,
  *     `spawnGroupFor` — the same identity-derived "your one group or the
@@ -377,9 +476,16 @@ export function secretWriteDecision(input: {
   groups: readonly Group[];
 }): { ok: true; ownerGroup: string } | { ok: false; error: string } {
   const ownerGroup = secretOwnerGroup(input);
+  // The owner may be a whole group or ONE CONVERSATION of an external group
+  // (`"<group>/<conversation>"`). The membership gate is the GROUP's either
+  // way: who may touch a guest's slice is decided by the group they knocked on,
+  // and the extra rule for a guest slice — rotate and delete, never create, and
+  // never shared out — is `guestSliceWriteRefusal`, applied where the operation
+  // is known.
+  const aclGroup = unitGroup(ownerGroup);
   const g =
-    input.groups.find((x) => x.id === ownerGroup) ??
-    (ownerGroup === MAIN_GROUP_ID
+    input.groups.find((x) => x.id === aclGroup) ??
+    (aclGroup === MAIN_GROUP_ID
       ? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group)
       : null);
   // An AGENT (its per-session key present → `agentGroupId` defined, possibly
@@ -396,7 +502,7 @@ export function secretWriteDecision(input: {
     return { ok: true, ownerGroup };
   }
   if (!canWriteSecretGroup(g, input.viewer)) {
-    return { ok: false, error: `you are not entitled to write a secret in group ${ownerGroup}` };
+    return { ok: false, error: `you are not entitled to write a secret in group ${aclGroup}` };
   }
   return { ok: true, ownerGroup };
 }
@@ -426,9 +532,47 @@ export function saveVault(v: Vault): void {
   fs.chmodSync(FILE, 0o600); // enforce 600 even if the file pre-existed
 }
 
-/** Secret names (never the values) in one group's own slice, sorted. */
-export function secretNames(groupId: string = MAIN_GROUP_ID): string[] {
-  return filterReserved(Object.keys(loadVault()[groupId] ?? {})).sort();
+/** Secret names (never the values) in one unit's own slice, sorted. */
+export function secretNames(unit: UnitId = MAIN_GROUP_ID): string[] {
+  return filterReserved(Object.keys(loadVault()[unit] ?? {})).sort();
+}
+
+/**
+ * Wipe a whole slice, returning the names it held.
+ *
+ * The one gesture behind "the slice dies with the agent" (design decision 7):
+ * a guest's Unix user and HOME SURVIVE their agent's deletion on purpose — the
+ * person comes back to their own folder — while the credentials they handed
+ * over do not. Minimum retention, and no orphaned stranger credentials left on
+ * the operator's disk.
+ *
+ * Returns the names so the caller can write one audit row: a credential that
+ * disappears with no trace is the one vault move nobody could account for.
+ */
+export function deleteVaultSlice(unit: UnitId): string[] {
+  const v = loadVault();
+  const slice = v[unit];
+  if (!slice) return [];
+  const names = Object.keys(slice);
+  delete v[unit];
+  saveVault(v);
+  return names;
+}
+
+/**
+ * Every GUEST CONVERSATION slice of a group, with the names each holds — what
+ * the vault panel lists for a member and what a group teardown has to sweep.
+ * Names only, like every listing: the values never leave this module.
+ */
+export function guestSlicesOf(vault: Vault, groupId: string): { unit: UnitId; conversation: string; names: string[] }[] {
+  const out: { unit: UnitId; conversation: string; names: string[] }[] = [];
+  for (const [unit, slice] of Object.entries(vault)) {
+    if (unitGroup(unit) !== groupId) continue;
+    const conv = unitConversation(unit);
+    if (conv === null || !slice || typeof slice !== "object") continue;
+    out.push({ unit, conversation: conv, names: filterReserved(Object.keys(slice)).sort() });
+  }
+  return out.sort((a, b) => a.conversation.localeCompare(b.conversation));
 }
 
 /**
@@ -439,24 +583,24 @@ export function secretNames(groupId: string = MAIN_GROUP_ID): string[] {
 export function setSecret(
   name: string,
   value: string,
-  groupId: string = MAIN_GROUP_ID,
+  unit: UnitId = MAIN_GROUP_ID,
   createdBy = "",
   profiles: readonly string[] = [],
 ): void {
   const v = loadVault();
   const now = Date.now();
-  const prev = v[groupId]?.[name];
-  (v[groupId] ??= {})[name] = prev
+  const prev = v[unit]?.[name];
+  (v[unit] ??= {})[name] = prev
     ? { ...prev, value, updatedAt: now }
-    : { value, ownerGroup: groupId, sharedWith: [], profiles: [...new Set(profiles)], createdBy, createdAt: now, updatedAt: now };
+    : { value, ownerGroup: unit, sharedWith: [], profiles: [...new Set(profiles)], createdBy, createdAt: now, updatedAt: now };
   saveVault(v);
 }
 
-export function deleteSecret(name: string, groupId: string = MAIN_GROUP_ID): void {
+export function deleteSecret(name: string, unit: UnitId = MAIN_GROUP_ID): void {
   const v = loadVault();
-  if (v[groupId] && name in v[groupId]) {
-    delete v[groupId][name];
-    if (!Object.keys(v[groupId]).length) delete v[groupId];
+  if (v[unit] && name in v[unit]) {
+    delete v[unit][name];
+    if (!Object.keys(v[unit]).length) delete v[unit];
     saveVault(v);
   }
 }
@@ -473,7 +617,7 @@ export function setSecretSharing(name: string, groupId: string, sharedWith: stri
   if (!slice || !Object.hasOwn(slice, name)) return false;
   slice[name] = {
     ...slice[name],
-    sharedWith: [...new Set(sharedWith.filter((g) => typeof g === "string" && g && g !== groupId))],
+    sharedWith: shareableTargets(sharedWith, groupId),
     updatedAt: Date.now(),
   };
   saveVault(v);
@@ -549,11 +693,11 @@ export function createAttachRefusal(opts: { verdict: SecretWrite; callerProfile:
  */
 export function secretsFor(
   names: string[] | undefined,
-  groupId: string = MAIN_GROUP_ID,
+  unit: UnitId = MAIN_GROUP_ID,
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): Record<string, string> {
   if (!names?.length) return {};
-  return resolveSecretValues(loadVault(), groupId, names, commonsIds);
+  return resolveSecretValues(loadVault(), unit, names, commonsIds);
 }
 
 /**
@@ -567,10 +711,10 @@ export function secretsFor(
 export function secretsForProfile(
   profileName: string | null | undefined,
   profileSecrets: string[] | undefined,
-  groupId: string = MAIN_GROUP_ID,
+  unit: UnitId = MAIN_GROUP_ID,
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): Record<string, string> {
   const vault = loadVault();
-  const names = secretNamesForProfile(vault, groupId, profileName ?? "", profileSecrets ?? [], commonsIds);
-  return names.length ? resolveSecretValues(vault, groupId, names, commonsIds) : {};
+  const names = secretNamesForProfile(vault, unit, profileName ?? "", profileSecrets ?? [], commonsIds);
+  return names.length ? resolveSecretValues(vault, unit, names, commonsIds) : {};
 }

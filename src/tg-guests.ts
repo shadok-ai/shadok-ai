@@ -483,6 +483,7 @@ export type GuestNotice =
   | "upload-failed"   // a file the agent sent could not be delivered
   | "tool-activity"   // the running commentary of tool calls
   | "door-full"       // the door is at its ceiling: no agent was created
+  | "secret-kept"      // something they handed over was stored on the instance
   // WhatsApp (step 3) — the occasions only that bridge has:
   | "unreadable"      // a message arrived with no content for this device
   | "too-large"       // a file over the bridge's ceiling
@@ -529,6 +530,14 @@ export function guestNotice(kind: GuestNotice): string | null {
     // and that later is a real answer: the ceiling is on conversations held NOW.
     case "door-full":
       return "⚠️ I can't take on a new conversation right now — there are too many open on my side. It's not about you: please try again later.";
+    // A credential the person handed over was just written to the operator's
+    // disk. They are TOLD, because they cannot see the vault, cannot ask what is
+    // in it, and may well believe a chat message vanishes once answered. Three
+    // facts, no vocabulary they do not have: it is kept, it is theirs alone, and
+    // it goes when the conversation does. Said on a CREATION only — repeating it
+    // on every refresh of the same token would train them to ignore it.
+    case "secret-kept":
+      return "🔒 I've saved that on the machine I run on, so you won't have to send it again. Nobody else's conversation can read it, and it is erased when this conversation is closed.";
     // Nothing to act on: a new message starts the conversation up again, and a
     // failed upload or a tool trace is the operator's business, not theirs.
     case "exited":

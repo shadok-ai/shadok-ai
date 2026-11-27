@@ -193,7 +193,10 @@ test("IMPORTANT3 wiring: GET /live filters sessions by group visibility", () => 
 test("Task 11 wiring: secretWriteTarget reads a body/query `group` and threads it as requestedGroup", () => {
   const start = SERVER_SRC.indexOf("function secretWriteTarget(");
   assert.ok(start > 0, "secretWriteTarget must exist");
-  const body = SERVER_SRC.slice(start, start + 1300);
+  // To the function's END, not a byte budget: a fixed window silently stops
+  // covering the tail of the function the moment anything is added to it, and
+  // then asserts nothing about the part that changed.
+  const body = SERVER_SRC.slice(start, SERVER_SRC.indexOf("\n}\n", start));
   // It must READ a client-supplied group (body OR query — DELETE uses the query)…
   assert.ok(/\.group\b/.test(body) && body.includes("req.query"), "secretWriteTarget must read a body/query `group`");
   // …and pass it as `requestedGroup` into the (authorizing) decision, never as a

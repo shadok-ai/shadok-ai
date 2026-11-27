@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, secretNameRefusal, suggestSecretName, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { guestSlicesOf, shareableTargets, visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, secretNameRefusal, suggestSecretName, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -175,4 +175,114 @@ test("secretNameRefusal: a space, a dash or a leading digit is refused, saying w
   assert.match(secretNameRefusal("2FA_CODE") ?? "", /starts with a digit/);
   assert.equal(suggestSecretName("2fa code"), "_2FA_CODE");
   assert.equal(suggestSecretName("é"), "MY_SECRET");
+});
+
+// ── A guest conversation's own slice (external groups, step 4) ───────────
+// The vault is keyed by the ISOLATION UNIT: a group id for every group but an
+// external one, `"<group>/<conversation>"` there. These lock the two directions
+// that matter — nothing resolves INTO a guest's slice, and nothing resolves OUT
+// of it — plus the member-facing listing, which is names and never values.
+
+const CONV = "ext/tg-55";
+const CONV2 = "ext/tg-66";
+
+const guestVault = (): Vault => ({
+  main: { TOKEN: e("commons-value", "main"), ONLY_MAIN: e("m", "main") },
+  lender: { LENT: e("l", "lender", ["ext", CONV]) },
+  [CONV]: { TOKEN: e("the-guest-own", CONV), MINE: e("x", CONV) },
+  [CONV2]: { TOKEN: e("another-guest", CONV2) },
+});
+
+test("guest slice: resolves to ITSELF and nothing else — no shared-in, no commons, no Main", () => {
+  const v = guestVault();
+  // Its own names, with its own values.
+  assert.deepEqual(resolveSecretValues(v, CONV, ["TOKEN", "MINE"]), { TOKEN: "the-guest-own", MINE: "x" });
+  // Main's commons name: absent, NOT the commons value. This is the whole of
+  // design decision 4 — "its own slice and nothing else".
+  assert.deepEqual(resolveSecretValues(v, CONV, ["ONLY_MAIN"]), {});
+  // A secret explicitly lent TO this conversation is still refused: a `sharedWith`
+  // naming it would otherwise be a way back in, from outside.
+  assert.deepEqual(resolveSecretValues(v, CONV, ["LENT"]), {});
+  // And a sibling conversation's value never appears, same name or not.
+  assert.equal(resolveSecretValues(v, CONV, ["TOKEN"]).TOKEN, "the-guest-own");
+  assert.equal(resolveSecretValues(v, CONV2, ["TOKEN"]).TOKEN, "another-guest");
+});
+
+test("guest slice: a GROUP unit still resolves exactly as before — nothing about an existing instance changes", () => {
+  const v = guestVault();
+  assert.equal(resolveSecretValues(v, "ext", ["ONLY_MAIN"]).ONLY_MAIN, "m");
+  assert.equal(resolveSecretValues(v, "ext", ["LENT"]).LENT, "l");
+  // The external GROUP holds no slice, so its own name resolves from the
+  // commons — which is why a write aimed at the group is refused outright
+  // (`externalGroupSliceRefusal`) rather than left to look like it worked.
+  assert.equal(resolveSecretValues(v, "ext", ["TOKEN"]).TOKEN, "commons-value");
+});
+
+test("guest slice: every own name is injected, with no profile binding and no legacy profile list", () => {
+  const v = guestVault();
+  // No `profiles` on any entry, and no profile name passed: a group would get
+  // nothing here. A conversation gets all of its own.
+  assert.deepEqual(secretNamesForProfile(v, CONV, "Dev").sort(), ["MINE", "TOKEN"]);
+  assert.deepEqual(secretNamesForProfile(v, CONV, "").sort(), ["MINE", "TOKEN"]);
+  // The legacy `profile.secrets` list is DROPPED, not unioned: that list is
+  // shared by every stranger on the door, so a name on it would resolve the
+  // same way for all of them.
+  assert.deepEqual(secretNamesForProfile(v, CONV, "Dev", ["ONLY_MAIN"]).sort(), ["MINE", "TOKEN"]);
+});
+
+test("visibleSecrets: a member of the group sees a guest's NAMES, tagged with the conversation", () => {
+  const list = visibleSecrets(guestVault(), new Set(["ext", "lender"]));
+  const guests = list.filter((s) => s.source === "guest");
+  assert.deepEqual(
+    guests.map((s) => [s.conversation, s.name, s.unit, s.ownerGroup]),
+    [["tg-55", "MINE", CONV, "ext"], ["tg-55", "TOKEN", CONV, "ext"], ["tg-66", "TOKEN", CONV2, "ext"]],
+  );
+  // Never a value, on any row — the vault's existing rule, and the reason a
+  // stranger's slice can be shown to a member at all.
+  for (const row of list) assert.equal((row as Record<string, unknown>).value, undefined);
+});
+
+test("visibleSecrets: a guest's NAME never displaces the group's own secret of the same name", () => {
+  const v: Vault = { ext: { TOKEN: e("group-own", "ext") }, [CONV]: { TOKEN: e("guest-own", CONV) } };
+  const list = visibleSecrets(v, new Set(["ext"]));
+  assert.deepEqual(list.map((s) => s.source), ["own", "guest"]);
+});
+
+test("visibleSecrets: a guest sees its OWN slice only — not the group's, not another conversation's", () => {
+  const list = visibleSecrets(guestVault(), new Set(["ext"]), false, CONV);
+  assert.deepEqual(list.map((s) => s.name), ["MINE", "TOKEN"]);
+  assert.deepEqual([...new Set(list.map((s) => s.ownerGroup))], [CONV]);
+});
+
+test("visibleSecrets: a member of ANOTHER group sees no guest row at all", () => {
+  const list = visibleSecrets(guestVault(), new Set(["lender"]));
+  assert.deepEqual(list.filter((s) => s.source === "guest"), []);
+});
+
+test("guestSlicesOf: every conversation slice of a group, names only and sorted", () => {
+  const v = guestVault();
+  assert.deepEqual(guestSlicesOf(v, "ext"), [
+    { unit: CONV, conversation: "tg-55", names: ["MINE", "TOKEN"] },
+    { unit: CONV2, conversation: "tg-66", names: ["TOKEN"] },
+  ]);
+  // The GROUP's own slice is not one of them, and neither is another group's.
+  assert.deepEqual(guestSlicesOf(v, "lender"), []);
+  assert.deepEqual(guestSlicesOf(v, "main"), []);
+});
+
+test("guestSlicesOf: a group whose id is a PREFIX of another's claims nothing of it", () => {
+  // `unitGroup` splits on the separator rather than matching a prefix, which is
+  // what keeps a teardown of `ext` from wiping `extra`'s conversations.
+  const v: Vault = { "ext/a": { A: e("1", "ext/a") }, "extra/b": { B: e("2", "extra/b") } };
+  assert.deepEqual(guestSlicesOf(v, "ext").map((s) => s.unit), ["ext/a"]);
+  assert.deepEqual(guestSlicesOf(v, "extra").map((s) => s.unit), ["extra/b"]);
+});
+
+test("shareableTargets: a GUEST CONVERSATION is never a share target, nor is the owner itself", () => {
+  // A conversation's slice resolves to ITSELF only, so a row lending a secret to
+  // one would be stored, listed as shared, and reach nobody — a grant that reads
+  // as real and is not. In the data's own rule and not just the UI, because the
+  // panel cannot offer it: only a hand-made call gets here.
+  assert.deepEqual(shareableTargets(["comex", "door/tg-77", "", null, 7, "comex"], "mine"), ["comex"]);
+  assert.deepEqual(shareableTargets(["mine", "door"], "mine"), ["door"]);
 });

@@ -2942,3 +2942,62 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     an account a process holds open.
     Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
     decisions 1, 2, 7 and 8 (step 3 of 5).
+
+
+<a id="inv-89"></a>
+
+85. **A stranger's credentials are a slice that resolves to ITSELF — in both
+    directions — and the slice dies with the agent while the account does
+    not.** Step 4 of the external design gives a guest conversation the last
+    store it was missing: the central vault, so a person does not have to hand
+    the same token over on every message. The vault needed no new shape — it is
+    already keyed by owner, and an isolation unit is a string it can take, so a
+    non-external group's key is its group id byte for byte and an existing
+    `secrets.json` is untouched. What it needed was the POLICY, and three parts
+    of it are not obvious.
+    **Nothing resolves INTO a guest's slice, and nothing resolves OUT of it.**
+    The inward half is one line in `resolveSecretEntry`: a conversation unit
+    skips shared-in, the public commons and Main, so the operator's own values
+    never reach a stranger under a name their skill happens to declare. The
+    outward half is the one that bites, and the ORDER of the rules in
+    `guestSliceWriteRefusal` is what enforces it: `sharedWith` is read from the
+    SHARING side, so a guest's agent allowed to share its *own* entry — which
+    an own-slice allowance checked first would permit — could lend the
+    operator's agents a value of its choosing under a name of its choosing, and
+    for a name Main does not already hold those agents would receive the
+    stranger's value. Sharing and binding are therefore refused for EVERYONE,
+    the slice's own agent included, ahead of every other rule. The same reason
+    moved the FACTORY's resolution to the unit (`factoryVaultUnit`): resolving a
+    skill's declared secrets by GROUP fell through to the commons for an
+    external group — which is never a vault key — and turned the factory's
+    secret scan, which names the secret a tree matched, into an oracle on the
+    operator's values.
+    **A group of an external door is not a slice.** A write aimed at the group
+    id would be stored, listed and read by nobody, because its agents only ever
+    resolve their own conversation. That is the worst way for a credential store
+    to be wrong — the operator believes the value is in place — so it is refused
+    (`externalGroupSliceRefusal`) rather than redirected: there is no
+    conversation to redirect it to, "the group's agents" being a different one
+    for every stranger on the door.
+    **The lifetime splits the other way from invariant 84.** There, the Unix
+    user and the HOME belong to the conversation and survive their agent's
+    deletion. Here the slice belongs to the AGENT and dies with it
+    (`endChannel` → `dropGuestSliceOf`): minimum retention, no orphaned
+    stranger credentials on disk, and a returning guest supplies the value
+    again. Deleting the external GROUP wipes every conversation's slice too, and
+    before the `userdel`s on purpose — a failing `userdel` must not be what
+    leaves those values on disk.
+    Two smaller rules come with it. A stranger can now write to the operator's
+    disk through a route, which was never true before, so the slice is capped
+    (10 entries, 4 KiB a value, counted in UTF-8 BYTES — a cap counted in
+    UTF-16 code units is doubled by any non-Latin value) and the refusal is
+    RETURNED, because an agent told "stored" while nothing was asks the person
+    again for ever. And the person is TOLD, once, on a creation, in guest words
+    (`guestNotice("secret-kept")`): they cannot see the vault, cannot ask what
+    is in it, and may well believe a chat message stops existing once answered.
+    The members see the NAMES and may rotate and delete — the operator is
+    accountable for what their instance holds — but may not CREATE a name in
+    someone else's slice: handing a credential to a guest is a different act and
+    is still open in the design.
+    Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
+    decisions 4, 6 and 7 (step 4 of 5).

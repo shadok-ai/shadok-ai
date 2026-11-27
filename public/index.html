@@ -1265,6 +1265,10 @@
   .sec-val button { flex: none; font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line); background: none; color: inherit; cursor: pointer; }
   .sec-val button.sec-val-save { border-color: var(--amber); color: var(--amber); }
   .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
+  /* A guest conversation's own entry: distinct from the group's own secrets
+     without being greyed out like a read-only row — a member can still rotate
+     and delete it. */
+  #secretsList li.sec-guest { border-style: dashed; }
   /* Grouped mode: each own secret is a card — name + actions, one meta line, then
      the "Shared with" / "Injected into" chip rows, which write as they are
      ticked (no Save) and answer on the card's status line. */
@@ -4910,7 +4914,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers, secretDeleteConfirmText } from "/profile-card.js?v=__ASSET_V__";
-  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick, secretReceivers, plusReloadPlan } from "/secrets-panel.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, secretSliceKey, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick, secretReceivers, plusReloadPlan } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
@@ -5033,6 +5037,7 @@
   window.scheduleBarReflow?.();
   window.secretsPanelMode = secretsPanelMode;
   window.secretSections = secretSections;
+  window.secretSliceKey = secretSliceKey;
   window.panelGroupOptions = panelGroupOptions;
   window.publicWriteTarget = publicWriteTarget;
   window.keyGroups = keyGroups;
@@ -5211,7 +5216,8 @@
     chanOverflowItems: () => [],
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
-    secretSections: () => ({ own: [], sharedIn: [], commons: [] }),
+    secretSections: () => ({ own: [], sharedIn: [], commons: [], guests: [] }),
+    secretSliceKey: (sec) => (sec && typeof sec.unit === "string" && sec.unit ? sec.unit : sec && sec.ownerGroup != null ? String(sec.ownerGroup) : null),
     panelGroupOptions: () => [],
     publicWriteTarget: () => null,
     keyGroups: () => [],
@@ -14052,23 +14058,36 @@
   }
   /** One secret row. `ro` = a secret that belongs to someone else: no value
    *  editing, no deletion, no controls — only the audit history. The value is
-   *  never shown in any case (write-only vault). */
-  function secretRow(sec, { ro, grouped }) {
+   *  never shown in any case (write-only vault).
+   *
+   *  `guest` = a row of a GUEST CONVERSATION's own slice, in an external group.
+   *  Not `ro`: a member may rotate and delete it (the operator is accountable
+   *  for what the instance holds). But it carries no sharing and no profile
+   *  chips — a stranger's secret is never lent out and never bound to a profile,
+   *  it is injected into that conversation's own agents and nowhere else — and
+   *  no "no profile uses it" badge, which would be false here. */
+  function secretRow(sec, { ro, grouped, guest }) {
     const k = sec.name;
     const li = document.createElement("li");
-    if (grouped) li.className = "sec-row" + (ro ? " sec-ro" : "");
+    if (grouped) li.className = "sec-row" + (ro ? " sec-ro" : "") + (guest ? " sec-guest" : "");
     const code = document.createElement("code"); code.textContent = k;
     if (ro && sec.ownerGroup) {
       const from = document.createElement("span"); from.className = "sec-from";
       from.textContent = "from " + groupName(sec.ownerGroup);
       code.appendChild(from);
     }
+    if (guest && sec.conversation) {
+      const who = document.createElement("span"); who.className = "sec-from";
+      who.textContent = "in " + sec.conversation;
+      who.title = "One guest conversation's own secret. You see the name, never the value — and only that conversation's agents ever receive it.";
+      code.appendChild(who);
+    }
     // Who receives it. Bridge guard (invariant 10): no module, no mention,
     // rather than an exception that would empty the list.
     // Both ends of the link (`secretReceivers`), or an "Any profile" binding —
     // which no profile's own list carries — would read as "no profile uses it"
     // while every agent receives it.
-    const recv = !ro && window.secretReceivers ? window.secretReceivers(profileCache, vaultSecrets, k) : null;
+    const recv = !ro && !guest && window.secretReceivers ? window.secretReceivers(profileCache, vaultSecrets, k) : null;
     const users = recv ? recv.profiles : null;
     if (recv && !grouped) {
       const tag = document.createElement("span");
@@ -14095,12 +14114,16 @@
     actions.append(actionBtn("s-edit", "", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Replace this secret's value (its profiles are the chips below)", () =>
+        actionBtn("s-edit", "✎", guest
+          ? "Replace the value this guest stored — their agent will use the new one at its next reload"
+          : "Replace this secret's value (its profiles are the chips below)", () =>
           grouped ? startInlineEdit(li, sec) : startEditSecret(k, null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
-          if (!confirm(window.secretDeleteConfirmText(k, users || []))) return;
-          // The row's OWNER group, not the panel's write target (see secretControls).
-          const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
+          if (!confirm(window.secretDeleteConfirmText(k, users || [], guest ? sec.conversation : null))) return;
+          // The row's own SLICE, not the panel's write target (see secretControls)
+          // — and for a guest row that slice is the conversation's, never the
+          // external group's, which holds nothing (`secretSliceKey`).
+          const g = (grouped && window.secretSliceKey(sec)) || secretWriteGroup();
           const r = await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
           const e = await vaultError(r);
           if (e) { showVaultError("Could not remove " + k + ": " + e); return; }
@@ -14114,7 +14137,7 @@
       const line = window.auditLine ? window.auditLine(sec) : "";
       if (line) { const m = document.createElement("div"); m.className = "sec-meta"; m.textContent = line; li.appendChild(m); }
       if (!ro) li.appendChild(secretValueLine(li, sec));
-      if (!ro) li.appendChild(secretControls(sec));
+      if (!ro && !guest) li.appendChild(secretControls(sec));
     }
     return li;
   }
@@ -14148,7 +14171,8 @@
       const value = input.value;
       if (!value) { input.focus(); return; }
       save.disabled = true; status.className = "sec-status"; status.textContent = "Saving…";
-      const body = { name: sec.name, value, overwrite: true, ...(sec.ownerGroup != null ? { group: String(sec.ownerGroup) } : {}) };
+      const slice = window.secretSliceKey(sec);
+      const body = { name: sec.name, value, overwrite: true, ...(slice != null ? { group: slice } : {}) };
       let err;
       try {
         err = await vaultError(await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
@@ -14308,17 +14332,32 @@
       (opts[0] ? opts[0].value : null);
     if (panelGroup != null) sel.value = String(panelGroup);
     const sec = window.secretSections(vaultSecrets, panelGroup, vaultGroups);
-    const section = (title, rows, ro, empty) => {
+    const section = (title, rows, ro, empty, guest) => {
       const h = document.createElement("li"); h.className = "sec-sect"; h.textContent = title; ul.appendChild(h);
       if (!rows.length) { const e = document.createElement("li"); e.innerHTML = '<span style="opacity:.6"></span>'; e.firstChild.textContent = empty; ul.appendChild(e); }
-      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true }));
+      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true, guest: !!guest }));
     };
-    section("Own — " + groupName(panelGroup), sec.own, false, "no secret of its own yet");
+    // An EXTERNAL group has no vault of ITS OWN: every slice belongs to one
+    // conversation (`externalGroupSliceRefusal` refuses the write server-side).
+    // Saying "no secret of its own yet" there would read as "add one here".
+    const extGroup = (vaultGroups.find((g) => g && String(g.id) === String(panelGroup)) || {}).nature === "external";
+    section(
+      "Own — " + groupName(panelGroup),
+      sec.own,
+      false,
+      extGroup ? "no vault of its own — each guest conversation has a slice only its own agents can read" : "no secret of its own yet",
+    );
     section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
     // Main AND every public group: one commons, the tier `commonsGroupIds`
     // resolves from. Naming it "Main" hid every public group's secret from a
     // walled group's view (see `secretSections`).
     section("Inherited from Public", sec.commons, true, "nothing in the public groups");
+    // Only for an EXTERNAL group, and only when a guest has stored something:
+    // an empty heading on every other group's panel would say nothing and take
+    // a line. You see the NAMES, never a value — and the credentials are erased
+    // with the conversation's agent, so this list empties itself.
+    if (sec.guests.length)
+      section("Stored by guests — names only", sec.guests, false, "", true);
   }
   $("secretsGroup").addEventListener("change", () => { panelGroup = $("secretsGroup").value; renderSecrets(); });
 
