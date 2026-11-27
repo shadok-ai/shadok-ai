@@ -93,6 +93,14 @@ import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, migratedIsolationRefusal, probeCanProvision } from "./capability.js";
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp.js";
 import { waGuestWorkDirName } from "./wa-guests.js";
+import {
+  GUEST_FULL_CODE,
+  GUEST_RATE_WINDOW_MS,
+  guestAdmitVerdict,
+  guestLimitsOf,
+  liveGuestKeys,
+  requestedLimits,
+} from "./guest-admit.js";
 import { startWaBridge, type WaBridge } from "./wa-bridge.js";
 import { openInbox, waStateDir } from "./wa-inbox.js";
 import { waSessionDir } from "./wa-transport.js";
@@ -1347,6 +1355,43 @@ async function drainWebhook(hookId: string): Promise<void> {
  * window, and the expensive case partly corrects itself.
  */
 const parentInbox = new Map<string, string[]>();
+
+/**
+ * When each guest GROUP last admitted a new conversation, for the hourly half
+ * of the door's ceiling (`guestAdmitVerdict`, src/guest-admit.ts).
+ *
+ * In memory, like the sign-in limiter and for the same reason: a restart
+ * forgets the burst, and that is the right way round. The durable half of the
+ * ceiling is the live count, which is read from the channel registry and so
+ * survives everything; the rate is only there to slow a flood down, and a
+ * limiter that could keep a door shut across restarts would be worse than one
+ * a restart clears.
+ *
+ * Keyed by group, not by door: two doors onto one group share the ceiling,
+ * because the group is where a conversation costs a Unix user and a home.
+ */
+const guestAdmissions = new Map<string, number[]>();
+
+/** This group's admissions inside the window, pruned as they are read — so the
+ *  map cannot grow with the age of the process. */
+function admissionsOf(groupId: string): number[] {
+  const kept = (guestAdmissions.get(groupId) ?? []).filter((t) => t > Date.now() - GUEST_RATE_WINDOW_MS);
+  if (kept.length) guestAdmissions.set(groupId, kept);
+  else guestAdmissions.delete(groupId);
+  return kept;
+}
+
+/**
+ * Charge one admission to this group.
+ *
+ * Charged when the door ADMITS, not when the agent reaches `ready`: a spawn
+ * costs its work whether or not it completes, and the rate exists to bound
+ * exactly that. The live count, being read from the registry, corrects itself
+ * either way.
+ */
+function chargeAdmission(groupId: string): void {
+  guestAdmissions.set(groupId, [...admissionsOf(groupId), Date.now()]);
+}
 
 /** A session's display name — the cockpit tab — falling back to a short id.
  *  What a parent is told its child is called, and what an agent's own prompts
@@ -8221,12 +8266,15 @@ app.put("/whatsapp/guests", (req, res) => {
   if (refusal) return res.status(409).json({ error: refusal });
   const b = (req.body ?? {}) as Record<string, unknown>;
   const cwd = process.cwd();
+  const waLimits = requestedLimits(b);
   const want: GuestSetup = {
     // Only an explicit `true` opens: a hand-made request must never open a
     // door by omitting a field.
     mode: b.on === true ? "dm-only" : "group",
     group: typeof b.group === "string" ? b.group : null,
     profile: typeof b.profile === "string" ? b.profile : null,
+    // The admission ceiling — see the twin in `PUT /telegram`.
+    ...(waLimits !== undefined ? { limits: waLimits } : {}),
   };
   const flow = guestPatchFlow({
     mode: DEPLOYMENT_MODE,
@@ -8330,6 +8378,7 @@ app.put("/telegram", async (req, res) => {
   let guestsChanged = false;
   if (b.guests && typeof b.guests === "object") {
     const g = b.guests as Record<string, unknown>;
+    const tgLimits = requestedLimits(g);
     const want: GuestSetup = {
       // Anything the body does not spell as one of the three modes is the
       // classic one: the panel sends the mode it painted, and a hand-made
@@ -8337,6 +8386,10 @@ app.put("/telegram", async (req, res) => {
       mode: normalizeTgMode(g.mode),
       group: typeof g.group === "string" ? String(g.group) : null,
       profile: typeof g.profile === "string" ? String(g.profile) : null,
+      // The admission ceiling, when the request names one. The panel does not,
+      // so omitting it KEEPS what the operator set (`guestPatchFlow`); an
+      // explicitly empty ceiling goes back to the defaults.
+      ...(tgLimits !== undefined ? { limits: tgLimits } : {}),
     };
     const flow = guestPatchFlow({
       mode: DEPLOYMENT_MODE,
@@ -12555,22 +12608,64 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Two bridges, two doors: the setup is the one of the bridge this socket
           // PROVED (its secret), never one a frame names — a Telegram socket
           // never spawns on the WhatsApp door's profile, nor the reverse.
-          const guestPlan = isWhatsAppBridge
-            ? guestSpawnPlan({
-                marker: msg.guest,
-                fromBridge: isWhatsAppBridge,
-                resuming: !!msg.resume,
-                setup: msg.guest === true ? waGuestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
-              })
-            : guestSpawnPlan({
-                marker: msg.guest,
-                fromBridge: isTelegramBridge,
-                resuming: !!msg.resume,
-                setup: msg.guest === true ? guestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
-              });
+          const doorSetup =
+            msg.guest === true
+              ? isWhatsAppBridge
+                ? waGuestSetupForCwd(loadConfig(), process.cwd())
+                : guestSetupForCwd(loadConfig(), process.cwd())
+              : GUEST_SETUP_OFF;
+          const guestPlan = guestSpawnPlan({
+            marker: msg.guest,
+            fromBridge: isWhatsAppBridge || isTelegramBridge,
+            resuming: !!msg.resume,
+            setup: doorSetup,
+          });
           if (guestPlan.kind === "refused") return fail(guestPlan.message, guestPlan.code);
           const guestSetup = guestPlan.kind === "guest" ? guestPlan : null;
           const guestGroupId = guestSetup?.group ?? null;
+
+          // The door's ADMISSION CEILING (`src/guest-admit.ts`). Both doors
+          // WERE uncapped by construction, and a stranger already costs a `claude`
+          // process and a pane — so anyone who knows the number can make the
+          // instance spawn until it falls over, and the external-group design
+          // turns that cost into a row in `/etc/passwd`. The ceiling therefore
+          // lands BEFORE the wall it pays for.
+          //
+          // Asked here: after the door is known, before the working directory
+          // is created and before anything is spawned, and only on a FRESH
+          // guest spawn. A RETURNING conversation is exempt inside the verdict
+          // — the ceiling bounds new strangers, and must never cut off someone
+          // the instance is already talking to.
+          //
+          // `wa-<digits>` for a WhatsApp sender, `tg-<id>` for a Telegram one:
+          // each rebuilt from its own bridge's id, never from the other's. One
+          // name for one conversation, resolved once here and reused for the
+          // directory below — the ceiling and the folder MUST agree, or someone
+          // admitted under one name would be filed under another's.
+          let guestDir: string | null = null;
+          if (guestSetup) {
+            guestDir = isWhatsAppBridge ? waGuestWorkDirName(msg.guestKey) : guestWorkDirName(msg.guestKey);
+            // No usable id → REFUSE, never fall back to the shared home: a
+            // silent fallback is exactly the mixing this closes, and it would
+            // come back the day a caller forgets the field (invariant 24).
+            if (!guestDir) return fail("a guest's agent needs the person it belongs to", "guest-key");
+            if (freshSpawn) {
+              const verdict = guestAdmitVerdict({
+                limits: guestLimitsOf(doorSetup),
+                live: liveGuestKeys(loadChannels(), guestSetup.group),
+                key: guestDir,
+                recent: admissionsOf(guestSetup.group),
+                now: Date.now(),
+              });
+              if (!verdict.ok) {
+                // The admin's log line, with the reason the guest is not told:
+                // they hear one `guestNotice("door-full")` either way.
+                console.log(`guests: ${guestDir} not admitted to ${guestSetup.group} — ${verdict.why}: ${verdict.message}`);
+                return fail(verdict.message, GUEST_FULL_CODE);
+              }
+              if (!verdict.returning) chargeAdmission(guestSetup.group);
+            }
+          }
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
           // in the directory — with several channels in the same directory
@@ -12714,19 +12809,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // memory and where `CLAUDE.md` is read, so one person's agent
             // loaded the notes another person's agent had written, with
             // nothing on screen to show it (`guestWorkDirName`).
-            // `wa-<digits>` for a WhatsApp sender, `tg-<id>` for Telegram: each
-            // rebuilt from its own bridge's id, never from the other's.
-            if (guestSetup && isWhatsAppBridge) {
-              const sub = waGuestWorkDirName(msg.guestKey);
-              if (!sub) return fail("a guest's agent needs the person it belongs to", "guest-key");
-              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), sub, earlyUser);
-            } else if (guestSetup) {
-              const sub = guestWorkDirName(msg.guestKey);
-              // No usable id → REFUSE, never fall back to the shared home: a
-              // silent fallback is exactly the mixing this closes, and it would
-              // come back the day a caller forgets the field (invariant 24).
-              if (!sub) return fail("a guest's agent needs the person it belongs to", "guest-key");
-              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), sub, earlyUser);
+            if (guestSetup) {
+              // The name was resolved with the admission ceiling above
+              // (`wa-<digits>` / `tg-<id>`), so the folder and the ceiling can
+              // never name the same person differently.
+              if (!guestDir) return fail("a guest's agent needs the person it belongs to", "guest-key");
+              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), guestDir, earlyUser);
             }
             const early = await connectRefusal(earlyUser);
             if (early) return fail(early.message, early.code, early.user);

@@ -102,9 +102,15 @@ test("the WhatsApp bridge proves its own per-process secret, and that alone make
 });
 
 test("a guest spawn reads the setup of the bridge the socket PROVED, and names the wa- directory", () => {
-  assert.match(SRC, /const guestPlan = isWhatsAppBridge\s*\? guestSpawnPlan\(\{\s*marker: msg\.guest,\s*fromBridge: isWhatsAppBridge,/);
-  assert.match(SRC, /setup: msg\.guest === true \? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\) : GUEST_SETUP_OFF/);
-  assert.match(SRC, /if \(guestSetup && isWhatsAppBridge\) \{\s*const sub = waGuestWorkDirName\(msg\.guestKey\);\s*if \(!sub\) return fail\([^)]*"guest-key"\)/);
+  // One read of the door, shared by the spawn plan and the admission ceiling:
+  // a WhatsApp socket never spawns on the Telegram door's profile, nor the
+  // reverse, and the ceiling is the same door's.
+  assert.match(SRC, /\? waGuestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)\s*\n\s*: guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\)/);
+  assert.match(SRC, /fromBridge: isWhatsAppBridge \|\| isTelegramBridge,\s*\n\s*resuming: !!msg\.resume,\s*\n\s*setup: doorSetup,/);
+  assert.match(
+    SRC,
+    /guestDir = isWhatsAppBridge \? waGuestWorkDirName\(msg\.guestKey\) : guestWorkDirName\(msg\.guestKey\);\s*\n[^\n]*\n[^\n]*\n[^\n]*\n\s*if \(!guestDir\) return fail\([^)]*"guest-key"\)/,
+  );
 });
 
 test("the server refuses a bare slash command from the whatsapp origin", () => {

@@ -45,7 +45,7 @@ export interface Config {
    */
   telegramGuests?: Record<
     string,
-    { mode?: string; on?: boolean; group?: string | null; profile?: string | null; joined?: boolean }
+    { mode?: string; on?: boolean; group?: string | null; profile?: string | null; joined?: boolean; limits?: { live?: number; perHour?: number } }
   >;
   /**
    * Per launch-directory WhatsApp guest door (`src/wa-guests.ts`): the same
@@ -53,7 +53,10 @@ export interface Config {
    * which bridge secret a socket proved, so the two never mix. `mode` is
    * `dm-only` (open) or `group` (shut); WhatsApp has no other.
    */
-  whatsappGuests?: Record<string, { mode?: string; group?: string | null; profile?: string | null; joined?: boolean }>;
+  whatsappGuests?: Record<
+    string,
+    { mode?: string; group?: string | null; profile?: string | null; joined?: boolean; limits?: { live?: number; perHour?: number } }
+  >;
   /** Optional GUI password (also settable via SHADOK_GUI_PASSWORD). */
   guiPassword?: string;
   /**
@@ -408,7 +411,15 @@ export function guestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
   const group = typeof row.group === "string" && row.group.trim() ? row.group.trim() : null;
   const profile = typeof row.profile === "string" && row.profile.trim() ? row.profile.trim() : null;
   const mode = row.mode === undefined && row.on === true ? "group+dm" : normalizeTgMode(row.mode);
-  return normalizeGuestSetup({ mode, group, profile, joined: row.joined === true });
+  // The ceiling rides along untouched: `guestLimitsOf` is what reads it, and
+  // what is malformed there reads as unset rather than as a shut door.
+  return normalizeGuestSetup({
+    mode,
+    group,
+    profile,
+    joined: row.joined === true,
+    ...(row.limits && typeof row.limits === "object" ? { limits: row.limits } : {}),
+  });
 }
 
 /**
@@ -428,6 +439,7 @@ export function applyGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config
     group: s.group,
     profile: s.profile,
     ...(s.joined ? { joined: true } : {}),
+    ...(s.limits ? { limits: s.limits } : {}),
   };
   return cfg;
 }
@@ -441,7 +453,13 @@ export function waGuestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
 export function applyWaGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config {
   cfg.whatsappGuests ??= {};
   const w = waGuestSetup(s);
-  cfg.whatsappGuests[cwd] = { mode: w.mode, group: w.group, profile: w.profile, ...(w.joined ? { joined: true } : {}) };
+  cfg.whatsappGuests[cwd] = {
+    mode: w.mode,
+    group: w.group,
+    profile: w.profile,
+    ...(w.joined ? { joined: true } : {}),
+    ...(w.limits ? { limits: w.limits } : {}),
+  };
   return cfg;
 }
 

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { GUEST_FULL_CODE } from "./guest-admit.js";
 import { type GuestNotice, type GuestSetup, guestNotice, guestsOpen } from "./tg-guests.js";
 import { attachmentPrompt, makeSendQueue, makeTyping, promptEchoLabel, shouldPreempt, type PromptItem } from "./telegram.js";
 import { bareJid, findWaChannel, inboundVerdict, replyAllowed, sendAllowed, senderKey, waReattachList, type WaBinding, type WaInbound } from "./wa-guests.js";
@@ -714,6 +715,14 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
             log(`whatsapp: a guest spawn was refused (${m.code ?? "error"}): ${String(m.message ?? "").slice(0, 160)}`);
             b.pending.length = 0;
             ackAll(b);
+            // One exception to the silence above: the door is at its CEILING
+            // (`guestAdmitVerdict`), which is the one refusal a person needs
+            // told — otherwise their message simply vanishes. They have no
+            // binding, since no agent was created, so it goes through
+            // `noticeTo`: allowed because they wrote seconds ago
+            // (`replyAllowed`), still never writing first, and still only the
+            // bridge's own fixed words.
+            if (m.code === GUEST_FULL_CODE) noticeTo(b.to, "door-full");
             b.closing = true;
             try {
               ws.close();

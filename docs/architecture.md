@@ -677,9 +677,22 @@ group already bound before this change stays bound.
   What the bridge says about ITSELF goes
   through `sendOps`, so the cockpit's vocabulary never reaches a stranger — see
   invariant 65 for the four assumptions that broke the day this door opened.
-  Deliberately absent, and the operator's own call: no cap on the number of
-  guests. These agents are never idle-reclaimed (a bridge is a client), the quota
-  is shared, and each auto-update replays the serial-restart herd.
+  **The door has a ceiling** (`src/guest-admit.ts`, invariant 83): 200 live
+  conversations and 30 new ones an hour by default, per GROUP so two doors onto
+  one group share it, raisable per door (`limits` on the guest setup). It used
+  to be deliberately absent — tenable while a guest cost a directory, and not
+  once it costs a `claude` process, a pane and (the external-group design's step
+  3) a `useradd`. The live count is READ from the channel registry, never
+  remembered, so a restart cannot widen the door; only the hourly rate lives in
+  memory, where a restart clearing a burst guard is the right way round. A
+  RETURNING conversation is exempt inside the verdict, keyed on the name that
+  already files the person's directory, so nobody the instance is talking to is
+  ever turned away. The refusal carries `guest-full`, reaches the person as the
+  one `guestNotice("door-full")` line, and CLOSES the bridge so their next
+  message asks again instead of queueing for ever.
+  Still deliberately absent, and the operator's own call: a queue, and a
+  per-person block. These agents are never idle-reclaimed (a bridge is a client),
+  the quota is shared, and each auto-update replays the serial-restart herd.
 - `/secret NAME value` deletes the user's message after storing, so the value
   doesn't linger in chat history (needs *Delete messages* admin rights).
 
@@ -3374,7 +3387,10 @@ is out of this heal's reach — the rehearsal is what catches that residue.
 ### Not built / known limits
 
 - Telegram is not multi-tenant (single owner, as before); deferred by the spec.
-- No disk quota and no cap on isolated users per account.
+- No disk quota and no cap on isolated users per account. (The GUEST doors do
+  have an admission ceiling — invariant 83 — which is a different thing: it
+  bounds how many strangers one door admits, not how many spaces an account may
+  hold.)
 - Cross-group git is operational: protect the remote's branches; there is no code.
 - *Human-verify before release:* `setpriv` + `HOME` on a real container, the
   credential in-place-vs-rename gate, and a full migration on a copy of a real
@@ -3500,6 +3516,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/whatsapp.ts` | `startWhatsApp` — the instance's handle: one transport at most, the backoff, the tick, the attempt watchdog, the boot breaker (`RESUME_MARK`), link / retry / cancel / unlink (every phase). Invariant 75. Step 2: `onMessage` / `onConnected` listeners, `account()` (the linked number, device dropped, also from a stored session), `sendText` / `setTyping` / `resolveLid` through the current transport only while connected, `whenConnected(ms)`. |
 | `src/wa-bridge.ts` | `startWaBridge` — the WhatsApp guests: one loopback socket per person proving `x-shadok-wa-bridge`, inbox-first delivery, PN→LID re-keying, `sendAllowed` before every send, formatted answers through a per-person queue, preempt, reattach and replay. See "The WhatsApp guests". |
 | `src/wa-guests.ts` | Pure WhatsApp guest rules: `WaBinding`, `bareJid`, `waAccountKey`, `waGuestWorkDirName`, `inboundVerdict`, `senderKey`, `findWaChannel`, `waGuestSetup`, `waReattachList`, `sendAllowed`. Tested. |
+| `src/guest-admit.ts` | The open door's **admission ceiling** (invariant 83, design decision 3): `GUEST_LIMITS` (200 live, 30/hour), `guestLimitsOf` (what the door stored, else the defaults — a malformed number reads as unset, never as a shut door), `requestedLimits` (what a request asks for; naming none keeps what is stored, an empty one restores the defaults), `guestConversationKey` / `liveGuestKeys` (the live count, READ from the channel registry and keyed by the name that already files a guest's directory, so a returning person is never charged as a new one) and `guestAdmitVerdict` (returning → always in; else the cap, then the hourly rate). Its own module rather than `tg-guests.ts` because it names a conversation on either transport and `wa-guests.ts` already imports `tg-guests.ts`. Pure, tested (`test/guest-admit.test.ts`); the hourly window itself lives in memory in `server.ts` (`admissionsOf` / `chargeAdmission`). |
 | `src/wa-format.ts` | Pure `mdToWhatsApp`, `waChunks`, `neutralizeCommand`, `stripAttachmentMarkers`; step 3: `waMediaFileName`, `dialogMessage`, `parseDialogReply`. Tested. |
 | `src/wa-inbox.ts` | The persisted inbox (`openInbox`, `waStateDir`): received-not-submitted entries and capped seen ids, written atomically, 0600. Tested. |
 | `src/wa-worker-host.ts` / `src/wa-worker.ts` | Runs a transport in a worker thread so an error raised inside the library ends the worker, never the server: `workerTransportFactory` (one worker per transport, exactly one `close{error}` when it dies, `stop()` lets the adapter drain its writes) and `probeInWorker` (does the library load?). |

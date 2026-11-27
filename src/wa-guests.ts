@@ -195,6 +195,9 @@ export function waGuestSetup(raw: unknown): GuestSetup {
     group: typeof r.group === "string" ? r.group : null,
     profile: typeof r.profile === "string" ? r.profile : null,
     ...(r.joined === true ? { joined: true } : {}),
+    // The door's admission ceiling (`guestLimitsOf`), carried as stored: a
+    // reader that dropped it would reset the operator's numbers on every save.
+    ...(r.limits && typeof r.limits === "object" ? { limits: r.limits as { live?: number; perHour?: number } } : {}),
   });
 }
 

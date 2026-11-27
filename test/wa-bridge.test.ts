@@ -451,6 +451,38 @@ test("a guest spawn the server refuses: not replayed for ever, and nothing sent 
   await w.stop();
 });
 
+test("the door at its ceiling: the person IS told, and their next message asks again", async () => {
+  // The one exception to "no agent, no binding, nothing sent" above: a ceiling
+  // refusal (`guestAdmitVerdict`) is the one the person has to hear, or their
+  // message simply vanishes. It goes through `noticeTo` — allowed because they
+  // wrote seconds ago — and the words must NOT be "send that again": nothing
+  // they can do changes a ceiling.
+  const w = await world();
+  w.server.autoReady = false;
+  await w.link();
+  say(w, "hello?");
+  await tick();
+  w.server.last().emit({
+    type: "error",
+    code: "guest-full",
+    message: "this instance is already holding its maximum of 200 guest conversations",
+  });
+  await tick();
+  assert.equal(w.server.last().readyState, 3, "the socket is closed: it will never be ready");
+  assert.deepEqual(w.inbox.pending(), [], "the message is freed, not replayed for ever");
+  assert.deepEqual(w.fake.sent, [{ to: LID, text: guestNotice("door-full") }]);
+  assert.doesNotMatch(w.fake.sent[0].text, /again right now|send that again/);
+  assert.ok(w.lines.some((l) => /guest spawn was refused \(guest-full\)/.test(l)), "said to the admin");
+  // The ceiling can clear, so "later" has to be an instruction that works: the
+  // next message must ask the server again rather than queue for ever.
+  const before = w.server.sockets.length;
+  w.server.autoReady = true;
+  say(w, "still there?", { id: "F2" });
+  await tick();
+  assert.ok(w.server.sockets.length > before, "a fresh spawn was attempted");
+  await w.stop();
+});
+
 test("reattach: a live bound agent gets its bridge back at start; an idle one is left alone", async () => {
   const server = new FakeServer();
   server.channels = [

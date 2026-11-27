@@ -395,7 +395,7 @@ test("guestNotice: what a guest cannot act on is dropped", () => {
 test("guestNotice: anything meaning 'your message is lost' is REWRITTEN, never dropped", () => {
   // Silence here is the one outcome we cannot have: the person waits for an
   // answer that is never coming.
-  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard"] as const) {
+  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard", "door-full"] as const) {
     const line = guestNotice(kind);
     assert.ok(line, kind);
     assert.match(String(line), /\S/);
@@ -403,7 +403,7 @@ test("guestNotice: anything meaning 'your message is lost' is REWRITTEN, never d
 });
 
 test("guestNotice: the words a guest hears name nothing of the cockpit", () => {
-  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard"] as const) {
+  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard", "door-full"] as const) {
     const line = String(guestNotice(kind));
     assert.doesNotMatch(line, /pace|guard|quota|session|agent|shadok|cockpit|web UI|\/stop|profile|group/i, kind);
   }
@@ -418,6 +418,70 @@ test("guestNotice: a guest whose message cannot go in is NOT told to send it aga
   assert.match(line, /alerted/);
   assert.doesNotMatch(line, /send (that|it) again (in|please)|please send/i);
   assert.notEqual(line, guestNotice("error"));
+});
+
+test("guestNotice: a door at its ceiling does not tell the person to retry now", () => {
+  // The lesson `unresponsive` learned, in the other shape: a ceiling is not
+  // about them and no retry of theirs clears it. What is true is that nothing
+  // was opened and that later is a real answer.
+  const line = String(guestNotice("door-full"));
+  assert.match(line, /too many open/);
+  assert.match(line, /not about you/);
+  assert.match(line, /later/);
+  assert.doesNotMatch(line, /send (that|it) again (in|please)|please send|in a moment/i);
+  assert.notEqual(line, guestNotice("error"));
+});
+
+test("the door's ceiling survives a save, and no route invents one", () => {
+  // A normalizer or a writer that dropped it would reset the operator's
+  // numbers on the next panel save, with nothing to show for it.
+  const flow = guestPatchFlow({
+    mode: "multi-tenant",
+    previous: { mode: "group", group: null, profile: null },
+    want: { mode: "dm-only", group: "g1", profile: "Support", limits: { live: 7, perHour: 3 } },
+    groups: GROUPS,
+    profileExists: () => true,
+    hasOwner: true,
+  });
+  assert.ok(flow.ok);
+  assert.deepEqual(flow.ok && flow.setup.limits, { live: 7, perHour: 3 });
+  let cfg: Config = {};
+  assert.ok(flow.ok);
+  cfg = applyGuestSetup(cfg, CWD, flow.setup);
+  assert.deepEqual(guestSetupForCwd(cfg, CWD).limits, { live: 7, perHour: 3 });
+  // Absent stays absent: a door that never set one takes the defaults, and
+  // nothing writes a number nobody chose.
+  let bare: Config = {};
+  bare = applyGuestSetup(bare, CWD, normalizeGuestSetup({ mode: "dm-only", group: "g1", profile: "Support" }));
+  assert.equal(guestSetupForCwd(bare, CWD).limits, undefined);
+});
+
+test("the ceiling is ASSERT-only: a patch that does not name it keeps it", () => {
+  // The panel never names it, so without this every save from the panel would
+  // reset the operator's numbers — the loss `branch` and `parent` already
+  // taught us (invariant 19).
+  const stored = { mode: "dm-only" as const, group: "g1", profile: "Support", joined: true, limits: { live: 7 } };
+  const kept = guestPatchFlow({
+    mode: "multi-tenant",
+    previous: stored,
+    want: { mode: "dm-only", group: "g1", profile: "Support" },
+    groups: GROUPS,
+    profileExists: () => true,
+    hasOwner: true,
+  });
+  assert.ok(kept.ok);
+  assert.deepEqual(kept.ok && kept.setup.limits, { live: 7 });
+  // An explicitly EMPTY ceiling is the way back to the defaults.
+  const reset = guestPatchFlow({
+    mode: "multi-tenant",
+    previous: stored,
+    want: { mode: "dm-only", group: "g1", profile: "Support", limits: {} },
+    groups: GROUPS,
+    profileExists: () => true,
+    hasOwner: true,
+  });
+  assert.ok(reset.ok);
+  assert.equal(reset.ok && reset.setup.limits, undefined);
 });
 
 // ── a guest must never be adopted as the bot's owner ──────────────────────

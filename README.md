@@ -416,7 +416,17 @@ Enter to skip; you can add it later from the web UI).
   They can talk and answer their agent's questions, and nothing else: no
   command reaches the bot. Two things worth knowing before you open it — every
   conversation is a real agent that stays resident, and they all draw on **your**
-  Claude subscription, so there is no cap and no queue by design. Go back to
+  Claude subscription.
+  There **is** a ceiling, and it is not a queue: **200 conversations at once**
+  and **30 new people an hour**, counted per group — so two doors onto one group
+  share one ceiling. Someone turned away is told in one line that nothing was
+  opened and to come back later; their message is not queued, and a person you
+  are already talking to is never turned away, whatever the ceiling says. Change
+  it per door with `limits` on the guest setup — `PUT /telegram`
+  (`{"guests": {…, "limits": {"live": 400, "perHour": 60}}}`) or
+  `PUT /whatsapp/guests` (`{…, "limits": {…}}`); `{"limits": {}}` goes back to
+  the defaults. The panel has no field for it yet, and saving from the panel
+  leaves what you set alone. Go back to
   **Board group** and every such conversation is closed at once.
 - **Link to a message** — every message (yours and the agent's, and a **room**'s
   too) has a 🔗 link button beside copy. It copies a URL like
@@ -992,6 +1002,10 @@ from the phone's *Linked devices* list too.
   number) on another day. Only the group's members see those conversations
   (and the person's number), from the cockpit, like any other agent; what you
   type there reaches the person, labelled with your name.
+- **A ceiling, shared with Telegram's door.** 200 live conversations and 30 new
+  people an hour by default, counted per group (see the Telegram door above for
+  the numbers and how to change them). Someone turned away hears one line and is
+  invited back later; someone you are already talking to is never turned away.
 - **A guest can only talk.** Nothing typed in WhatsApp is a command: a message
   starting with `/clear` or `/login` reaches the agent as text, and the server
   refuses a command from WhatsApp anyway. Groups, status, channels, calls and

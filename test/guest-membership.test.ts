@@ -50,6 +50,17 @@ test("with no other door, the flow is exactly Telegram's", () => {
   assert.ok(a.ok && a.setup.joined === true);
 });
 
+test("the WhatsApp door's admission ceiling survives a save too", () => {
+  // The twin of the Telegram round-trip (test/tg-guests.test.ts): the numbers
+  // are the operator's, and a reader or writer that dropped them would reset
+  // the ceiling on the next panel save.
+  const cfg: Config = {};
+  applyWaGuestSetup(cfg, "/srv", { ...OPEN_WA, limits: { live: 12, perHour: 4 } });
+  assert.deepEqual(waGuestSetupForCwd(cfg, "/srv").limits, { live: 12, perHour: 4 });
+  applyWaGuestSetup(cfg, "/srv", OPEN_WA);
+  assert.equal(waGuestSetupForCwd(cfg, "/srv").limits, undefined, "absent stays absent");
+});
+
 test("the WhatsApp setup is stored under its own key, open or shut only", () => {
   const cfg: Config = {};
   applyWaGuestSetup(cfg, "/srv", OPEN_WA);

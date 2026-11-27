@@ -54,6 +54,7 @@ import {
   type CronSchedule,
 } from "./crons.js";
 import { SHADOK_DIR, guestSetupForCwd, loadConfig, telegramConfig } from "./config.js";
+import { GUEST_FULL_CODE } from "./guest-admit.js";
 import {
   dmOnly,
   groupChatRefusal,
@@ -1935,6 +1936,22 @@ export function startTelegram(
           sendOps(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.", "pace-blocked");
           break;
         case "error":
+          // The door is at its CEILING (`guestAdmitVerdict`): no agent was
+          // created, so this bridge will never be ready. Asked first, before
+          // the preempt check — which only ever fires on `busy` — because
+          // everything below it assumes a session that exists.
+          //
+          // Said in guest words, then CLOSED: closing drops the bridge from
+          // `bridges`, so the person's NEXT message asks the server again. Kept
+          // open, it would queue every later message in `pending` for ever —
+          // and "try again later" has to be an instruction that works.
+          if (m.code === GUEST_FULL_CODE) {
+            b.typing.stop();
+            console.log(`telegram: ${b.key} — not admitted: ${String(m.message ?? "").slice(0, 160)}`);
+            sendOps(b, "⚠️ " + m.message, "door-full");
+            try { ws.close(); } catch { /* already closing */ }
+            break;
+          }
           // Écrire pendant un tour en cours : plutôt que de refuser et de PERDRE
           // le message, on rend la main à l'utilisateur — échap, puis on rejoue
           // son texte dès que le tour se termine. Telegram n'a pas de bouton
