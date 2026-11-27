@@ -4031,8 +4031,10 @@
         <div id="groupCreateType" class="nature-cards" role="group" aria-label="Group type">
           <button type="button" class="nature-card active" data-nature="public" aria-pressed="true"><span class="nature-ico" data-ico="globe" data-ico-size="20"></span><span class="nature-name">Public</span></button>
           <button type="button" class="nature-card" data-nature="restricted" aria-pressed="false"><span class="nature-ico" data-ico="lock" data-ico-size="20"></span><span class="nature-name">Private</span></button>
+          <button type="button" class="nature-card" data-nature="external" aria-pressed="false"><span class="nature-ico" data-ico="users" data-ico-size="20"></span><span class="nature-name">External</span></button>
         </div>
-        <span class="check-hint" id="groupCreateNoPrivate" hidden>Private groups need a multi-tenant instance.</span>
+        <span class="check-hint" id="groupCreateNatureNote" hidden></span>
+        <span class="check-hint" id="groupCreateNoPrivate" hidden>Private and External groups need a multi-tenant instance.</span>
       </div>
       <div class="field" id="groupMembersField" hidden>
         <span class="label">Members</span>
@@ -4343,7 +4345,7 @@
         <option value="dm-only">Open DMs only — no board group, nobody pairs</option>
       </select>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select id="tgGuestGroup" style="flex:1;min-width:160px" title="The restricted group their agents live in"></select>
+        <select id="tgGuestGroup" style="flex:1;min-width:160px" title="The group their agents live in — Private (one Unix user for the group) or External (one per conversation)"></select>
         <select id="tgGuestProfile" style="flex:1;min-width:160px" title="The profile their agents run on — this is what defines the job"></select>
       </div>
       <p class="check-hint" id="tgGuestsNote"></p>
@@ -4396,7 +4398,7 @@
         <span class="label">Open DMs <span class="check-hint">— anyone who writes to this number gets their own agent</span></span>
         <label class="check"><input type="checkbox" id="waGuestsOn"> <span>Open the door</span></label>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <select id="waGuestGroup" style="flex:1;min-width:160px" title="The restricted group their agents live in"></select>
+          <select id="waGuestGroup" style="flex:1;min-width:160px" title="The group their agents live in — Private (one Unix user for the group) or External (one per conversation)"></select>
           <select id="waGuestProfile" style="flex:1;min-width:160px" title="The profile their agents run on — this is what defines the job"></select>
           <button id="waGuestsSave" type="button">Save</button>
         </div>
@@ -6976,12 +6978,18 @@
   // internal word "restricted": the type reads Private, and the personal
   // space reads Personal.
   function isWalled(nature) {
-    return nature === "private" || nature === "restricted";
+    return nature === "private" || nature === "restricted" || nature === "external";
   }
   function groupTypeLabel(nature) {
     if (nature === "private") return "Personal";
     if (nature === "restricted") return "Private";
+    if (nature === "external") return "External";
     return "Public";
+  }
+  // A roster of people: Private and External differ in what they ISOLATE (the
+  // group, or each conversation inside it), never in who may see or run them.
+  function isRosterNature(nature) {
+    return nature === "restricted" || nature === "external";
   }
   // The name a group SHOWS: the personal space is always "Personal" (its stored
   // name is the account name); any other group shows its own name.
@@ -7469,6 +7477,7 @@
   }
 
   function groupCloseTitle(nature) {
+    if (nature === "external") return "Delete group (destroys every conversation in it, and its files)";
     if (nature === "restricted") return "Delete group (destroys its agents and files)";
     if (nature === "private") return "Personal space (sealed)";
     return "Ungroup (its agents move to Main)";
@@ -7479,8 +7488,12 @@
    * Ungrouping a walled group would drop its agents into the commons. */
   async function closeGroupGesture(group, after) {
     if (group.nature === "private") return;
-    if (group.nature === "restricted") {
-      if (!confirm("Delete group " + (group.name || "") + "? Its agents and files are destroyed.")) return;
+    if (isRosterNature(group.nature)) {
+      const what =
+        group.nature === "external"
+          ? "? Every conversation in it is destroyed, with its files and its system account."
+          : "? Its agents and files are destroyed.";
+      if (!confirm("Delete group " + (group.name || "") + what)) return;
       try {
         const res = await fetch("/groups", {
           method: "DELETE",
@@ -14948,7 +14961,13 @@
       body.lastChild.prepend(LineIcons.el("lock", 12));
       return;
     }
-    if (g.nature === "restricted") {
+    if (isRosterNature(g.nature)) {
+      if (g.nature === "external") {
+        // Say what it IS, in one line, where the operator makes the decision:
+        // a wall between the guests, and no wall towards the members.
+        note("External: each conversation is sealed from the others — its own system account, home, files and attachments. You and the other members see them all.");
+        body.lastChild.prepend(LineIcons.el("users", 12));
+      }
       const members = Array.isArray(g.members) ? g.members : [];
       const post = async (payload) => {
         let failure = "";
@@ -17922,7 +17941,7 @@
       }
       el.value = items.some((it) => it.id === value) ? value : "";
     };
-    sel("tgGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no restricted group");
+    sel("tgGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no Private or External group");
     sel(
       "tgGuestProfile",
       (Array.isArray(profileCache) ? profileCache : [])
@@ -17942,9 +17961,9 @@
       o.disabled = (o.value !== "group" && !groups.length) || (o.value === "group+dm" && !s.dmOwned);
     }
     const WALL =
-      "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them.";
+      "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them. Pick an EXTERNAL group and each conversation gets its own Unix user instead, sealed from the others.";
     $("tgGuestsNote").textContent = !groups.length
-      ? "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations."
+      ? "You need a Private or External group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations."
       : mode.value === "dm-only"
         ? "No board group at all: a group that adds the bot is told it only works in private, and /setup is refused everywhere — nobody pairs, and your own chat with the bot becomes a guest conversation like anyone else's. " + WALL
         : mode.value === "group+dm"
@@ -18910,7 +18929,7 @@
       el.value = items.some((it) => it.id === value) ? value : "";
     };
     const groups = Array.isArray(view.guestGroups) ? view.guestGroups : [];
-    fill("waGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no restricted group");
+    fill("waGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no Private or External group");
     fill(
       "waGuestProfile",
       (Array.isArray(profileCache) ? profileCache : [])
@@ -19130,17 +19149,29 @@
   }
   function groupNature() {
     const a = $("groupCreateType").querySelector(".nature-card.active");
-    return a && a.dataset.nature === "restricted" ? "restricted" : "public";
+    const n = a && a.dataset.nature;
+    return n === "restricted" || n === "external" ? n : "public";
   }
+  // What each type MEANS, in one line, where the choice is made — the type is
+  // picked at creation and never converted, so this is the only moment to say it.
+  const NATURE_NOTE = {
+    public: "",
+    restricted: "Only its members see its agents. One system account for the whole group.",
+    external: "For STRANGERS: each conversation is sealed from the others — its own system account, home, files and attachments. Its members see them all. Cannot be changed afterwards.",
+  };
   function setGroupNature(nature) {
     for (const c of $("groupCreateType").querySelectorAll(".nature-card")) {
       const on = c.dataset.nature === nature && !c.disabled;
       c.classList.toggle("active", on);
       c.setAttribute("aria-pressed", String(on));
     }
-    const priv = groupNature() === "restricted";
-    $("groupMembersField").hidden = !priv;
-    if (priv) loadGroupAccounts();
+    const picked = groupNature();
+    const roster = isRosterNature(picked);
+    $("groupMembersField").hidden = !roster;
+    if (roster) loadGroupAccounts();
+    const note = $("groupCreateNatureNote");
+    note.textContent = NATURE_NOTE[picked] || "";
+    note.hidden = !note.textContent;
   }
   async function openGroupCreate() {
     $("groupCreateName").value = "";
@@ -19150,7 +19181,12 @@
     groupCreateError("");
     $("groupCreateSubmit").disabled = false;
     const capable = await isGroupCapable();
-    $("groupCreateType").querySelector('.nature-card[data-nature="restricted"]').disabled = !capable;
+    // Both walled types need the privileged deployment, and a type that cannot
+    // pose its wall must not be offerable at all (invariant 47: never a
+    // cosmetic label). An EXTERNAL group is the sharper case — it would read as
+    // "each conversation is sealed" while every stranger shared one account.
+    for (const n of ["restricted", "external"])
+      $("groupCreateType").querySelector('.nature-card[data-nature="' + n + '"]').disabled = !capable;
     $("groupCreateNoPrivate").hidden = capable;
     $("groupCreateOverlay").hidden = false;
     $("groupCreateName").focus();
@@ -19175,8 +19211,7 @@
     const nature = groupNature();
     if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
     if (groupNameTaken(name)) { $("groupCreateSubmit").disabled = false; return groupCreateError(`A group named "${name}" already exists.`); }
-    const members = nature === "restricted"
-      ? readMemberGrid($("groupMembersPick")) : [];
+    const members = isRosterNature(nature) ? readMemberGrid($("groupMembersPick")) : [];
     groupCreateError("");
     const headers = { "Content-Type": "application/json", "x-shadok-instance": instanceKey };
     try {

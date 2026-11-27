@@ -464,7 +464,14 @@ export function normalizeGroups(raw: unknown): Group[] {
     const row = r as Record<string, any>;
     const idOk = (typeof row.id === "string" && row.id !== "") || (typeof row.id === "number" && Number.isFinite(row.id));
     if (!idOk) continue;
-    const nature: Nature = row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : "public";
+    // Every known nature, or a stored EXTERNAL group would be read back as
+    // PUBLIC — i.e. every stranger's conversation published to the whole
+    // instance by a reload. Unknown still falls back to public, which is the
+    // right default for a row written by a version that knew less.
+    const nature: Nature =
+      row.nature === "private" || row.nature === "restricted" || row.nature === "external" || row.nature === "public"
+        ? row.nature
+        : "public";
     const g: Group = {
       ...row,
       id: String(row.id),

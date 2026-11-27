@@ -94,7 +94,7 @@ test("newPrivateGroup: one sealed group, owner is sole member (the brief's shape
   assert.deepEqual(g.members, ["ada"]);
   assert.equal(g.id, "g1");
   assert.equal(g.createdAt, 42);
-  assert.equal(g.osUser, null); // the server sets it via osUserFor before persist
+  assert.equal(g.osUser, null); // the server sets it via groupOsUser before persist
 });
 
 test("privateGroupFor: finds the account's private group by owner, idempotency guard", () => {
@@ -319,7 +319,7 @@ test("mergeGroupsPut: a member may change a restricted group's members", () => {
 });
 
 // ── spawnGroupForRequest ──────────────────────────────────────────────────────
-import { spawnGroupFor, spawnGroupForRequest } from "../src/groups.js";
+import { spawnGroupFor, spawnGroupForRequest, isRoster } from "../src/groups.js";
 import { readFileSync } from "node:fs";
 {
   const mainG: Group = { id: MAIN_GROUP_ID, name: "Main", nature: "public", members: [], createdAt: 0 };
@@ -404,8 +404,11 @@ test("server start handler derives parentGroupId from callerAgent (not msg.paren
     src,
     /const parentGroupId = callerAgent\s*\?\s*loadChannels\(\)\.find\(\(c\) => c\.sessionId === callerAgent\.id\)\?\.group \?\? null\s*:\s*null;/,
   );
-  // Threaded into resolveSpawnIsolation (both call sites end their input with it).
-  assert.equal((src.match(/parentGroupId,\n\s*\}\);/g) ?? []).length, 2);
+  // Threaded into resolveSpawnIsolation at both call sites — now followed by
+  // the CONVERSATION and the guest marker, since an external group isolates per
+  // conversation and only the door's own spawn may land in one.
+  assert.equal((src.match(/parentGroupId,\n\s*(\/\/[^\n]*\n\s*)*conversation:/g) ?? []).length, 2);
+  assert.equal((src.match(/guest: !!guestSetup,/g) ?? []).length, 2);
 });
 
 // ── A restricted group can never be left with no member ─────────────────────
@@ -503,4 +506,69 @@ test("viewerBox names the box, and nothing else has one", () => {
   assert.equal(viewerBox({ name: "ann", role: "admin" }), null);
   assert.equal(viewerBox({ ...BOXED, onlySession: undefined }), null);
   assert.equal(viewerBox(null), null);
+});
+
+// ── The EXTERNAL nature (design decisions 1, 9) ─────────────────────────────
+// A roster of people like a restricted group; what differs is what it isolates
+// (the conversation, not the group) and that it carries no ledger scope.
+
+const doorG: Group = { id: "door", name: "Door", nature: "external", members: ["ada"], createdAt: 0 };
+
+test("external is a ROSTER: the roster rules apply to it unchanged", () => {
+  // Written as a predicate on purpose: the alternative — a second
+  // `|| nature === "external"` in six places — is how one of them gets missed,
+  // and a missed one is an external group whose last member can walk out and
+  // leave it unreachable.
+  assert.equal(isRoster(doorG), true);
+  assert.equal(isRoster({ nature: "restricted" }), true);
+  assert.equal(isRoster({ nature: "public" }), false);
+  assert.equal(isRoster({ nature: "private" }), false);
+  assert.match(lastMemberRefusal(doorG, "ada") ?? "", /last member of "Door"/);
+  assert.equal(membershipVerdict({ name: "ada", role: "member" }, doorG, "invite", "bob").ok, true);
+  assert.deepEqual(orphanedGroupsHeal([{ ...doorG, members: [] }], "admin")?.[0].members, ["admin"]);
+});
+
+test("an external group is seen and administered exactly like a restricted one", () => {
+  const ada = { name: "ada", role: "member" as const };
+  const bob = { name: "bob", role: "admin" as const };
+  assert.equal(canSeeGroup(doorG, ada), true);
+  assert.equal(canSeeGroup(doorG, bob), false, "an admin has no override (operator decision 2026-11-03)");
+  assert.equal(canAdministerGroup(doorG, ada), true);
+  assert.equal(canAdministerGroup(doorG, bob), false);
+});
+
+test("an external group is in NO ledger scope, for anyone", () => {
+  // Decision 9: the ledger is how sibling agents stop re-surfacing resolved
+  // work, and an external group holds no siblings — it holds strangers, sealed
+  // from one another. A row written there would be a stranger's words pushed to
+  // the instance; a row read there, the instance's notes pushed to a stranger.
+  const groups = [{ id: "main", name: "main", nature: "public" as const, members: [], createdAt: 0 }, doorG];
+  const ada = { name: "ada", role: "member" as const };
+  assert.ok(memberGroupIds(groups, ada).has("door"), "she IS a member");
+  assert.ok(!ledgerGroupsFor(groups, ada).has("door"));
+  // And it is not her home group either, so she still reads the commons'.
+  assert.ok(ledgerGroupsFor(groups, ada).has("main"));
+});
+
+test("an external group is never a HOME group, and never a spawn target", () => {
+  // An agent of its own would be an operator's agent inside the strangers'
+  // wall — with no isolation unit to run as, since the group has no user.
+  const groups = [{ id: "main", name: "main", nature: "public" as const, members: [], createdAt: 0 }, doorG];
+  const ada = { name: "ada", role: "member" as const };
+  assert.equal(spawnGroupFor(ada, groups)?.id, "main");
+  assert.equal(spawnGroupForRequest(ada, groups, "door")?.id, "main", "an explicit request is refused");
+  assert.equal(spawnGroupForRequest(ada, groups, null, "door")?.id, "main", "a parent group too");
+  // …except the door's own guest spawn, proven by the bridge's secret: a
+  // conversation is the only thing in that group with a unit to run as.
+  assert.equal(spawnGroupForRequest(ada, groups, "door", null, true)?.id, "door");
+});
+
+test("the nature is chosen at creation and never converted", () => {
+  // A conversion would have to re-home every live conversation mid-flight, and
+  // a resumed agent keeps its old working directory by construction
+  // (invariant 1) — so a converted group would be a wall with holes in it.
+  const prev = [{ id: "g1", name: "Team", nature: "restricted" as const, members: ["ada"], createdAt: 0 }];
+  const r = mergeGroupsPut(prev, [{ id: "g1", name: "Team", nature: "external", members: ["ada"] }], "ada");
+  assert.ok(r.ok, "the PUT is not refused…");
+  assert.equal(r.ok && r.groups[0].nature, "restricted", "…the nature simply does not move");
 });

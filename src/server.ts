@@ -97,10 +97,21 @@ import {
   GUEST_FULL_CODE,
   GUEST_RATE_WINDOW_MS,
   guestAdmitVerdict,
+  guestConversationKey,
   guestLimitsOf,
   liveGuestKeys,
   requestedLimits,
 } from "./guest-admit.js";
+import { conversationUnit, unitConversation, unitFor, unitGroup } from "./isolation-unit.js";
+import {
+  externalUserVerdict,
+  externalUsersOfGroup,
+  loadExternalUsers,
+  saveExternalUsers,
+  withExternalUser,
+  withoutExternalUsers,
+  type ExternalUserRow,
+} from "./external-users.js";
 import { startWaBridge, type WaBridge } from "./wa-bridge.js";
 import { openInbox, waStateDir } from "./wa-inbox.js";
 import { waSessionDir } from "./wa-transport.js";
@@ -235,7 +246,8 @@ import {
 } from "./groups.js";
 import {
   resolveSpawnIsolation,
-  osUserFor,
+  osUserOf,
+  groupOsUser,
   homeForUser,
   tierStateDir,
   tierStateDirAction,
@@ -264,10 +276,10 @@ import {
   type FileIdentity,
 } from "./group-exec.js";
 import {
-  mediaDirForGroup,
+  mediaDirForUnit,
   mediaFileMode,
   parseMediaRequest,
-  groupForMediaKey,
+  unitForMediaKey,
   passwdGid,
   mediaDirSpec,
   mediaDirTrusted,
@@ -3559,7 +3571,15 @@ function loginUsers(): Array<{ user: string; home: string; label: string }> {
   const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
   if (commons) out.push({ user: commons, home: agentStateHome(commons), label: "commons" });
   for (const g of loadGroups()) {
-    const u = osUserFor(g);
+    // An EXTERNAL group has no group-level login to offer, and deliberately
+    // none per conversation either: a stranger's agent runs on the instance's
+    // shared Claude credential like every other dropped agent (the design's
+    // stated limit), and listing one sign-in row per stranger would turn this
+    // panel into a phone book. `groupOsUser` refuses it, which is the honest
+    // "no row" rather than a row nobody can use.
+    const r = groupOsUser(g);
+    if (!r.ok) continue;
+    const u = r.user;
     if (u && !out.some((x) => x.user === u))
       out.push({ user: u, home: agentStateHome(u), label: g.name || g.id });
   }
@@ -4503,7 +4523,13 @@ app.get("/groups/ssh", (req, res) => {
       // mono-tenant cockpit every agent runs as the server's user and shares the
       // one identity, so naming `sk-<id>` here would point the operator at a key
       // directory nothing will ever read — a plausible, complete and wrong answer.
-      osUserFor: (g) => (DEPLOYMENT_MODE === "multi-tenant" ? osUserFor(g) : null),
+      // Group-level keys only: an external group's conversations get no git
+      // identity of their own — a guest's agent pushes nowhere.
+      osUserFor: (g) => {
+        if (DEPLOYMENT_MODE !== "multi-tenant") return null;
+        const r = groupOsUser(g);
+        return r.ok ? r.user : null;
+      },
       readPub: (p) => {
         try {
           return fs.readFileSync(p, "utf8");
@@ -4678,7 +4704,14 @@ function channelStateHome(chan: Channel): string {
   if (live) return live.transcriptHome;
   if (DEPLOYMENT_MODE !== "multi-tenant") return os.homedir();
   const g = chan.group ? loadGroups().find((x) => x.id === chan.group) : null;
-  const user = (g ? osUserFor(g) : null) ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  // The conversation comes off the channel's own binding, so an external
+  // group's agent resolves to ITS home and not the group's (which does not
+  // exist). A refusal falls back to the commons home deliberately: this answer
+  // only ever LOCATES state (a transcript, a worktree to prune), it grants
+  // nothing — and a throw here would break pruning for every other agent.
+  const r = g ? osUserOf(g, guestConversationKey(chan)) : null;
+  if (r && !r.ok) console.log(`channels: ${chan.sessionId.slice(0, 8)} — ${r.why}; reading its state from the commons home`);
+  const user = (r?.ok ? r.user : null) ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
   return agentStateHome(user);
 }
 
@@ -5105,14 +5138,57 @@ function alreadyMigratedNow(): boolean {
 
 /** The full provisioning deps a group's OS user needs (shared with POST /groups):
  *  pot wiring. */
-function provisionOsUserFor(g: Group): Promise<unknown> {
+function provisionOsUserFor(g: Group, conversation: string | null = null): Promise<unknown> {
   return provisionGroupUser(g, {
     run: runPrivileged,
     seed: seedGroupHome,
     homeBase: GROUP_HOME_BASE,
     userExists: osUserExists,
     sharedPotPath: SHARED_POT_PATH,
+    conversation,
   });
+}
+
+/**
+ * The wall of an EXTERNAL group, one conversation at a time: make sure THIS
+ * conversation has its own Unix account, and that the account belongs to it and
+ * to nobody else.
+ *
+ * Called when the door ADMITS someone, before anything of theirs exists. Every
+ * failure is a refusal of the whole admission (design decision 2) — the
+ * alternatives are the group's account (two strangers sharing a home) or the
+ * commons (a stranger in the shared one), and an external group that quietly
+ * did either would be the cosmetic wall invariant 47 forbids.
+ *
+ * Idempotent: a returning conversation finds its row in the registry and its
+ * account on the host, so nothing runs. The registry row is written AFTER the
+ * account exists, so a failed `useradd` leaves no claim behind — and because
+ * the name is derived, the retry computes the same one.
+ */
+async function ensureExternalUser(
+  g: Group,
+  conversation: string,
+): Promise<{ ok: true; user: string } | { ok: false; why: string }> {
+  // An external group cannot exist without the privileged deployment, and the
+  // refusal is the existing one — never a cosmetic label (`capabilityRefusal`).
+  if (DEPLOYMENT_MODE !== "multi-tenant")
+    return { ok: false, why: "this instance cannot isolate a conversation: external groups need the privileged deployment" };
+  const r = osUserOf(g, conversation);
+  if (!r.ok) return { ok: false, why: r.why };
+  if (!r.user) return { ok: false, why: `group ${g.id} resolves to no user of its own` };
+  const rows = loadExternalUsers();
+  const verdict = externalUserVerdict(rows, { user: r.user, unit: r.unit }, Date.now());
+  if (verdict.kind === "collision") return { ok: false, why: verdict.why };
+  try {
+    await provisionOsUserFor(g, conversation);
+  } catch (e) {
+    return { ok: false, why: `could not provision this conversation's user: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (verdict.kind === "new") {
+    saveExternalUsers(withExternalUser(rows, verdict.row));
+    console.log(`guests: minted ${r.user} for one conversation of group ${g.id.slice(0, 8)}`);
+  }
+  return { ok: true, user: r.user };
 }
 
 /**
@@ -5141,7 +5217,8 @@ async function ensurePrivateGroupProvisioned(accountName: string): Promise<void>
   let g = privateGroupFor(accountName, groups);
   if (!g) {
     g = newPrivateGroup(accountName, randomUUID(), Date.now());
-    g.osUser = osUserFor(g);
+    const u = groupOsUser(g);
+    g.osUser = u.ok ? u.user : null;
     saveGroups([...groups, g]);
     console.log(`groups: created private group ${g.id.slice(0, 8)} for ${accountName} (invite redeemed)`);
   }
@@ -5212,6 +5289,7 @@ async function ensureGroupsProvisioned(): Promise<void> {
         `${r.present.length} already present, ${r.failed.length} failed`,
     );
   }
+  await reconcileExternalUsers();
   // The bootstrap admin (the operator) has no accounts.json row, so neither the
   // invite-redeem hook nor the per-account migration loop ever fires for it.
   // Give it a Personal group here; idempotent (reuses an existing private group).
@@ -5436,7 +5514,11 @@ async function healStrandedWorktrees(): Promise<void> {
   const plan = strandedWorktreePlan(loadChannels(), {
     dropUserFor: (gid) => {
       const g = gid ? groups.find((x) => x.id === gid) : undefined;
-      return (g ? osUserFor(g) : null) ?? commons;
+      // A guest's agent never gets a worktree (`start`: `!guestSetup`), so an
+      // external group has nothing stranded; `groupOsUser` refusing it means
+      // "not my business" here, and the commons answer is never used.
+      const r = g ? groupOsUser(g) : null;
+      return (r?.ok ? r.user : null) ?? commons;
     },
     stateHomeFor: (u) => agentStateHome(u),
     // Reachable := the drop user can enter the checkout AND write it. A working,
@@ -5619,7 +5701,8 @@ async function migProvisionPrivateGroup(account: string): Promise<void> {
   let g = privateGroupFor(account, groups);
   if (!g) {
     g = newPrivateGroup(account, randomUUID(), Date.now());
-    g.osUser = osUserFor(g);
+    const u = groupOsUser(g);
+    g.osUser = u.ok ? u.user : null;
     saveGroups([...groups, g]);
   }
   await provisionOsUserFor(g);
@@ -5777,8 +5860,15 @@ async function maybeRunGroupsMigration(reason: string): Promise<void> {
 // `Origin` it forges. The flow (createGroupFlow) owns the guard order and the ordering.
 app.post("/groups", async (req, res) => {
   const body = req.body ?? {};
+  // `external` is accepted here and NOWHERE else: a nature is chosen at
+  // creation and never converted (`mergeGroupsPut` ignores it on an existing
+  // row), so this route is the only door it comes through. Without it the UI's
+  // External card would have silently created a RESTRICTED group — a label
+  // promising a wall that was never posed (invariant 47).
   const nature: Nature =
-    body.nature === "private" || body.nature === "restricted" || body.nature === "public" ? body.nature : "restricted";
+    body.nature === "private" || body.nature === "restricted" || body.nature === "external" || body.nature === "public"
+      ? body.nature
+      : "restricted";
   const r = await createGroupFlow(
     {
       fromBrowser: requestFromBrowser(req),
@@ -5821,16 +5911,112 @@ app.delete("/groups", async (req, res) => {
       loadGroups,
       saveGroups,
       loadChannels,
-      teardown: (g) =>
-        teardownGroupUser(g, {
-          run: runPrivileged,
-          homeBase: GROUP_HOME_BASE,
-          killAgents: () => killGroupAgents(g.id),
-        }),
+      teardown: (g) => teardownGroupOrConversations(g),
     },
   );
   res.status(r.status).json(r.body);
 });
+
+/**
+ * Tear a group's accounts down — ONE for an ordinary group, and for an EXTERNAL
+ * group one per conversation it ever admitted.
+ *
+ * The registry is the only thing that knows those names (they are hashes), so
+ * it is read here and the rows are dropped only for the accounts that actually
+ * went away: a row kept for an account that is still on the host is what makes
+ * the retry work, and a row dropped for an account that is still there would
+ * let a LATER conversation mint the same name and inherit the home. Which is
+ * the uid-recycling trap of design decision 7, from the registry's side.
+ */
+async function teardownGroupOrConversations(g: Group): Promise<{ ok: boolean; warning?: string }> {
+  if (g.nature !== "external")
+    return teardownGroupUser(g, {
+      run: runPrivileged,
+      homeBase: GROUP_HOME_BASE,
+      killAgents: () => killGroupAgents(g.id),
+    });
+  const rows = loadExternalUsers();
+  const mine = externalUsersOfGroup(rows, g.id);
+  // The agents go first, once: every conversation of this group runs under its
+  // own account, and a `userdel` cannot remove an account a process holds open.
+  try {
+    await killGroupAgents(g.id);
+  } catch (e) {
+    return { ok: false, warning: `killing the group's agents failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const removed: string[] = [];
+  const warnings: string[] = [];
+  for (const row of mine) {
+    try {
+      await runPrivileged("userdel", ["--remove", row.user]);
+      removed.push(row.user);
+    } catch (e) {
+      warnings.push(`userdel --remove ${row.user} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (removed.length) saveExternalUsers(withoutExternalUsers(loadExternalUsers(), removed));
+  if (removed.length || mine.length)
+    console.log(`groups: external ${g.id.slice(0, 8)} — removed ${removed.length}/${mine.length} conversation account(s)`);
+  return warnings.length ? { ok: false, warning: warnings.join("; ") } : { ok: true };
+}
+
+/**
+ * The same boot reconciler, for the accounts an EXTERNAL group's conversations
+ * own — the ones `reconcileGroupProvisioning` deliberately skips because their
+ * names live in the registry and not in the group list.
+ *
+ * It exists for the recreate case the group-level one was written for
+ * (invariant 21's family): the volume keeps `external-users.json` and every
+ * conversation's state, while `/etc/passwd` is ephemeral — so without this a
+ * returning guest would be refused on a host that still holds all their files.
+ * Idempotent and never fatal: a row whose account is present costs one probe,
+ * and a failure is logged per conversation so one bad row cannot stop the boot.
+ *
+ * A row whose GROUP is gone is dropped: the group's deletion already removed
+ * the accounts (`teardownGroupOrConversations`), so the row is a leftover from
+ * a teardown that was interrupted — and keeping it would make the collision
+ * refusal guard a conversation nothing can reach.
+ */
+async function reconcileExternalUsers(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const rows = loadExternalUsers();
+  if (!rows.length) return;
+  const groups = loadGroups();
+  const live: ExternalUserRow[] = [];
+  const stale: string[] = [];
+  let healed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const g = groups.find((x) => x.id === unitGroup(row.unit));
+    if (!g || g.nature !== "external") {
+      stale.push(row.user);
+      continue;
+    }
+    live.push(row);
+    const conv = unitConversation(row.unit);
+    if (!conv) continue;
+    let exists = false;
+    try {
+      exists = await osUserExists(row.user);
+    } catch {
+      exists = false; // an unreadable probe → attempt the idempotent provision
+    }
+    if (exists) continue;
+    try {
+      await provisionOsUserFor(g, conv);
+      healed++;
+    } catch (e) {
+      failed++;
+      console.log(`guests: could not reprovision ${row.user} — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (stale.length) {
+    saveExternalUsers(live);
+    console.log(`guests: dropped ${stale.length} registry row(s) whose group is gone`);
+  }
+  if (healed || failed)
+    console.log(`guests: boot reprovision — ${healed} conversation account(s) restored, ${failed} failed`);
+}
 
 /** The group id may arrive on the query string or in a JSON body. */
 function body_id(req: { body?: any }): string {
@@ -8282,6 +8468,7 @@ app.put("/whatsapp/guests", (req, res) => {
     want,
     groups: loadGroups(),
     profileExists: (n) => !!getProfile(n),
+    profileSecrets: (n) => getProfile(n)?.secrets ?? [],
     // WhatsApp has no owner to protect: its door is always `dm-only`.
     hasOwner: true,
     other: guestSetupForCwd(loadConfig(), cwd),
@@ -8397,6 +8584,7 @@ app.put("/telegram", async (req, res) => {
       want,
       groups: loadGroups(),
       profileExists: (n) => !!getProfile(n),
+      profileSecrets: (n) => getProfile(n)?.secrets ?? [],
       // `dmGate` answers `pair` while the bot has no owner, so `group+dm`
       // cannot be saved before the DMs are paired — it would be a door that
       // cannot open. `dm-only` has no owner at all and is exempt.
@@ -9075,7 +9263,28 @@ function mediaDirForSession(sessionId: string | null): string {
   }
   const ch = sessionId ? loadChannels().find((c) => c.sessionId === sessionId) : undefined;
   if (!ch) throw new Error("no agent for this attachment yet");
-  return mediaDirForGroupId(ch.group ?? null);
+  // The CONVERSATION comes off the channel, so in an external group a
+  // stranger's attachments land in a directory only their own agent can read —
+  // an image someone sends is exactly what the next stranger must not see.
+  return mediaDirForUnitOf(ch.group ?? null, guestConversationKey(ch));
+}
+
+/**
+ * Every isolation unit an EXTERNAL group currently holds — one per live
+ * conversation, derived from the channel registry (the authority on which
+ * conversations exist). The input of `unitForMediaKey`: a hashed directory name
+ * can only be mapped back by trying the units that exist.
+ */
+function externalUnits(groups: readonly Group[], chans: readonly Channel[]): string[] {
+  const external = new Set(groups.filter((g) => g.nature === "external").map((g) => g.id));
+  if (!external.size) return [];
+  const out = new Set<string>();
+  for (const c of chans) {
+    if (!c.group || !external.has(c.group)) continue;
+    const conv = guestConversationKey(c);
+    if (conv) out.add(conversationUnit(c.group, conv));
+  }
+  return [...out];
 }
 
 /** A ROOM's attachments land in its group's media directory, exactly like an
@@ -9088,20 +9297,34 @@ function mediaDirForRoom(roomId: string): string {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
     return root;
   }
-  return mediaDirForGroupId(room.group ?? null);
+  // A room is a conversation between PEOPLE of a group, so it has no guest
+  // conversation of its own — and an external group has no group-level
+  // directory, so this refuses there rather than inventing one.
+  return mediaDirForUnitOf(room.group ?? null, null);
 }
 
-/** Multi-tenant only: a group's media directory, created and locked down. */
-function mediaDirForGroupId(group: string | null): string {
+/**
+ * Multi-tenant only: an isolation unit's media directory, created and locked
+ * down. The group's own in every group but an EXTERNAL one, where it is the
+ * conversation's (`unitFor`) — and where a caller with no conversation to name
+ * is refused, never given the group's.
+ */
+function mediaDirForUnitOf(group: string | null, conversation: string | null): string {
   const root = mediaDir();
-  const who = osUserForChannelGroup(group, loadGroups(), commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }));
-  if (!who.ok) throw new Error("the agent's group no longer exists");
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  const groups = loadGroups();
+  const g = group ? groups.find((x) => x.id === group) : null;
+  if (group && !g) throw new Error("the agent's group no longer exists");
+  const u = g ? unitFor(g, conversation) : { ok: true as const, unit: MAIN_GROUP_ID };
+  if (!u.ok) throw new Error(u.why);
+  const who = osUserForChannelGroup(group, groups, commons, conversation);
+  if (!who.ok) throw new Error(who.why ?? "the agent's group no longer exists");
   let gid: number | null = null;
   if (who.user) {
     gid = passwdGid(fs.readFileSync("/etc/passwd", "utf8"), who.user);
     if (gid == null) throw new Error(`OS user ${who.user} not found`);
   }
-  return ensureMediaGroupDir(mediaDirForGroup(root, group, true), gid);
+  return ensureMediaGroupDir(mediaDirForUnit(root, u.unit, true), gid);
 }
 
 function ensureMediaGroupDir(dir: string, gid: number | null): string {
@@ -9152,9 +9375,18 @@ app.get(["/media/:name", "/media/:key/:name"], (req, res) => {
   let dir = root;
   if (ref.key) {
     const groups = loadGroups();
-    const gid = groupForMediaKey(ref.key, groups.map((g) => g.id));
-    if (!gid) return res.status(404).type("text").send("no such media");
     const chans = loadChannels();
+    // The key is a hash for anything but a plain group id, so the way back is
+    // to try what this instance HAS: every group, plus every live conversation
+    // of an external group (where the media directory follows the conversation,
+    // not the group). Unknown stays a 404 — never a directory served on trust.
+    const unit = unitForMediaKey(ref.key, [...groups.map((g) => g.id), ...externalUnits(groups, chans)]);
+    if (!unit) return res.status(404).type("text").send("no such media");
+    const gid = unitGroup(unit);
+    // Authorised by the GROUP, deliberately: its members see every conversation
+    // in it, which is the whole product of an external group. A guest's own
+    // agent is boxed out of this route (invariant 86) and does not need it — it
+    // reads its attachments from the filesystem, as a `--add-dir` directory.
     if (!mayReachGroup({ mode: DEPLOYMENT_MODE, agent: requestAgent(req, chans), viewer: viewerFor(currentAccount(req)), group: gid, groups }))
       return res.status(404).type("text").send("no such media");
     dir = path.join(root, ref.key);
@@ -10123,8 +10355,11 @@ function ensureGroupVolumeKeys(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant") return;
   const users = new Set<string>([COMMONS_USER]);
   for (const g of loadGroups()) {
-    const u = osUserFor(g);
-    if (u) users.add(u);
+    // Group-level users only — see `loginUsers`: a conversation's account gets
+    // no git identity, and minting one per stranger is not a key policy, it is
+    // a key leak waiting for a reviewer.
+    const r = groupOsUser(g);
+    if (r.ok && r.user) users.add(r.user);
   }
   for (const user of users) {
     try {
@@ -10247,7 +10482,9 @@ function dropUserCwds(): Map<string, Set<string>> {
   };
   for (const ch of loadChannels()) {
     const g = ch.group ? groups.get(ch.group) : undefined;
-    add((g ? osUserFor(g) : null) ?? commons, ch.cwd);
+    // Per CHANNEL, so an external group's conversation seeds its own home.
+    const r = g ? osUserOf(g, guestConversationKey(ch)) : null;
+    add((r?.ok ? r.user : null) ?? commons, ch.cwd);
   }
   // The commons also runs the lead agent in the launch dir itself.
   if (commons) add(commons, process.cwd());
@@ -10387,6 +10624,13 @@ function makePilot(
    * undefined on every mono-tenant (and group-less) spawn → Main, i.e. today.
    */
   group?: string | null,
+  /**
+   * The GUEST conversation this agent belongs to, in an EXTERNAL group: the
+   * isolation unit there (`src/isolation-unit.ts`), so its media directory —
+   * and, when that lands, its vault slice — follow the conversation and not the
+   * group. Null on every other spawn, which keeps them byte-for-byte as before.
+   */
+  conversation?: string | null,
 ): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -10468,7 +10712,10 @@ function makePilot(
   // a group that vanished keeps the old behaviour (a prompt), never a failed spawn.
   let mediaDirArg: string | null = null;
   try {
-    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" ? mediaDirForGroupId(group ?? null) : mediaDirForSession(null);
+    mediaDirArg =
+      DEPLOYMENT_MODE === "multi-tenant"
+        ? mediaDirForUnitOf(group ?? null, conversation ?? null)
+        : mediaDirForSession(null);
   } catch (e) {
     console.warn(`media: no --add-dir for ${id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)})`);
   }
@@ -10846,7 +11093,12 @@ async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
   // check: the session's entitlement was established at spawn, and no human
   // principal drives a restart — see `canRestartInto`). Mono-tenant has no group,
   // so this is a trivial pass and byte-for-byte today's behaviour.
-  const restartGroupId = loadChannels().find((c) => c.sessionId === s.id)?.group ?? null;
+  const restartRow = loadChannels().find((c) => c.sessionId === s.id);
+  const restartGroupId = restartRow?.group ?? null;
+  // In an EXTERNAL group the unit is the conversation, and a restart must come
+  // back under the SAME account — the one that owns this person's home. It is
+  // read from the channel's own binding, which was written at its first `ready`.
+  const restartConversation = guestConversationKey(restartRow);
   if (DEPLOYMENT_MODE === "multi-tenant" && !canRestartInto(restartGroupId, loadGroups())) {
     console.error(
       `[sk-${s.id}] restart refused — group ${restartGroupId} no longer resolves (would drop to commons/root)`,
@@ -10920,6 +11172,7 @@ async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
       viewer: null,
       groups: loadGroups(),
       storedGroupId: restartGroupId,
+      conversation: restartConversation,
     }).user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
   // Task 7 verify-first gate (same as the spawn path): a restart re-adopts the
   // HOME, so it is another moment the symlink could have been overwritten by a
@@ -10933,6 +11186,7 @@ async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
     s.effort,
     restartUser,
     restartGroupId,
+    restartConversation,
   );
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
@@ -11364,6 +11618,9 @@ async function createSession(
   /** The isolation group the agent belongs to (null = commons / mono-tenant),
    *  so its profile's secrets resolve by the agent's REAL group, not always Main. */
   group: string | null = null,
+  /** The guest conversation it belongs to, when its group isolates per
+   *  conversation (an EXTERNAL group) — null everywhere else. */
+  conversation: string | null = null,
 ): Promise<Live> {
   // A dropped group agent writes its transcript under ITS OWN home, not the
   // server's — so the content tail / history must read from there (invariant:
@@ -11372,7 +11629,7 @@ async function createSession(
   // A resume of an agent that never got a first prompt has no transcript to
   // resume: start it under the same id instead (`resumeOrStartArgs`).
   args = resumeOrStartArgs(args, fs.existsSync(sessionFilePath(cwd, id, transcriptHome)));
-  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
+  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group, conversation);
   // Resumed sessions start with what the transcript already consumed. One scan
   // feeds both the context gauge (last message's usage) and the stats windows
   // (every message's usage + time + model), so a huge file is read once here.
@@ -12665,6 +12922,27 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               }
               if (!verdict.returning) chargeAdmission(guestSetup.group);
             }
+            // An EXTERNAL door's wall: ONE Unix user per conversation, minted
+            // here — at ADMISSION — and never at the agent's spawn… which is
+            // the same moment on this path, because the server-side admission
+            // IS this handler (the bridge is not trusted to decide anything).
+            // So the design's "a spawn never waits on a privileged command"
+            // holds only per conversation: the FIRST message from a stranger
+            // waits for one `useradd`, every later one finds the account there.
+            //
+            // The refusal is total and deliberate (design decision 2): a
+            // collision in the registry, a `useradd` that fails, a host that
+            // cannot provision — none of them fall back to the group's user or
+            // to the commons, because both answers put a stranger somewhere
+            // they can read another stranger. No account, no conversation.
+            const extGroup = loadGroups().find((g) => g.id === guestSetup.group);
+            if (extGroup?.nature === "external") {
+              const minted = await ensureExternalUser(extGroup, guestDir);
+              if (!minted.ok) {
+                console.log(`guests: ${guestDir} not admitted to ${guestSetup.group} — ${minted.why}`);
+                return fail(minted.why, "guest-isolation");
+              }
+            }
           }
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
@@ -12796,7 +13074,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               requestedGroupId:
                 guestGroupId ?? (typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null),
               parentGroupId,
+              conversation: guestDir,
+              guest: !!guestSetup,
             });
+            // The same refusal as below, one step earlier: this resolution is
+            // what picks the HOME the working directory is created in, so a
+            // refusal here must stop before anything of this person's exists.
+            if (earlyIso.refusal) {
+              console.log(`start: isolation refused early for ${id.slice(0, 8)} — ${earlyIso.refusal}`);
+              return fail(earlyIso.refusal, "guest-isolation");
+            }
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
             // A guest's agent runs in its GROUP's own home, never in the
             // operator's launch directory: a stranger has no business holding a
@@ -12878,9 +13165,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // keeps a stray legacy group from ever producing a false refusal
           // there). `storedGroupId`/`groupsNow` are reused by the isolation
           // policy and `agentGroupId` below.
-          const storedGroupId = resumed
-            ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
-            : null;
+          const storedRow = resumed ? loadChannels().find((c) => c.sessionId === id) : undefined;
+          const storedGroupId = resumed ? storedRow?.group ?? null : null;
           const groupsNow = loadGroups();
           if (
             resumed &&
@@ -13027,7 +13313,20 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             storedGroupId,
             requestedGroupId,
             parentGroupId,
+            // In an EXTERNAL group the isolation unit is the conversation, so
+            // the resolution needs its name — and refuses outright without it
+            // rather than drop this agent to the group's user or the commons.
+            // A fresh guest spawn knows it from the frame (`guestDir`); a
+            // RESUME reads it off the stored row's own binding, which is the
+            // registry's answer and never the caller's (invariant 1).
+            conversation: guestDir ?? guestConversationKey(storedRow),
+            // Only the door's own guest spawn may land in an external group.
+            guest: !!guestSetup,
           });
+          if (isolation.refusal) {
+            console.log(`start: isolation refused for ${id.slice(0, 8)} — ${isolation.refusal}`);
+            return fail(isolation.refusal, "guest-isolation");
+          }
           // The group this agent really belongs to: a resume keeps the channel's
           // stored group; a new spawn gets the one the isolation policy derived
           // from the caller's identity. Both null in mono-tenant → secrets = Main.
@@ -13081,6 +13380,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
+            // The conversation this agent belongs to, when its group isolates
+            // per conversation: what its media directory follows (and, when
+            // that lands, its vault slice).
+            guestDir ?? guestConversationKey(storedRow),
           );
           // One Live per agent (shared-ledger [5d8d]). We only reach here when
           // there was no live session to attach to — but `existing` may be a

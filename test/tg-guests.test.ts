@@ -74,7 +74,9 @@ test("guestEnableRefusal: outside multi-tenant there is no group that could hold
 
 test("guestEnableRefusal: an unknown group, a public one and a personal one are all refused", () => {
   assert.match(String(refusal({ want: { mode: "group+dm", group: "nope", profile: "Support" } })), /no such group/i);
-  assert.match(String(refusal({ want: { mode: "group+dm", group: "main", profile: "Support" } })), /restricted/i);
+  // A public group is no wall at all — every account in the cockpit would read
+  // those conversations.
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "main", profile: "Support" } })), /public group/i);
   // A personal group is sealed and the bridge could never be a member of it.
   assert.match(String(refusal({ want: { mode: "group+dm", group: "p1", profile: "Support" } })), /personal/i);
 });
@@ -99,7 +101,7 @@ test("guestEnableRefusal: dm-only needs NO pairing — it is the mode without an
   // Everything else still holds: the group must be one that can hold people.
   assert.match(
     String(refusal({ hasOwner: false, want: { mode: "dm-only", group: "main", profile: "Support" } })),
-    /restricted/i,
+    /public group/i,
   );
   assert.equal(
     refusal({ hasOwner: false, mode: "mono-tenant", want: { mode: "dm-only", group: "g1", profile: "Support" } }),
@@ -267,7 +269,7 @@ test("guestPatchFlow: a refused patch is a 400 that writes NOTHING", () => {
   assert.equal(r.ok, false);
   if (r.ok) return;
   assert.equal(r.status, 400);
-  assert.match(r.error, /restricted/);
+  assert.match(r.error, /public group/);
   assert.ok(!("groups" in r), "a refusal carries no group list to save");
 });
 
@@ -641,4 +643,44 @@ test("guestWorkDirName: the same person always comes back to the same folder", (
   // meant to erase someone.
   assert.equal(guestWorkDirName(777), guestWorkDirName("777"));
   assert.notEqual(guestWorkDirName(777), guestWorkDirName(778));
+});
+
+// ── an EXTERNAL group behind the door (design decisions 1 and 5) ───────────
+
+const EXTERNAL = group({ id: "x1", nature: "external", name: "Door", members: ["ada"], osUser: null });
+
+test("guestEnableRefusal: an EXTERNAL group may hold a door", () => {
+  // It is a roster of people like a restricted group — what differs is what it
+  // isolates (the conversation, not the group).
+  assert.equal(
+    refusal({ groups: [...GROUPS, EXTERNAL], want: { mode: "dm-only", group: "x1", profile: "Support" } }),
+    null,
+  );
+});
+
+test("guestEnableRefusal: an external door REFUSES a profile carrying secrets", () => {
+  // Every guest of a door runs the SAME profile, so a secret on it is a
+  // credential handed to every stranger — and one injected guest's blast radius
+  // becomes whatever that profile can do, which is the wall undone from inside.
+  const r = String(
+    refusal({
+      groups: [...GROUPS, EXTERNAL],
+      want: { mode: "dm-only", group: "x1", profile: "Support" },
+      profileSecrets: () => ["FORGE_TOKEN"],
+    }),
+  );
+  assert.match(r, /FORGE_TOKEN/);
+  assert.match(r, /every stranger/);
+  // The same profile on a RESTRICTED door is still allowed: that door's guests
+  // were always one group, and this is not the release that changes it.
+  assert.equal(
+    refusal({ want: { mode: "dm-only", group: "g1", profile: "Support" }, profileSecrets: () => ["FORGE_TOKEN"] }),
+    null,
+  );
+});
+
+test("guestGroupChoices: an external group is offered, a public one never", () => {
+  const viewer = { name: "ada", role: "admin" as const };
+  const ids = guestGroupChoices([...GROUPS, EXTERNAL], viewer).map((g) => g.id);
+  assert.deepEqual(ids.sort(), ["g1", "x1"]);
 });

@@ -281,7 +281,7 @@ test("server: redeeming an invite provisions the person's private group (multi-t
   assert.ok(/DEPLOYMENT_MODE !== "multi-tenant"/.test(body), "no-op in mono-tenant (byte-for-byte today)");
   assert.ok(/privateGroupFor\(/.test(body), "idempotent: does not double-provision an existing private group");
   assert.ok(/newPrivateGroup\(/.test(body), "a NEW person gets a fresh private group");
-  assert.ok(/osUserFor\(/.test(body), "the group's osUser is stamped before persist");
+  assert.ok(/groupOsUser\(/.test(body), "the group's osUser is stamped before persist");
   assert.ok(/saveGroups\(/.test(body), "the group row is persisted (so boot reprovision can retry)");
   assert.ok(/provisionOsUserFor\(/.test(body), "the privileged OS-user provision is kicked");
   // Best-effort: a provision failure is caught (sign-in must not be blocked).

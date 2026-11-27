@@ -1,5 +1,6 @@
 import { capabilityRefusal, type DeploymentMode } from "./capability.js";
-import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, groupNameConflict, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
+import { type UnitId, osUserForUnit, unitFor } from "./isolation-unit.js";
+import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, groupNameConflict, isRoster, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 
 /**
  * OS-user isolation: the pure policy behind dropping a spawned agent to the
@@ -16,29 +17,45 @@ import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, groupNameConfl
  */
 
 /**
- * A group id reduced to a valid Linux username fragment: lowercase, only
- * `[a-z0-9_-]`, capped so `"sk-" + id` stays under the 32-char limit. Anything
- * else is dropped rather than transliterated — a username is not a display
- * name, and the id is already unique, so a lossy-but-stable mapping is fine.
- */
-function sanitizeOsUserId(id: string): string {
-  const s = String(id).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 28);
-  // A group id that sanitizes to nothing (all-punctuation) still needs a name;
-  // "x" keeps the user resolvable rather than producing a bare "sk-".
-  return s || "x";
-}
-
-/**
- * The OS user an agent of this group runs as.
+ * The OS user an agent runs as, resolved from its ISOLATION UNIT
+ * (`src/isolation-unit.ts`) — the group, or in an EXTERNAL group the one
+ * conversation it belongs to.
  *
  * `null` for a PUBLIC group: the commons shares the server's own (non-root)
  * user — there is nothing to isolate from, and the dedicated `main` user is
- * created by migration later (Task 15). A private/restricted group gets its own
- * `sk-<id>` user, provisioned on demand (Task 6).
+ * created by migration (Task 15). A private/restricted group gets its own
+ * `sk-<id>`, byte for byte what it has always been. A conversation of an
+ * external group gets `sk-x<hash>`, provisioned when the door ADMITS it.
+ *
+ * A REFUSAL, never a fallback. It replaced a plain `osUserFor(g): string | null`
+ * on purpose: with `null` meaning "the commons", an external group reaching
+ * that path would have quietly run a stranger as the shared user — the worst
+ * available answer — and every call site would still have compiled. Making the
+ * refusal part of the type is what forced each of them to say what it means
+ * when the group alone cannot answer (design decision 2: "a resolution that
+ * does not produce the intended isolation refuses to answer at all").
  */
-export function osUserFor(g: Group): string | null {
-  if (g.nature === "public") return null;
-  return "sk-" + sanitizeOsUserId(g.id);
+export type OsUserOf =
+  | { ok: true; user: string | null; unit: UnitId }
+  | { ok: false; why: string };
+
+export function osUserOf(g: Group, conversation: string | null): OsUserOf {
+  const u = unitFor(g, conversation);
+  if (!u.ok) return { ok: false, why: u.why };
+  return { ok: true, user: osUserForUnit(u.unit, g.nature), unit: u.unit };
+}
+
+/**
+ * The OS user of a GROUP-LEVEL resource — a login to offer, an ssh key to mint,
+ * a group media directory, the home a group's own agents share.
+ *
+ * An external group is refused: it HAS no group-level user, because everything
+ * in it belongs to one conversation. A caller holding only a group id either
+ * has a conversation to pass (`osUserOf`) or is asking about something an
+ * external group does not have.
+ */
+export function groupOsUser(g: Group): OsUserOf {
+  return osUserOf(g, null);
 }
 
 /**
@@ -152,22 +169,35 @@ export function resolveSpawnIsolation(input: {
    *  inherited (no canSeeGroup gate; it is server-proven) unless a visible
    *  request overrides it. */
   parentGroupId?: string | null;
-}): { user: string | null; groupPatch: { group?: string } } {
+  /**
+   * The GUEST conversation this agent belongs to (`guestConversationKey`), when
+   * it is one. In an EXTERNAL group it is the isolation unit, so without it
+   * there is no user to drop to and the spawn is refused rather than run as the
+   * group or as the commons.
+   */
+  conversation?: string | null;
+  /** This spawn is the door admitting a guest — the only kind an external
+   *  group accepts (`spawnGroupForRequest`). */
+  guest?: boolean;
+}): { user: string | null; groupPatch: { group?: string }; refusal?: string } {
   if (input.mode !== "multi-tenant") return { user: null, groupPatch: {} };
   if (input.resumed) {
     const g = input.storedGroupId ? input.groups.find((x) => x.id === input.storedGroupId) ?? null : null;
-    return { user: g ? osUserFor(g) : null, groupPatch: {} };
+    if (!g) return { user: null, groupPatch: {} };
+    const r = osUserOf(g, input.conversation ?? null);
+    return r.ok ? { user: r.user, groupPatch: {} } : { user: null, groupPatch: {}, refusal: r.why };
   }
   const g = spawnGroupForRequest(
     input.viewer,
     input.groups,
     input.requestedGroupId ?? null,
     input.parentGroupId ?? null,
+    input.guest,
   );
-  return {
-    user: g ? osUserFor(g) : null,
-    groupPatch: g ? { group: g.id } : {},
-  };
+  if (!g) return { user: null, groupPatch: {} };
+  const r = osUserOf(g, input.conversation ?? null);
+  if (!r.ok) return { user: null, groupPatch: {}, refusal: r.why };
+  return { user: r.user, groupPatch: { group: g.id } };
 }
 
 /** The default base directory a group's HOME is created under. Overridable
@@ -313,8 +343,13 @@ export interface ProvisionPlan {
   seedHome: boolean;
 }
 
-export function provisionPlan(g: Group, homeBase: string): ProvisionPlan | null {
-  const user = osUserFor(g);
+export function provisionPlan(g: Group, conversation: string | null, homeBase: string): ProvisionPlan | null {
+  const r = osUserOf(g, conversation);
+  // A refusal provisions NOTHING. The caller (`provisionGroupUser`) turns it
+  // into a thrown error, because a silent null here reads as "public, nothing
+  // to do" — which would admit a stranger with no account at all.
+  if (!r.ok) throw new Error(`cannot provision: ${r.why}`);
+  const user = r.user;
   if (!user) return null; // public: nothing to provision
   const home = homeForUser(user, homeBase);
   return {
@@ -353,9 +388,13 @@ export async function provisionGroupUser(
     /** Task 12: when set (multi-tenant only), expose the one shared pot as
      *  `<home>/shared`. Absent in mono-tenant ⇒ nothing runs. */
     sharedPotPath?: string;
+    /** The GUEST conversation being provisioned, in an EXTERNAL group: the
+     *  isolation unit there, so without it `provisionPlan` refuses rather than
+     *  create a group-wide account two strangers would share. */
+    conversation?: string | null;
   },
 ): Promise<{ osUser: string; home: string } | null> {
-  const plan = provisionPlan(g, deps.homeBase);
+  const plan = provisionPlan(g, deps.conversation ?? null, deps.homeBase);
   if (!plan) return null; // public: commons, no isolation to set up
 
   const exists = deps.userExists ? await deps.userExists(plan.user) : false;
@@ -432,7 +471,14 @@ export async function teardownGroupUser(
     killAgents?: () => Promise<void>;
   },
 ): Promise<{ ok: boolean; warning?: string }> {
-  const user = osUserFor(g);
+  const r = groupOsUser(g);
+  // An EXTERNAL group has no group-level account: its conversations' accounts
+  // are torn down one by one from the registry (`externalUsersOfGroup`), which
+  // is the only place that knows their hashed names. Saying so beats a silent
+  // "nothing to tear down", which would leave every stranger's account and home
+  // behind after the group was deleted.
+  if (!r.ok) return { ok: false, warning: r.why };
+  const user = r.user;
   if (!user) return { ok: true }; // public: nothing to tear down
 
   let ok = true;
@@ -498,7 +544,11 @@ export async function reconcileGroupProvisioning(
   const present: string[] = [];
   const failed: string[] = [];
   for (const g of groups) {
-    const user = osUserFor(g);
+    const r = groupOsUser(g);
+    // An external group's accounts are per conversation and live in the
+    // registry; `reconcileExternalProvisioning` is their reconciler.
+    if (!r.ok) continue;
+    const user = r.user;
     if (!user) continue; // public/commons: no dedicated user to reconcile
     let exists = false;
     try {
@@ -619,16 +669,19 @@ export async function createGroupFlow(
     id,
     name,
     nature: input.nature,
-    members: input.nature === "restricted" ? [input.account.name] : [],
+    members: isRoster({ nature: input.nature }) ? [input.account.name] : [],
     createdAt: deps.now(),
     osUser: null,
   };
-  g.osUser = osUserFor(g);
+  // An EXTERNAL group has no user of its own: the row stays null and the panel
+  // says what it means (one account per conversation, minted at admission).
+  const created = groupOsUser(g);
+  g.osUser = created.ok ? created.user : null;
 
   // Provision the OS user BEFORE persisting: if provisioning fails honestly
   // (T3), the group is never written, so no later spawn drops to a user that
   // does not exist (which would silently fail to isolate).
-  if (input.nature !== "public" && input.mode === "multi-tenant") {
+  if (input.nature !== "public" && input.nature !== "external" && input.mode === "multi-tenant") {
     try {
       await deps.provision(g);
     } catch (e) {
@@ -681,7 +734,11 @@ export async function deleteGroupFlow(
   // Personal is torn down only with its account; a Private (restricted) group
   // only by a member. Public stays open to any signed-in caller.
   if (g.nature === "private") return { status: 403, body: { error: "a personal group cannot be deleted" } };
-  if (g.nature === "restricted" && !canAdministerGroup(g, { name: input.account.name, role: input.account.role } as Viewer)) {
+  // `isRoster`, not `=== "restricted"`: an EXTERNAL group is member-only in
+  // exactly the same way, and naming one nature here would have left it
+  // deletable by any signed-in caller — with every conversation's account and
+  // home going with it.
+  if (isRoster(g) && !canAdministerGroup(g, { name: input.account.name, role: input.account.role } as Viewer)) {
     return { status: 403, body: { error: "only a member can delete this group" } };
   }
 

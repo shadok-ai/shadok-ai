@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { conversationUnit } from "../src/isolation-unit.js";
 import {
-  mediaGroupKey,
-  mediaDirForGroup,
+  mediaUnitKey,
+  mediaDirForUnit,
   mediaFileMode,
   parseMediaRequest,
-  groupForMediaKey,
+  unitForMediaKey,
   passwdGid,
   mediaDirSpec,
   mediaDirTrusted,
@@ -15,21 +16,21 @@ import {
   MEDIA_GROUP_DIR_RE,
 } from "../src/media-scope.js";
 
-test("mediaGroupKey: readable for a safe id, hashed (never sanitised) otherwise", () => {
-  assert.equal(mediaGroupKey(null), "g-main");
-  assert.equal(mediaGroupKey("main"), "g-main");
-  assert.equal(mediaGroupKey("6f1c-AB_9"), "g-6f1c-AB_9");
-  const a = mediaGroupKey("a.b");
-  const b = mediaGroupKey("ab");
+test("mediaUnitKey: readable for a safe id, hashed (never sanitised) otherwise", () => {
+  assert.equal(mediaUnitKey(null), "g-main");
+  assert.equal(mediaUnitKey("main"), "g-main");
+  assert.equal(mediaUnitKey("6f1c-AB_9"), "g-6f1c-AB_9");
+  const a = mediaUnitKey("a.b");
+  const b = mediaUnitKey("ab");
   assert.notEqual(a, b, "two ids never share one directory");
   assert.match(a, MEDIA_GROUP_DIR_RE);
-  assert.match(mediaGroupKey("x".repeat(200)), MEDIA_GROUP_DIR_RE);
+  assert.match(mediaUnitKey("x".repeat(200)), MEDIA_GROUP_DIR_RE);
 });
 
-test("mediaDirForGroup: per group in multi-tenant, flat in mono-tenant", () => {
-  assert.equal(mediaDirForGroup("/m", "teamA", true), "/m/g-teamA");
-  assert.equal(mediaDirForGroup("/m", null, true), "/m/g-main");
-  assert.equal(mediaDirForGroup("/m", "teamA", false), "/m");
+test("mediaDirForUnit: per group in multi-tenant, flat in mono-tenant", () => {
+  assert.equal(mediaDirForUnit("/m", "teamA", true), "/m/g-teamA");
+  assert.equal(mediaDirForUnit("/m", null, true), "/m/g-main");
+  assert.equal(mediaDirForUnit("/m", "teamA", false), "/m");
 });
 
 test("mediaFileMode: never world-readable", () => {
@@ -49,11 +50,11 @@ test("parseMediaRequest: one or two plain segments, the first a group key", () =
   assert.equal(parseMediaRequest(["a\\b"]), null);
 });
 
-test("groupForMediaKey: maps back to a known group only", () => {
-  assert.equal(groupForMediaKey("g-main", []), "main");
-  assert.equal(groupForMediaKey("g-teamA", ["teamA"]), "teamA");
-  assert.equal(groupForMediaKey(mediaGroupKey("a.b"), ["a.b"]), "a.b");
-  assert.equal(groupForMediaKey("g-ghost", ["teamA"]), null);
+test("unitForMediaKey: maps back to a known group only", () => {
+  assert.equal(unitForMediaKey("g-main", []), "main");
+  assert.equal(unitForMediaKey("g-teamA", ["teamA"]), "teamA");
+  assert.equal(unitForMediaKey(mediaUnitKey("a.b"), ["a.b"]), "a.b");
+  assert.equal(unitForMediaKey("g-ghost", ["teamA"]), null);
 });
 
 test("passwdGid", () => {
@@ -136,5 +137,32 @@ test("attachments: the media directory is granted to the agent with --add-dir", 
   // "No, exit" (verified on a real interactive claude 2.1.331).
   assert.match(src, /if \(mediaDirArg\) ensureProjectTrusted\(mediaDirArg\);/);
   assert.match(src, /seedGroupAgentHome\(user, home, cwd, mediaDirArg \? \[mediaDirArg\] : \[\]\)/);
-  assert.match(src, /try \{\n    mediaDirArg = DEPLOYMENT_MODE === "multi-tenant" \? mediaDirForGroupId\(group \?\? null\) : mediaDirForSession\(null\);\n  \} catch/);
+  // Per ISOLATION UNIT: the group's directory in an ordinary group, the
+  // CONVERSATION's in an external one (`mediaDirForUnitOf`).
+  assert.match(
+    src,
+    /mediaDirArg =\n\s*DEPLOYMENT_MODE === "multi-tenant"\n\s*\? mediaDirForUnitOf\(group \?\? null, conversation \?\? null\)\n\s*: mediaDirForSession\(null\);/,
+  );
+});
+
+test("mediaUnitKey: a conversation's unit always hashes, and never collides with a group", () => {
+  // Its `/` is not a legal directory name here, so it takes the hashed path by
+  // construction — which is also what keeps a conversation's media out of any
+  // group's directory. See src/isolation-unit.ts.
+  const unit = conversationUnit("door", "wa-33123");
+  const key = mediaUnitKey(unit);
+  assert.match(key, /^g-h[0-9a-f]{32}$/);
+  assert.notEqual(key, mediaUnitKey("door"));
+  // Two conversations of one group are two directories.
+  assert.notEqual(key, mediaUnitKey(conversationUnit("door", "wa-33999")));
+  // Stable: the same person comes back to their own.
+  assert.equal(key, mediaUnitKey(conversationUnit("door", "wa-33123")));
+});
+
+test("unitForMediaKey: a conversation's key maps back only when that unit is known", () => {
+  const unit = conversationUnit("door", "tg-7");
+  assert.equal(unitForMediaKey(mediaUnitKey(unit), ["door", unit]), unit);
+  // Not among the known units → unknown, which the route answers as a 404
+  // rather than serving a directory on trust.
+  assert.equal(unitForMediaKey(mediaUnitKey(unit), ["door"]), null);
 });

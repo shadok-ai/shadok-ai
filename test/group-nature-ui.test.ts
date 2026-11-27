@@ -5,16 +5,19 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
 test("isWalled and groupDisplayName are defined; private shows Personal", () => {
-  assert.match(html, /function isWalled\(nature\)\s*\{[^}]*"private"[^}]*"restricted"/);
+  assert.match(html, /function isWalled\(nature\)\s*\{[^}]*"private"[^}]*"restricted"[^}]*"external"/);
   assert.match(html, /function groupDisplayName\(g\)\s*\{[^}]*"private"[^}]*"Personal"/);
 });
 
-test("groupTypeLabel maps the three natures", () => {
+test("groupTypeLabel maps the four natures", () => {
   const m = html.match(/function groupTypeLabel\(nature\)\s*\{[\s\S]*?\n  \}/);
   assert.ok(m, "groupTypeLabel defined");
   assert.match(m![0], /"Public"/);
   assert.match(m![0], /"Private"/);
   assert.match(m![0], /"Personal"/);
+  // The operator never reads the internal word: `external` shows as External,
+  // which is the one nature whose NAME is the same inside and out.
+  assert.match(m![0], /"External"/);
 });
 
 test("the lock is gated on isWalled in the group head and in the rail", () => {
@@ -80,15 +83,29 @@ function createFormScript(): string {
   return m![0];
 }
 
-test("create-group form offers exactly Public and Private, never Personal/restricted", () => {
+test("create-group form offers exactly Public, Private and External, never Personal/restricted", () => {
   const block = createFormBlock();
   assert.match(block, /class="overlay"|class="overlay /);
   assert.doesNotMatch(block, /<select id="groupCreateType"/);
   assert.match(block, /<button type="button" class="nature-card[^"]*" data-nature="public"[^>]*>[\s\S]*?Public/);
   assert.match(block, /<button type="button" class="nature-card[^"]*" data-nature="restricted"[^>]*>[\s\S]*?Private/);
-  assert.equal((block.match(/<button [^>]*class="nature-card/g) ?? []).length, 2);
+  assert.match(block, /<button type="button" class="nature-card[^"]*" data-nature="external"[^>]*>[\s\S]*?External/);
+  assert.equal((block.match(/<button [^>]*class="nature-card/g) ?? []).length, 3);
+  // A Personal group is created with its account, never here; and the internal
+  // word "restricted" never reaches the operator.
   assert.doesNotMatch(block, /Personal/);
   assert.doesNotMatch(block, />[^<]*restricted[^<]*</i);
+});
+
+test("each type says what it MEANS where the choice is made", () => {
+  // The nature is picked at creation and never converted, so this is the only
+  // moment the operator can be told — and External is the one that needs it:
+  // the wall is between the GUESTS, not towards the members.
+  const s = createFormScript();
+  assert.match(s, /const NATURE_NOTE = \{/);
+  assert.match(s, /external:\s*"For STRANGERS: each conversation is sealed/);
+  assert.match(s, /Cannot be changed afterwards/);
+  assert.match(s, /groupCreateNatureNote/);
 });
 
 test("create-group submit POSTs /groups with a nature", () => {
@@ -102,7 +119,11 @@ test("create-group submit POSTs /groups with a nature", () => {
 test("Private is gated on the capability mode", () => {
   const s = createFormScript();
   assert.match(s, /mode\s*===\s*"multi-tenant"/);
-  assert.match(s, /data-nature="restricted"[^\n]*\.disabled\s*=\s*!capable/);
+  // BOTH walled types: a type that cannot pose its wall must not be offerable
+  // at all (invariant 47), and External is the sharper case — it would read as
+  // "each conversation is sealed" while every stranger shared one account.
+  assert.match(s, /for \(const n of \["restricted", "external"\]\)/);
+  assert.match(s, /\.disabled = !capable;/);
   assert.match(s, /\.nature-card/);
 });
 
@@ -150,10 +171,11 @@ test("openGroupPanel exists and is opened from a group-head control", () => {
   assert.match(html, /id="groupPanelOverlay" class="overlay"/);
 });
 
-test("member list + add/remove exist only in the restricted branch", () => {
+test("member list + add/remove exist only in the roster branch", () => {
   const s = groupPanelScript();
-  assert.match(s, /nature === "restricted"/);
-  const priv = s.match(/nature === "private"[\s\S]*?(?=nature === "restricted"|$)/);
+  // Private and External share it: both are rosters of people.
+  assert.match(s, /isRosterNature\(g\.nature\)/);
+  const priv = s.match(/nature === "private"[\s\S]*?(?=isRosterNature\(g\.nature\)|$)/);
   assert.ok(priv);
   assert.doesNotMatch(priv![0], /gpAdd|gpMembers|\/accounts|rosterCandidates/);
   assert.match(s, /rosterCandidates\(g\.id\)/);
@@ -275,9 +297,9 @@ test("submitGroupCreate reads the selected tiles", () => {
   assert.match(html, /function readMemberGrid[\s\S]*?\.member-tile\[aria-pressed="true"\]:not\(\.me\)/);
 });
 
-test("restricted panel: avatar grid + 'Save members' that diffs and POSTs /groups/members", () => {
+test("roster panel: avatar grid + 'Save members' that diffs and POSTs /groups/members", () => {
   const s = groupPanelScript();
-  const restricted = s.slice(s.indexOf('nature === "restricted"'));
+  const restricted = s.slice(s.indexOf("isRosterNature(g.nature)"));
   assert.match(restricted, /renderMemberGrid\(grid,/);
   assert.match(restricted, /Save members/);
   assert.match(restricted, /save\.disabled = !d\.add\.length && !d\.remove\.length/);
@@ -288,19 +310,19 @@ test("restricted panel: avatar grid + 'Save members' that diffs and POSTs /group
 });
 
 test("private panel stays sealed: no grid", () => {
-  const priv = groupPanelScript().match(/nature === "private"[\s\S]*?(?=nature === "restricted")/);
+  const priv = groupPanelScript().match(/nature === "private"[\s\S]*?(?=isRosterNature\(g\.nature\))/);
   assert.ok(priv);
   assert.doesNotMatch(priv![0], /renderMemberGrid|member-grid/);
 });
 
-test("restricted Save keeps `current` equal to server truth after each POST", () => {
-  const restricted = groupPanelScript().slice(groupPanelScript().indexOf('nature === "restricted"'));
+test("roster Save keeps `current` equal to server truth after each POST", () => {
+  const restricted = groupPanelScript().slice(groupPanelScript().indexOf("isRosterNature(g.nature)"));
   assert.match(restricted, /current\.push\(/);
   assert.match(restricted, /current\.splice\(/);
 });
 
 test("panel locks the group's owner (not /me); locked tile is aria-pressed; surrogate-safe initial", () => {
-  const restricted = groupPanelScript().slice(groupPanelScript().indexOf('nature === "restricted"'));
+  const restricted = groupPanelScript().slice(groupPanelScript().indexOf("isRosterNature(g.nature)"));
   assert.match(restricted, /g\.owner/);
   assert.match(html, /\[\.\.\.String\(name\)\]\[0\]/);
   assert.match(html, /isSelf\) \{ b\.setAttribute\("aria-disabled", "true"\); b\.setAttribute\("aria-pressed", "true"\)/);
@@ -339,4 +361,21 @@ test("a NEW agent created on the Main view names the commons group (multi-tenant
 
 test("the tweak agent is started in the commons group, where /tweak/prepare put its clone", () => {
   assert.match(html, /const tweakStart = \{ cwd: data\.cwd, worktree: true, profile: "Shadok-Tweak" \};\s*if \(commonsOnServer\) tweakStart\.group = COMMONS_GROUP_ID;\s*launchTab\(t, tweakStart\);/);
+});
+
+test("the EXTERNAL panel says what the nature is, before the roster", () => {
+  // The members see every conversation — that is the product — so the line has
+  // to say BOTH halves: sealed from each other, open to you.
+  const s = groupPanelScript();
+  const block = s.slice(s.indexOf("isRosterNature(g.nature)"));
+  assert.match(block, /g\.nature === "external"/);
+  assert.match(block, /each conversation is sealed from the others/);
+  assert.match(block, /You and the other members see them all/);
+});
+
+test("deleting an EXTERNAL group warns about the conversations, not 'its agents'", () => {
+  const fn = html.match(/async function closeGroupGesture\([\s\S]*?\n  \}\n/);
+  assert.ok(fn);
+  assert.match(fn![0], /isRosterNature\(group\.nature\)/);
+  assert.match(fn![0], /Every conversation in it is destroyed, with its files and its system account/);
 });

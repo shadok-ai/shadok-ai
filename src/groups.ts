@@ -11,7 +11,40 @@ import type { Channel } from "./channels.js";
  * its view — it can manage a team without reading its conversations).
  */
 
-export type Nature = "private" | "restricted" | "public";
+/**
+ * What kind of wall a group is.
+ *
+ * - `public` — the commons: everyone sees it, its agents share the server's own
+ *   Unix user. Shown as "Public".
+ * - `restricted` — a roster of people who know each other; member-only
+ *   visibility, one Unix user for the whole group. Shown as "Private".
+ * - `private` — one account's own sealed space. Shown as "Personal".
+ * - `external` — a roster of people, like `restricted`, holding the
+ *   conversations of STRANGERS: every question `restricted` answers with "the
+ *   group", this one answers with "the CONVERSATION" — the Unix user, the HOME,
+ *   the media directory, the vault slice (`src/isolation-unit.ts`). The wall is
+ *   between the guests; the members see them all. Shown as "External".
+ *   Chosen at creation and never converted (a conversion would have to re-home
+ *   every live conversation mid-flight, and a resumed agent keeps its old
+ *   working directory by construction — invariant 1 — so a converted group
+ *   would be a wall with holes in it, which is worse than no wall).
+ */
+export type Nature = "private" | "restricted" | "public" | "external";
+
+/**
+ * Is this group a ROSTER of people — a mutable member list, member-only
+ * visibility, no admin override?
+ *
+ * `restricted` and `external` differ in what they isolate, never in who may
+ * see or run them, so every rule about the roster asks this instead of naming
+ * one nature. Written as a predicate because the alternative — a second
+ * `|| g.nature === "external"` in six places — is how one of them gets missed,
+ * and a missed one is an external group whose last member can walk out of it
+ * and leave it unreachable.
+ */
+export function isRoster(g: Pick<Group, "nature">): boolean {
+  return g.nature === "restricted" || g.nature === "external";
+}
 
 export interface Group {
   id: string;
@@ -172,7 +205,7 @@ export function canSeeSession(
  * never be emptied: the way out for the last member is deleting the group.
  */
 export function lastMemberRefusal(g: Group, name: string): string | null {
-  if (g.nature !== "restricted") return null;
+  if (!isRoster(g)) return null;
   if (!g.members.includes(name) || g.members.some((m) => m !== name)) return null;
   return `"${name}" is the last member of "${g.name}" — delete the group instead`;
 }
@@ -193,7 +226,7 @@ export function orphanedGroupsHeal(groups: readonly Group[], heir: string): Grou
   if (groups.length === 0) return null;
   let changed = false;
   const out = groups.map((g) => {
-    if (g.nature !== "restricted" || g.members.length > 0) return g;
+    if (!isRoster(g) || g.members.length > 0) return g;
     changed = true;
     return { ...g, members: [heir] };
   });
@@ -212,7 +245,7 @@ export function membershipVerdict(
 ): { ok: true } | { ok: false; error: string } {
   if (actor === null) return { ok: false, error: "not signed in" };
   if (isAgentViewer(actor)) return { ok: false, error: "an agent cannot change group membership" };
-  if (g.nature !== "restricted") {
+  if (!isRoster(g)) {
     return { ok: false, error: `membership of a ${g.nature} group cannot be changed` };
   }
   switch (action) {
@@ -303,7 +336,7 @@ export function accountDeleteGroups(
       // The deleted person was its last member: hand the group to `heir` (the
       // admin deleting them) rather than leave a roster no one can ever reach
       // (lastMemberRefusal).
-      if (members.length === 0 && g.nature === "restricted" && heir) return { ...g, members: [heir] };
+      if (members.length === 0 && isRoster(g) && heir) return { ...g, members: [heir] };
       return { ...g, members };
     });
   return { torndown, groups: remaining };
@@ -358,7 +391,12 @@ export function visibleChannels(
 export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): Group | null {
   const commons = groups.find((g) => g.id === MAIN_GROUP_ID) ?? groups.find((g) => g.nature === "public") ?? null;
   if (!viewer) return commons;
-  const own = groups.filter((g) => g.nature !== "public" && viewerInGroup(g, viewer));
+  // An EXTERNAL group is never anyone's HOME group: it holds the conversations
+  // of strangers, and an agent of its own would be an operator's agent sitting
+  // inside the strangers' wall — with no isolation unit to run as, since that
+  // group has no user of its own (`unitFor`). A member of one who belongs to no
+  // other group therefore spawns in the commons, as they did before it existed.
+  const own = groups.filter((g) => g.nature !== "public" && g.nature !== "external" && viewerInGroup(g, viewer));
   return own.length === 1 ? own[0] : commons;
 }
 
@@ -383,14 +421,25 @@ export function spawnGroupForRequest(
   groups: readonly Group[],
   requestedGroupId: string | null,
   parentGroupId?: string | null,
+  /**
+   * This spawn IS the door admitting a guest (`guestSpawnPlan`), proven by the
+   * bridge's own secret. Only such a spawn may land in an EXTERNAL group: that
+   * group holds conversations, and a conversation is the only thing in it that
+   * has an isolation unit to run as. Absent — any other caller — an external
+   * group is not a target at all, however visible it is to them.
+   */
+  guest?: boolean,
 ): Group | null {
   if (requestedGroupId) {
     const g = groups.find((x) => x.id === requestedGroupId);
-    if (g && canSeeGroup(g, viewer)) return g;
+    if (g && canSeeGroup(g, viewer) && (guest || g.nature !== "external")) return g;
   }
   if (parentGroupId) {
     const g = groups.find((x) => x.id === parentGroupId);
-    if (g) return g;
+    // A guest's agent cannot spawn at all (it is boxed), so a parent group is
+    // never an external one in practice; refused here regardless, because
+    // "never" is what the next feature would quietly break.
+    if (g && g.nature !== "external") return g;
   }
   return spawnGroupFor(viewer, groups);
 }
@@ -523,6 +572,15 @@ export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null)
   // agent wrote, which is content and not just a status.
   if (viewer?.onlySession) return new Set<string>();
   const out = memberGroupIds(groups, viewer);
+  // An EXTERNAL group is in no ledger scope at all, for ANYONE (design
+  // decision 9). The ledger is how sibling agents stop re-surfacing work the
+  // others resolved, and an external group holds no siblings: it holds the
+  // conversations of strangers, sealed from one another. A row authored there
+  // would be a stranger's words pushed to the whole instance, and a row read
+  // there would be the instance's operational notes pushed to a stranger —
+  // the box (invariant 86) already stops the second for an AGENT; this stops
+  // both, for every viewer, so nothing can grow a path back in.
+  for (const g of groups) if (g.nature === "external") out.delete(g.id);
   const home = spawnGroupFor(viewer, groups);
   out.add(home ? home.id : MAIN_GROUP_ID);
   // A PUBLIC group has no membership to BE in: `memberOf` reads the `members`
@@ -566,7 +624,7 @@ export function canWriteSecretGroup(g: Group | null | undefined, viewer: Viewer 
   if (!g || !viewer) return false;
   if (isAgentViewer(viewer)) return viewerInGroup(g, viewer);
   if (g.nature === "private") return g.owner === viewer.name;
-  if (g.nature === "restricted") return memberOf(g, viewer.name);
+  if (isRoster(g)) return memberOf(g, viewer.name);
   return viewer.role === "admin" || memberOf(g, viewer.name);
 }
 
@@ -635,6 +693,11 @@ export function mergeGroupsPut(
     if (!id) continue;
     seen.add(id);
     const prev = byId.get(id);
+    // `external` is deliberately NOT accepted here: a nature is chosen at
+    // creation and never converted (see `Nature`), so a PUT that names it on an
+    // existing row is either a mistake or an attempt to turn a restricted group
+    // into a wall it cannot be — and the reverse would leave every live
+    // conversation homed under a user the group no longer has.
     const wantsNature: Nature | undefined =
       row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : undefined;
     const wantsMembers = Array.isArray(row.members)
@@ -655,7 +718,7 @@ export function mergeGroupsPut(
       if ((natureChange || membersChange || ownerChange) && !isMember) {
         return { ok: false, error: "only a member can change a group's membership or nature" };
       }
-      if ((wantsNature ?? prev.nature) === "restricted" && (wantsMembers ?? prev.members).length === 0) {
+      if (isRoster({ nature: wantsNature ?? prev.nature }) && (wantsMembers ?? prev.members).length === 0) {
         return { ok: false, error: `"${prev.name}" would have no member left — delete the group instead` };
       }
       // Display extras (icon/collapsed/order) travel on the row but aren't on

@@ -2893,3 +2893,52 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     the MODE is for.
     Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
     decision 3.
+
+
+<a id="inv-88"></a>
+
+84. **When the isolation unit moves BELOW the group, every resolution that
+    cannot name it must REFUSE — never fall back, and never derive a hashed
+    name and hope.** Until the `external` nature, "group id" and "isolation
+    unit" were one string, and every per-group store keyed on it: the OS user
+    (`sk-<id>`), the HOME, the media subdirectory (`g-<id>`), the vault slice.
+    An external group answers *the conversation* to every question a restricted
+    group answers *the group* — so the unit became a string of its own
+    (`src/isolation-unit.ts`): `"<group>"` as before, or
+    `"<group>/<conversation>"`. A group unit is byte-for-byte what it always
+    was, which is why no existing instance's accounts, homes or directories
+    move.
+    Two properties make it a wall rather than a label. **The resolution carries
+    a refusal in its TYPE.** `osUserFor(g): string | null` was replaced by
+    `osUserOf(g, conversation)` / `groupOsUser(g)` returning
+    `{ok:true,user} | {ok:false,why}` precisely because `null` already meant
+    *the commons*: an external group reaching that path would have run a
+    stranger as the SHARED user — the worst available answer — and all ten call
+    sites would still have compiled. Making the refusal part of the type forced
+    each of them to say what it means when the group alone cannot answer: the
+    spawn and the media directory refuse, `channelStateHome` logs and reads the
+    commons home (it only ever LOCATES state and grants nothing), and the
+    group-level affordances — a login to offer, an ssh key to mint, a stranded
+    worktree — answer "not my business", because an external group has none of
+    them. **And the name is HASHED, so the mapping is written down.** A username
+    is capped at 32 characters and neither a UUID group id nor a phone number
+    fits beside the other, hence `sk-x<27 hex>`; a hash is not reversible, so a
+    root-owned registry (`src/external-users.ts`) binds account → unit, and
+    provisioning **refuses** when the computed name is already bound to another
+    conversation, or when this conversation is already bound to another name.
+    Both directions are a silent cross-guest leak if worked around — two
+    strangers in one account, or a person's home, media and secrets silently
+    abandoned under a name nothing resolves to again. The row is written only
+    AFTER the account exists, so a failed `useradd` leaves no claim behind, and
+    the derived name makes the retry land on the same account.
+    The LIFETIME split is part of the same rule, from the other side: the Unix
+    user and the HOME belong to the **conversation** and survive the deletion of
+    its agent — deleting an agent ends a session and "is not meant to erase
+    someone" (`guestWorkDirName`) — while a `userdel` under a surviving folder
+    would leave files owned by a dead uid and hand them to whoever gets that uid
+    next. Only deleting the GROUP removes them, and then it removes every
+    conversation's account, read from the registry (the only thing that knows
+    those names), with the agents killed first because `userdel` cannot remove
+    an account a process holds open.
+    Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
+    decisions 1, 2, 7 and 8 (step 3 of 5).
