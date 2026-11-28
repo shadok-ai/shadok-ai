@@ -352,7 +352,15 @@ import {
   payloadText,
   webhookPrompt,
   isWebhookPrompt,
+  webhookCreateVerdict,
+  webhookWriteVerdict,
+  agentWebhooksEnabled,
+  loadPublicOrigin,
+  rememberPublicOrigin,
+  publicOriginOf,
+  webhookUrl,
   type Webhook,
+  type WebhookCaller,
 } from "./webhooks.js";
 import { splitBySession, triggerCount, triggerSummary, type TriggerCount } from "./channel-triggers.js";
 import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
@@ -3301,7 +3309,13 @@ app.post("/tweak/prepare", async (req, res) => {
 // Same payload as the WS `version` message, deliberately from ONE builder: the
 // two used to be written out separately and drifted the moment a field was
 // added — the HTTP route silently kept serving the older shape.
-app.get("/version", (_req, res) => res.json(versionState()));
+app.get("/version", (req, res) => {
+  // Every open page polls this: the cheapest place to learn the address the
+  // cockpit is reached at from outside, which an agent handing out a webhook
+  // URL cannot see from its loopback (`notePublicOrigin`).
+  notePublicOrigin(req);
+  res.json(versionState());
+});
 
 // Claude sign-in state. Instance-global — NOT per session — hence HTTP rather
 // than a WS message: every tab and the Telegram bridge share one answer. The
@@ -4269,41 +4283,75 @@ app.post("/crons", (req, res) => {
   res.json({ ...cron, timezone: cronTimeZone(cron) });
 });
 // ── Webhooks (management) ─────────────────────────────────────────────────
-// Listing is scoped like /crons. Every WRITE is a person's act in a browser:
-// a webhook is a door from outside into an agent, so an agent must not be able
-// to open one (on itself or a sibling) — src/webhooks.ts.
-app.get("/webhooks", (req, res) =>
-  res.json(loadWebhooks().filter((w) => mayActFor(req, w.sessionId)).map(publicWebhook)),
-);
-// Create: { sessionId, name, prompt }. The token is in the answer ONCE.
+// Listing is scoped like /crons. A WRITE is a person's act in a browser, on any
+// agent they may drive — or an AGENT's, on itself only (src/webhooks.ts says
+// why the second half exists and what bounds it).
+const AGENT_WEBHOOKS = agentWebhooksEnabled(process.env.SHADOK_AGENT_WEBHOOKS);
+
+/** The cockpit's address as the outside world reaches it: the operator's word
+ *  (`SHADOK_PUBLIC_URL`) first, else the last one a signed-in browser used. */
+let publicOrigin: string | null = publicOriginOf(process.env.SHADOK_PUBLIC_URL) ?? loadPublicOrigin();
+function notePublicOrigin(req: express.Request): void {
+  if (publicOriginOf(process.env.SHADOK_PUBLIC_URL)) return;
+  // Only a person's own browser: its Host passed the gate and the same-origin
+  // check, where a script on the loopback could claim any name it liked.
+  if (!requestFromBrowser(req)) return;
+  publicOrigin = rememberPublicOrigin(requestOrigin(req), publicOrigin);
+}
+
+function webhookCaller(req: express.Request): WebhookCaller {
+  return { browserPerson: requestFromBrowser(req), agentId: callerOf(req).id, agentsEnabled: AGENT_WEBHOOKS };
+}
+/** What a caller gets back: the public row plus where to POST. `url` is null
+ *  when no browser has shown the server its public address yet — the path is
+ *  always there, so the answer is never a dead end. */
+function webhookView(w: Webhook) {
+  return { ...publicWebhook(w), path: `/hooks/${w.id}`, url: webhookUrl(publicOrigin, w.id) };
+}
+
+app.get("/webhooks", (req, res) => {
+  notePublicOrigin(req);
+  res.json(loadWebhooks().filter((w) => mayActFor(req, w.sessionId)).map(webhookView));
+});
+// Create: { sessionId, name, prompt } — an agent's sessionId is its own. The
+// token is in the answer ONCE.
 app.post("/webhooks", (req, res) => {
-  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
   const b = req.body ?? {};
-  const sessionId = String(b.sessionId ?? "").trim();
   const prompt = String(b.prompt ?? "").trim();
   const name = String(b.name ?? "").trim().slice(0, 80) || "webhook";
-  if (!sessionId || !prompt) return res.status(400).json({ error: "sessionId and prompt are required" });
-  if (!mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  const v = webhookCreateVerdict({
+    ...webhookCaller(req),
+    bodySessionId: String(b.sessionId ?? "").trim(),
+    mayAct: (id) => mayActFor(req, id),
+    existing: loadWebhooks(),
+  });
+  if (!v.ok) return res.status(v.status).json({ error: v.error });
+  if (!prompt) return res.status(400).json({ error: "sessionId and prompt are required" });
+  notePublicOrigin(req);
   const token = newWebhookToken();
   const hook: Webhook = {
     id: randomUUID(),
-    sessionId,
+    sessionId: v.sessionId,
     name,
     prompt,
     tokenHash: hashWebhookToken(token),
     enabled: true,
     createdAt: Date.now(),
+    ...(v.createdBy ? { createdBy: v.createdBy } : {}),
   };
   upsertWebhook(hook);
-  res.json({ ...publicWebhook(hook), token });
+  // An agent opening a door on itself is worth a line an operator can find.
+  if (v.createdBy) console.log(`webhook: agent ${v.sessionId.slice(0, 8)} created "${name}" (${hook.id.slice(0, 8)}) on itself`);
+  res.json({ ...webhookView(hook), token });
 });
 /** The hook this request may write, or an error already sent. */
 function writableWebhook(req: express.Request, res: express.Response): Webhook | null {
-  if (!requestFromBrowser(req)) { res.status(403).json({ error: "same-origin browser only" }); return null; }
   const hook = loadWebhooks().find((w) => w.id === String(req.params.id));
-  // Another group's hook answers like a missing one: no existence leak.
-  if (!hook || !mayActFor(req, hook.sessionId)) { res.status(404).json({ error: "no such webhook" }); return null; }
-  return hook;
+  // Another group's hook — or, for an agent, anyone else's — answers like a
+  // missing one: no existence leak.
+  const v = webhookWriteVerdict({ ...webhookCaller(req), hook, mayAct: (id) => mayActFor(req, id) });
+  if (!v.ok) { res.status(v.status).json({ error: v.error }); return null; }
+  return hook ?? null;
 }
 // Edit: { name?, prompt?, enabled? }. Never the target agent: repointing a
 // token someone already holds at another agent is a new webhook, not an edit.
@@ -4315,7 +4363,7 @@ app.patch("/webhooks/:id", (req, res) => {
   if (typeof b.prompt === "string" && b.prompt.trim()) hook.prompt = b.prompt.trim();
   if (typeof b.enabled === "boolean") hook.enabled = b.enabled;
   upsertWebhook(hook);
-  res.json(publicWebhook(hook));
+  res.json(webhookView(hook));
 });
 // A new token, the old one dead at once. Answered ONCE, like at creation.
 app.post("/webhooks/:id/rotate", (req, res) => {
@@ -4324,7 +4372,7 @@ app.post("/webhooks/:id/rotate", (req, res) => {
   const token = newWebhookToken();
   hook.tokenHash = hashWebhookToken(token);
   upsertWebhook(hook);
-  res.json({ ...publicWebhook(hook), token });
+  res.json({ ...webhookView(hook), token });
 });
 app.delete("/webhooks/:id", (req, res) => {
   const hook = writableWebhook(req, res);
@@ -14360,8 +14408,11 @@ function seedSchedulerSkill(): void {
     const dst = path.join(os.homedir(), ".claude", "skills", "shadok-scheduler");
     fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
     fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
-    fs.copyFileSync(path.join(src, "scripts", "schedule.mjs"), path.join(dst, "scripts", "schedule.mjs"));
-    fs.chmodSync(path.join(dst, "scripts", "schedule.mjs"), 0o755);
+    // schedule.mjs: the crons. webhook.mjs: the event-driven twin.
+    for (const f of ["schedule.mjs", "webhook.mjs"]) {
+      fs.copyFileSync(path.join(src, "scripts", f), path.join(dst, "scripts", f));
+      fs.chmodSync(path.join(dst, "scripts", f), 0o755);
+    }
     // Seeding copies NAMED files, so a file dropped from the source stays
     // behind forever: an install seeded before the Node port keeps a
     // schedule.py that nothing updates any more, next to a SKILL.md that no

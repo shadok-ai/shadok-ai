@@ -16566,7 +16566,8 @@
       label.append(b);
       const meta = document.createElement("span");
       meta.style.opacity = ".55";
-      meta.textContent = (h.enabled ? "" : " (paused)") + (h.lastRun ? " · last call " + new Date(h.lastRun).toLocaleString() + " → " + (h.lastOutcome || "?") : " · never called");
+      // A door the agent opened on itself is said so: nobody clicked for it.
+      meta.textContent = (h.createdBy === "agent" ? " · created by the agent" : "") + (h.enabled ? "" : " (paused)") + (h.lastRun ? " · last call " + new Date(h.lastRun).toLocaleString() + " → " + (h.lastOutcome || "?") : " · never called");
       label.append(meta);
       const btns = document.createElement("span");
       const mk = (text, title, fn) => { const x = document.createElement("button"); x.type = "button"; x.textContent = text; x.title = title; x.addEventListener("click", fn); return x; };
