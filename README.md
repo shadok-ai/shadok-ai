@@ -447,7 +447,8 @@ Enter to skip; you can add it later from the web UI).
   leaves what you set alone. Go back to
   **Board group** and every such conversation is closed at once.
 - **Link to a message** — every message (yours and the agent's, and a **room**'s
-  too) has a 🔗 link button beside copy. It copies a URL like
+  too) has a link icon beside the copy icon — both bare icons, their words in a
+  tooltip on hover; a click turns the icon into a ✓. It copies a URL like
   `…/a/<session>#msg=<id>` for an agent, `…/#room=<room>&msg=<id>` for a
   room; whoever opens it — someone who already has access to this cockpit, after
   the usual sign-in — lands on that conversation, scrolled to that message,

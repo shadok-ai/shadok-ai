@@ -1450,15 +1450,27 @@
     background: color-mix(in srgb, var(--amber) 45%, transparent);
   }
   /* Copy: always visible, never on hover — a phone has no hover, and a button
-     you cannot reveal does not exist. */
+     you cannot reveal does not exist. Only its WORDS wait for the hover: the
+     button is a bare icon and says what it does in a tooltip (`data-tip`). */
   .turn .copy {
-    align-self: flex-end; margin-top: 2px; padding: 3px 8px;
-    font-size: 11px; line-height: 1.4; cursor: pointer;
+    position: relative; display: inline-grid; place-items: center;
+    align-self: flex-end; margin-top: 2px; padding: 4px 6px;
+    font-size: 11px; line-height: 1; cursor: pointer;
     background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;
     color: var(--text-dim); opacity: 0.9; transition: color 0.12s, border-color 0.12s;
   }
   .turn .copy:hover, .turn .copy:focus-visible { opacity: 1; color: var(--amber); border-color: var(--amber); }
   .turn .copy.done { opacity: 1; color: var(--ok, #7ac77a); border-color: currentColor; }
+  .turn .copy .ico { margin: 0; vertical-align: 0; }
+  .turn .copy.failed { opacity: 1; color: var(--err); border-color: currentColor; }
+  .turn .copy[data-tip]::after {
+    content: attr(data-tip); position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5;
+    padding: 4px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none;
+    font-size: 11px; line-height: 1.3; color: var(--text); background: var(--menu-bg);
+    border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
+    opacity: 0; transform: translateY(2px); transition: opacity .12s, transform .12s;
+  }
+  .turn .copy:is(:hover, :focus-visible, .done, .failed)[data-tip]::after { opacity: 1; transform: none; }
   /* The link button sits beside copy, same look. */
   .turn .msg-tools { align-self: flex-end; display: flex; gap: 6px; }
   .turn .msg-tools .copy { align-self: auto; }
@@ -9398,21 +9410,29 @@
 
   /** A message's "copy" button. The copied text is the SOURCE (raw markdown),
    *  not the rendering: that is what you want to paste elsewhere. */
+  /**
+   * Paint a message tool (copy, link) as a bare icon whose words live in the
+   * hover tooltip. `state` is the outcome of a click — "done" / "failed" swap
+   * the icon and keep the tooltip up for a moment, so the click is answered on
+   * a phone too, where there is no hover.
+   */
+  function paintMsgTool(b, icon, tip, state = null) {
+    b.replaceChildren(LineIcons.el(state === "done" ? "check" : state === "failed" ? "alert" : icon, 14));
+    b.dataset.tip = tip;
+    b.setAttribute("aria-label", tip);
+    b.classList.toggle("done", state === "done");
+    b.classList.toggle("failed", state === "failed");
+  }
   function addCopyButton(turn, text) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "copy";
-    b.textContent = "⧉ copy";
-    b.title = "Copy this message";
+    paintMsgTool(b, "copy", "Copy this message");
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
       const ok = await copyText(text);
-      b.textContent = ok ? "✓ copied" : "⚠ failed";
-      b.classList.toggle("done", ok);
-      setTimeout(() => {
-        b.textContent = "⧉ copy";
-        b.classList.remove("done");
-      }, 1500);
+      paintMsgTool(b, "copy", ok ? "Copied" : "Copy failed", ok ? "done" : "failed");
+      setTimeout(() => paintMsgTool(b, "copy", "Copy this message"), 1500);
     });
     turn.appendChild(b);
   }
@@ -9432,8 +9452,8 @@
     const b = document.createElement("button");
     b.type = "button";
     b.className = "copy link";
-    labelWithIcon(b, "link", "link", 11);
-    b.title = "Copy a link to this message (for someone with access to this cockpit)";
+    const tip = "Copy a link to this message";
+    paintMsgTool(b, "link", tip);
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
       const base = location.origin + location.pathname;
@@ -9441,9 +9461,8 @@
         ? window.buildRoomMessageLink(base, tab.roomId, ids[0])
         : window.buildMessageLink(base, tab.sessionId, ids[0]);
       const ok = !!url && (await copyText(url));
-      b.textContent = ok ? "✓ link copied" : "⚠ failed";
-      b.classList.toggle("done", ok);
-      setTimeout(() => { labelWithIcon(b, "link", "link", 11); b.classList.remove("done"); }, 1500);
+      paintMsgTool(b, "link", ok ? "Link copied" : "Copy failed", ok ? "done" : "failed");
+      setTimeout(() => paintMsgTool(b, "link", tip), 1500);
     });
     if (copy) {
       const row = document.createElement("div");
