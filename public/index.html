@@ -6847,7 +6847,11 @@
     const n = (tab && tab.closes) || {};
     const part = (count, noun) => (count ? count + " " + noun + (count === 1 ? "" : "s") : "");
     const gone = [part(n.schedules, "schedule"), part(n.webhooks, "webhook")].filter(Boolean).join(" and ");
-    const also = gone ? "\n\nThis also deletes " + gone + " targeting it. That cannot be undone." : "";
+    let also = gone ? "\n\nThis also deletes " + gone + " targeting it. That cannot be undone." : "";
+    // An External group's agent IS a stranger's conversation: its system
+    // account, home, files and attachments go with it (server: `closes.conversation`).
+    if (n.conversation)
+      also += "\n\nThis also erases this person's conversation: their files, attachments and stored secrets on this instance. If they write again they start from nothing. That cannot be undone.";
     return confirm("End “" + name + "”?\n\nIts session stops and it leaves the list. Any work it committed or left in its worktree is kept; an empty worktree is cleaned up." + also);
   }
 

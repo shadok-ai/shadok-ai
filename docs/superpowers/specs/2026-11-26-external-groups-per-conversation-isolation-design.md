@@ -266,6 +266,16 @@ person should not have to hand it over again on their next message.
 
 ### 7. [CALL] The user and the directory outlive the agent; only the slice dies
 
+> **Superseded — [OPERATOR], settled 2026-11-28.** The operator's original
+> request stands: deleting a conversation's agent erases the conversation —
+> account, home, media, temp files, slice — and the person who writes again
+> starts from nothing. The "explicit gesture" below is therefore the agent's
+> deletion itself, not a separate control. The uid-recycling trap this call was
+> protecting against is real and is closed differently: everything the uid owns
+> is removed before the account is (invariant 84). An agent that is merely
+> asleep is not deleted and keeps its home. The text below is kept as the
+> record of the call that was reversed.
+
 The operator asked for "teardown when the agent is deleted". Taken literally
 that breaks something already decided: `guestWorkDirName` keeps a person's
 folder **across** their agent's deletion on purpose — deleting an agent ends a

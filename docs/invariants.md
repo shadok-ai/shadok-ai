@@ -2964,15 +2964,43 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     abandoned under a name nothing resolves to again. The row is written only
     AFTER the account exists, so a failed `useradd` leaves no claim behind, and
     the derived name makes the retry land on the same account.
-    The LIFETIME split is part of the same rule, from the other side: the Unix
-    user and the HOME belong to the **conversation** and survive the deletion of
-    its agent — deleting an agent ends a session and "is not meant to erase
-    someone" (`guestWorkDirName`) — while a `userdel` under a surviving folder
-    would leave files owned by a dead uid and hand them to whoever gets that uid
-    next. Only deleting the GROUP removes them, and then it removes every
-    conversation's account, read from the registry (the only thing that knows
-    those names), with the agents killed first because `userdel` cannot remove
-    an account a process holds open.
+    **The LIFETIME is the agent's: deleting the last agent of a conversation
+    erases the conversation** (`endChannel` → `markConversationRetiring` /
+    `finishRetiring` → `teardownConversationUser`). The first build kept the
+    account and the HOME across the agent's deletion, on the reasoning that
+    deleting an agent "is not meant to erase someone" — true of a guest in an
+    ordinary group (`guestWorkDirName`), and wrong here: an operator who deletes
+    a stranger's agent and sees the next one come back with the same files has
+    been shown a wall with a door in it. An agent merely put to sleep is not
+    deleted (its channel row stays), so a returning person still finds their
+    home; only the explicit close erases.
+    Four things in that erasure were measured rather than assumed, and each
+    replaced something that looked right. **`userdel` does not refuse an account
+    with live processes** — it only looks at logins — so "kill the agent, then
+    `userdel`" left a background shell running under a uid nothing names any
+    more; everything under the uid is killed first, found through `/proc`.
+    **A zombie is not a live process**: in a container pid 1 is the application
+    and reaps nothing (the reason `src/lock.ts` reads the same state), so a
+    killed process whose parent had already exited stayed in `/proc` and the
+    first version reported "survived the kill" three times out of three.
+    **`userdel --remove` only takes the HOME, and `useradd` hands the freed uid
+    to the very next account**: the next stranger admitted owned the previous
+    one's files under `/tmp` — where Claude Code keeps a scratchpad per uid —
+    with nothing wrong on screen. So what the uid owns outside its home is swept
+    BEFORE the account goes, while the uid can still be named, and a sweep that
+    fails keeps the account rather than free its uid over leftovers. **And no
+    account does not mean no files**: `/etc/passwd` is ephemeral in a container
+    while the homes sit on a volume, so an erasure that finds the account gone
+    still removes the home a later `useradd --create-home` would adopt.
+    The registry row is MARKED `retiring` before the first destructive step and
+    dropped only once the account is gone. The mark is written as the channel
+    leaves the registry — before the slow stop — because the person can write
+    again in that window: the admission finds it, finishes the erasure, and only
+    then provisions (and is refused if the erasure cannot be finished, never
+    handed the old home). The boot reconciler finishes a marked row instead of
+    re-provisioning it. Deleting the GROUP erases every remaining conversation
+    through the same path, read from the registry (the only thing that knows
+    those names).
     Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
     decisions 1, 2, 7 and 8 (step 3 of 5).
 
@@ -3022,10 +3050,10 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     and the panel says before the write what it costs — every stranger's agent
     holds the value, and a stranger can ask theirs to show it. A conversation's
     own entry wins a name both hold, which reaches that conversation alone.
-    **The lifetime splits the other way from invariant 84.** There, the Unix
-    user and the HOME belong to the conversation and survive their agent's
-    deletion. Here the slice belongs to the AGENT and dies with it
-    (`endChannel` → `dropGuestSliceOf`): minimum retention, no orphaned
+    **The slice dies with the agent** (`endChannel` → `dropGuestSliceOf`), and
+    it dies FIRST: the rest of the conversation is erased by the same close
+    (invariant 84), but that part is slower and can fail, and credentials a
+    stranger handed over must wait on neither. Minimum retention, no orphaned
     stranger credentials on disk, and a returning guest supplies the value
     again. Deleting the external GROUP wipes every conversation's slice too, and
     before the `userdel`s on purpose — a failing `userdel` must not be what
