@@ -576,6 +576,12 @@ export function startWaBridge(d: WaBridgeDeps): WaBridge {
         case "ready": {
           b.sessionId = m.sessionId;
           b.ready = true;
+          // A `ready` is a turn boundary: a restart (a reload, the auto-reload
+          // of an IDLE agent, a Claude Code update) broadcasts `working` and
+          // then `ready`, never `turn-done` — so "typing…" kept beating in the
+          // person's chat while nothing ran. When a turn IS running, the
+          // server sends `working` again after `ready` (attach, recovery).
+          b.typing.stop();
           // The binding, written ONCE per spawn and re-asserted on a resume.
           // Never `mirror`: a guest's conversation is published nowhere else.
           const existing = d.channels.load().find((c) => c.sessionId === b.sessionId);
