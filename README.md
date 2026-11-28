@@ -421,9 +421,12 @@ Enter to skip; you can add it later from the web UI).
   agent that goes looking can still read its neighbour's folder. It stops the
   accident, not a determined agent. **An External group is where that becomes a
   real wall**: one Unix user per conversation, its own home, its own files and
-  attachments, created the first time that person writes and kept for when they
-  come back. Deleting someone's agent does not remove it — the account belongs to
-  the person, not to the session; deleting the group removes every one of them.
+  attachments, created the first time that person writes and kept for as long
+  as their agent exists (an idle agent that was put to sleep still exists).
+  **Deleting someone's agent there erases their conversation**: the account, its
+  home, its attachments, its temp files and the secrets they handed over. If
+  they write again they start from nothing, under a fresh account. Deleting the
+  group does the same for every conversation it ever admitted.
   What **is** a wall in both is the cockpit's own API: a guest's agent is boxed to its
   own conversation, so it cannot see, drive or diff another guest's agent, reads
   no secret and no shared ledger row, obtains no connected account, and can

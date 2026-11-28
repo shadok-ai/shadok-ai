@@ -104,11 +104,16 @@ import {
 } from "./guest-admit.js";
 import { conversationUnit, unitConversation, unitFor, unitGroup } from "./isolation-unit.js";
 import {
+  conversationHeld,
+  externalUserRow,
   externalUserVerdict,
   externalUsersOfGroup,
   loadExternalUsers,
   saveExternalUsers,
+  liveUidsOfProcStatus,
+  teardownConversationUser,
   withExternalUser,
+  withRetiring,
   withoutExternalUsers,
   type ExternalUserRow,
 } from "./external-users.js";
@@ -3819,14 +3824,21 @@ app.get("/channels", (req, res) => {
   const allCrons = loadCrons();
   const allHooks = loadWebhooks();
   const active = allCrons.filter((c) => c.enabled);
+  const allGroups = loadGroups();
+  const allChannels = loadChannels();
   res.json(
     visible.map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
-      const closes = triggerCount(ch.sessionId, allCrons, allHooks);
+      // `conversation` — closing this agent erases a stranger's whole
+      // conversation (its account and files), which is not recoverable either.
+      const closes = {
+        ...triggerCount(ch.sessionId, allCrons, allHooks),
+        ...(conversationErasedWith(ch, allGroups, allChannels) ? { conversation: true } : {}),
+      };
       return {
         ...ch,
         ...(mine.length ? { crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : {}),
-        ...(closes.schedules || closes.webhooks ? { closes } : {}),
+        ...(closes.schedules || closes.webhooks || closes.conversation ? { closes } : {}),
       };
     }),
   );
@@ -5301,6 +5313,16 @@ async function ensureExternalUser(
   const r = osUserOf(g, conversation);
   if (!r.ok) return { ok: false, why: r.why };
   if (!r.user) return { ok: false, why: `group ${g.id} resolves to no user of its own` };
+  // A conversation whose agent was deleted is being ERASED, and the person may
+  // write again before that has finished — or after it failed. Either way they
+  // must not land in the files the operator asked to remove: finish the
+  // teardown first, and refuse the admission if it cannot be finished.
+  const retiring = loadExternalUsers().find((x) => x.user === r.user && x.retiring != null);
+  if (retiring) {
+    const done = await retireConversationUser(retiring);
+    if (!done.ok)
+      return { ok: false, why: `this conversation's previous files could not be erased yet (${done.warnings.join("; ") || "teardown incomplete"})` };
+  }
   const rows = loadExternalUsers();
   const verdict = externalUserVerdict(rows, { user: r.user, unit: r.unit }, Date.now());
   if (verdict.kind === "collision") return { ok: false, why: verdict.why };
@@ -6087,20 +6109,173 @@ async function teardownGroupOrConversations(g: Group): Promise<{ ok: boolean; wa
   } catch (e) {
     return { ok: false, warning: `killing the group's agents failed: ${e instanceof Error ? e.message : String(e)}` };
   }
-  const removed: string[] = [];
+  // Closing each agent above already erased its own conversation
+  // (`endChannel`); what is left in the registry is every conversation that had
+  // no agent any more, plus any whose teardown failed. Same erasure, one by one
+  // — re-read, since those closes rewrote the registry.
+  const left = externalUsersOfGroup(loadExternalUsers(), g.id);
+  let removed = mine.length - left.length;
   const warnings: string[] = [];
-  for (const row of mine) {
+  for (const row of left) {
+    const done = await retireConversationUser(row);
+    if (done.ok) removed++;
+    else warnings.push(...done.warnings);
+  }
+  if (mine.length)
+    console.log(`groups: external ${g.id.slice(0, 8)} — removed ${removed}/${mine.length} conversation account(s)`);
+  return warnings.length ? { ok: false, warning: warnings.join("; ") } : { ok: true };
+}
+
+/** Pids currently running as `uid` — any of the four ids on the `Uid:` line, so
+ *  a process that changed only its effective id is still found. Read from
+ *  `/proc` rather than through `pkill`: no binary to be missing from an image,
+ *  and the same read tells us afterwards whether the kill actually landed. */
+function pidsOfUid(uid: number): number[] {
+  const out: number[] = [];
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync("/proc");
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
     try {
-      await runPrivileged("userdel", ["--remove", row.user]);
-      removed.push(row.user);
-    } catch (e) {
-      warnings.push(`userdel --remove ${row.user} failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (liveUidsOfProcStatus(fs.readFileSync(`/proc/${name}/status`, "utf8")).includes(uid)) out.push(Number(name));
+    } catch {
+      /* the process ended between the listing and the read */
     }
   }
-  if (removed.length) saveExternalUsers(withoutExternalUsers(loadExternalUsers(), removed));
-  if (removed.length || mine.length)
-    console.log(`groups: external ${g.id.slice(0, 8)} — removed ${removed.length}/${mine.length} conversation account(s)`);
-  return warnings.length ? { ok: false, warning: warnings.join("; ") } : { ok: true };
+  return out;
+}
+
+/** SIGKILL everything running as `uid`, and say how many are still there. */
+async function killProcessesOfUid(uid: number): Promise<number> {
+  const pids = pidsOfUid(uid);
+  if (!pids.length) return 0;
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  } else {
+    // `kill` exits non-zero when ONE pid had already ended: not a failure, the
+    // recount below is what answers.
+    await runPrivileged("kill", ["-KILL", ...pids.map(String)]).catch(() => {});
+  }
+  await new Promise<void>((r) => setTimeout(r, 150));
+  return pidsOfUid(uid).length;
+}
+
+/** Where an agent can leave files outside its home. `-xdev` keeps the sweep on
+ *  each of these filesystems; a root that does not exist is skipped, since
+ *  `find` would fail the whole run on it; and `-ignore_readdir_race` because
+ *  these directories are everyone's — a neighbour's file vanishing mid-walk is
+ *  not a failure of OUR sweep, and would otherwise read as one. */
+const STRAY_ROOTS = ["/tmp", "/var/tmp", "/dev/shm"];
+
+/** One teardown per account at a time: closing an agent and that person
+ *  writing again a moment later must not run two `userdel`s side by side. */
+const conversationTeardowns = new Map<string, Promise<{ ok: boolean; warnings: string[] }>>();
+
+/**
+ * Erase one conversation of an external group: its processes, its temp files,
+ * its media, its Unix account and home — then, and only then, its registry row.
+ *
+ * The row is MARKED before anything is destroyed and DROPPED only once the
+ * account is gone. Between the two it says "being erased": the boot reconciler
+ * finishes it rather than re-provisioning the account, and an admission waits
+ * on it (`ensureExternalUser`). A row dropped while the account is still on
+ * the host would let the next conversation mint the same name and inherit the
+ * home — the trap `teardownGroupOrConversations` already documents.
+ */
+function retireConversationUser(row: ExternalUserRow): Promise<{ ok: boolean; warnings: string[] }> {
+  const running = conversationTeardowns.get(row.user);
+  if (running) return running;
+  const run = (async () => {
+    saveExternalUsers(withRetiring(loadExternalUsers(), row.user, Date.now()));
+    const done = await teardownConversationUser(row.user, {
+      uidOf,
+      selfUid: typeof process.getuid === "function" ? process.getuid() : 0,
+      killProcesses: killProcessesOfUid,
+      sweepStray: async (uid) => {
+        const roots = STRAY_ROOTS.filter((d) => fs.existsSync(d));
+        if (roots.length) await runPrivileged("find", [...roots, "-xdev", "-ignore_readdir_race", "-uid", String(uid), "-delete"]);
+      },
+      removeMedia: () => {
+        // Server-owned, outside every home. `rmSync` unlinks a symlink rather
+        // than following it, so a name swapped under us costs nothing.
+        fs.rmSync(mediaDirForUnit(mediaDir(), row.unit, true), { recursive: true, force: true });
+      },
+      userdel: (user) => runPrivileged("userdel", ["--remove", user]),
+      // `--one-file-system`: a home is a plain directory, and a mount an agent
+      // managed to leave under it is not ours to empty.
+      removeHome: (user) => runPrivileged("rm", ["-rf", "--one-file-system", "--", homeForUser(user, GROUP_HOME_BASE)], { timeoutMs: TREE_OP_TIMEOUT_MS }),
+    });
+    if (done.ok) {
+      saveExternalUsers(withoutExternalUsers(loadExternalUsers(), [row.user]));
+      console.log(`guests: erased ${row.user} (account, home, media) — its conversation was deleted`);
+    } else {
+      console.warn(`guests: could NOT fully erase ${row.user} — ${done.warnings.join("; ")}. It stays marked and is retried at the next start, and before that person is admitted again.`);
+    }
+    return done;
+  })().finally(() => conversationTeardowns.delete(row.user));
+  conversationTeardowns.set(row.user, run);
+  return run;
+}
+
+/**
+ * Deleting the LAST agent of an external conversation deletes the conversation:
+ * the person who writes again starts from nothing, under a fresh account.
+ *
+ * This is the first half — the MARK, written synchronously as the channel
+ * leaves the registry and long before the slow part of the close. It is what
+ * closes the window in which that person writes again while their old agent is
+ * still being stopped: the admission finds the mark and erases before it
+ * provisions, instead of being handed the home we are about to delete under it.
+ *
+ * Returns the account to erase, or null for every other channel — an ordinary
+ * group's agent, a guest of a non-external group (one shared account, nothing
+ * of its own to remove), mono-tenant — so `endChannel` need not ask.
+ */
+function markConversationRetiring(ch: Channel): string | null {
+  const gone = conversationErasedWith(ch, loadGroups(), loadChannels());
+  if (!gone) return null;
+  const rows = loadExternalUsers();
+  const row = externalUserRow(rows, gone.group, gone.conversation);
+  if (!row) return null;
+  saveExternalUsers(withRetiring(rows, row.user, Date.now()));
+  return row.user;
+}
+
+/**
+ * The conversation that closing this agent erases, or null — ONE answer for the
+ * close itself and for the confirmation shown before it (`closes` on
+ * `GET /channels`): a warning derived differently from the act it warns about
+ * is a warning that drifts.
+ */
+function conversationErasedWith(
+  ch: Channel,
+  groups: readonly Group[],
+  chans: readonly Channel[],
+): { group: string; conversation: string } | null {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !ch.group) return null;
+  const conversation = guestConversationKey(ch);
+  if (!conversation) return null;
+  if (groups.find((x) => x.id === ch.group)?.nature !== "external") return null;
+  if (conversationHeld(chans, { sessionId: ch.sessionId, group: ch.group, conversation }, guestConversationKey)) return null;
+  return { group: ch.group, conversation };
+}
+
+/** The second half: erase the account `markConversationRetiring` named — only
+ *  if it is STILL marked. An admission that arrived in between has already
+ *  erased it and minted a fresh one under the same name, and that one is live. */
+async function finishRetiring(user: string): Promise<void> {
+  const row = loadExternalUsers().find((r) => r.user === user && r.retiring != null);
+  if (row) await retireConversationUser(row);
 }
 
 /**
@@ -6125,17 +6300,23 @@ async function reconcileExternalUsers(): Promise<void> {
   const rows = loadExternalUsers();
   if (!rows.length) return;
   const groups = loadGroups();
-  const live: ExternalUserRow[] = [];
   const stale: string[] = [];
   let healed = 0;
   let failed = 0;
   for (const row of rows) {
+    // An erasure that did not finish is FINISHED, never undone — before the
+    // group is even looked at: re-provisioning would recreate the account over
+    // the files it was meant to take away, and dropping the row of a group
+    // that is gone would forget an account that may still be on the host.
+    if (row.retiring != null) {
+      await retireConversationUser(row);
+      continue;
+    }
     const g = groups.find((x) => x.id === unitGroup(row.unit));
     if (!g || g.nature !== "external") {
       stale.push(row.user);
       continue;
     }
-    live.push(row);
     const conv = unitConversation(row.unit);
     if (!conv) continue;
     let exists = false;
@@ -6154,7 +6335,8 @@ async function reconcileExternalUsers(): Promise<void> {
     }
   }
   if (stale.length) {
-    saveExternalUsers(live);
+    // Re-read: an erasure finished above has already rewritten the registry.
+    saveExternalUsers(withoutExternalUsers(loadExternalUsers(), stale));
     console.log(`guests: dropped ${stale.length} registry row(s) whose group is gone`);
   }
   if (healed || failed)
@@ -11748,17 +11930,15 @@ async function endChannel(sessionId: string): Promise<boolean> {
   // an irreversible delete must not ride on a guess. That caller decides for
   // itself (`onChannelClosed`).
   if (ch) forgetChannelTriggers(sessionId);
-  // THE VAULT SLICE DIES WITH THE AGENT (design decision 7). The split is
-  // deliberate and it is the whole decision: the conversation's Unix USER and
-  // HOME survive this — `guestWorkDirName` keeps a person's folder across their
-  // agent's deletion on purpose, and a `userdel` under a surviving folder would
-  // hand its files to whoever gets that uid next — while the credentials they
-  // handed over do not. Minimum retention, no orphaned stranger credentials.
-  // Tearing the USER down is its own gesture: deleting the conversation.
+  // THE VAULT SLICE DIES WITH THE AGENT (design decision 7), first and on its
+  // own: credentials a stranger handed over must not wait on the slower erasure
+  // below, nor survive it failing. The conversation's Unix USER, HOME and media
+  // follow: marked here, erased once the process is stopped (further down).
   //
   // Same guard as every other per-conversation store: only a slice we can NAME,
   // never the group's as a consolation (`vaultUnitOfChannel` refuses instead).
   if (ch) dropGuestSliceOf(ch);
+  const retiring = ch ? markConversationRetiring(ch) : null;
   if (ch?.telegram?.threadId) closeTelegramTopic(ch.telegram.chatId, ch.telegram.threadId);
   const s = sessions.get(sessionId);
   const worktreeBranch = s?.worktree?.branch ?? ch?.branch;
@@ -11781,6 +11961,11 @@ async function endChannel(sessionId: string): Promise<boolean> {
     const outcome = pruneWorktree(repo, worktreeBranch, worktreeHome);
     if (outcome !== "none") console.log(`worktree ${worktreeBranch}: ${outcome} on session end`);
   }
+  // DELETING AN EXTERNAL CONVERSATION'S AGENT ERASES THE CONVERSATION (design
+  // decision 7, as the operator settled it): account, home, media, temp files.
+  // Last, because it needs the agent's process gone — and never fatal to the
+  // close: a failure is logged, kept on the registry row and retried.
+  if (retiring) await finishRetiring(retiring).catch((e) => console.warn(`guests: erasing a deleted conversation failed: ${e instanceof Error ? e.message : String(e)}`));
   return true;
 }
 
