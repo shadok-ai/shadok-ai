@@ -90,7 +90,9 @@ test("the slice dies with the agent, and the USER does not", () => {
 test("deleting an external GROUP wipes its conversations' slices, before the accounts", () => {
   const body = fnBody("async function teardownGroupOrConversations(");
   const slices = body.indexOf("guestSlicesOf(loadVault(), g.id)");
-  const userdel = body.indexOf('runPrivileged("userdel"');
+  const userdel = body.indexOf("retireConversationUser(row)");
+  // The agents' own closes erase their conversations too, and come after as well.
+  assert.ok(body.lastIndexOf("killGroupAgents(g.id)") > slices);
   assert.ok(slices >= 0, "the group's guest slices are never wiped");
   assert.ok(userdel > slices, "a failing userdel must not be what leaves those values on disk");
   const own = body.indexOf("deleteVaultSlice(g.id)");
