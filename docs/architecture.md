@@ -507,6 +507,10 @@ group already bound before this change stays bound.
   are chunked under the 4096-char limit. A "typing…" heartbeat runs for the
   whole turn and is stopped by *every* terminal outcome (`turn-done`, `dialog`,
   `pace-blocked`, `exited`, WS close) — a missed one leaves it spinning forever.
+  `ready` is one of them: a restart (a reload, the auto-reload of an idle agent,
+  a Claude Code update) broadcasts `working` then `ready` and never
+  `turn-done`, so both bridges (Telegram and WhatsApp) stop typing on `ready`;
+  a turn that really runs is re-announced by a `working` sent after it.
 - **Writes are serial, bounded, and never silent.** Each bridge owns a FIFO
   queue (`makeSendQueue`), so a preface cannot overtake its own keyboard. The
   price of that order is that one stuck call stops the channel, so every Bot
@@ -899,7 +903,8 @@ Plan: `docs/superpowers/plans/2026-11-24-whatsapp-guests-text.md`.
 - **Answers.** `mdToWhatsApp`: `*bold*`, `_italic_`, `~strike~`, code kept,
   headings → bold lines, links → `text (url)`, tables → `a · b` lines, `* item`
   → `- item`; no HTML. `waChunks` cuts at paragraph boundaries (4,000 chars).
-  One send queue per person, 400 ms apart. Typing while `working`. The read
+  One send queue per person, 400 ms apart. Typing while `working`, stopped by
+  `ready` too (a restart sends no `turn-done`). The read
   receipt ("seen") goes when the agent TAKES a message (`taken`: its
   `prompt-id`, the turn's end, or a consumed dialog answer), never on receipt
   and never on a refusal path — "seen" claims someone read it, and a shut door

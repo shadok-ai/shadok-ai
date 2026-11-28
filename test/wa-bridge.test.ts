@@ -319,6 +319,37 @@ test("the agent's answer is formatted for WhatsApp and sent only to the binding"
   await w.stop();
 });
 
+test("a restart of an idle agent (working, then ready, no turn-done) does not leave typing on", async () => {
+  const w = await world();
+  await w.link();
+  say(w, "hi");
+  await tick();
+  const ws = w.server.last();
+  ws.emit({ type: "working" });
+  ws.emit({ type: "turn-done" });
+  await tick();
+  // A reload / auto-reload: the server's restartSession says `working` then
+  // `ready`, and nothing else — there is no turn.
+  ws.emit({ type: "working", startedAt: Date.now(), elapsedMs: 0 });
+  ws.emit({ type: "ready", sessionId: ws.start.resume ?? w.server.channels[0].sessionId });
+  await tick();
+  assert.deepEqual(w.fake.typing.at(-1), { to: LID, on: false }, "typing must end with the restart");
+  // A turn that really runs after the ready still shows typing.
+  ws.emit({ type: "working" });
+  await tick();
+  assert.deepEqual(w.fake.typing.at(-1), { to: LID, on: true });
+  await w.stop();
+});
+
+test("both bridges stop typing on `ready` — a restart sends no turn-done", () => {
+  for (const f of ["../src/wa-bridge.ts", "../src/telegram.ts"]) {
+    const src = fs.readFileSync(new URL(f, import.meta.url), "utf8");
+    const at = src.search(/case "ready":/);
+    assert.ok(at >= 0, f);
+    assert.match(src.slice(at, at + 900), /b\.typing\.stop\(\)/, `${f}: the ready handler must stop typing`);
+  }
+});
+
 test("what the operator types in the cockpit reaches the person, labelled, with no server path", async () => {
   const w = await world();
   await w.link();

@@ -1784,6 +1784,12 @@ export function startTelegram(
         case "ready":
           b.sessionId = m.sessionId;
           b.ready = true;
+          // A `ready` is a turn boundary: a restart (a reload, the auto-reload
+          // of an IDLE agent, a Claude Code update) broadcasts `working` and
+          // then `ready`, never `turn-done` — so "typing…" kept beating in the
+          // topic while nothing ran. When a turn IS running, the server sends
+          // `working` again after `ready` (attach, recovery).
+          b.typing.stop();
           persist();
           for (const p of b.pending.splice(0)) ws.send(JSON.stringify(p));
           for (const a of b.pendingActions.splice(0)) ws.send(JSON.stringify(a));
