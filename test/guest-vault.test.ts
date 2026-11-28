@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   GUEST_SECRET_LIMITS,
-  externalGroupSliceRefusal,
+  externalGroupSecretRefusal,
   guestSecretQuotaRefusal,
   guestSliceWriteRefusal,
   isGuestSlice,
@@ -99,14 +99,17 @@ test("write: a guest's slice is never shared out and never bound to a profile, b
       assert.notEqual(guestSliceWriteRefusal({ unit: UNIT, op, callerUnit: caller }), null);
 });
 
-// ── An external group has no slice of its own ────────────────────────────
+// ── An external group's own slice: the door's group secrets ─────────────
 
-test("external group: its own id is refused as a vault target; a conversation of it is not", () => {
-  assert.notEqual(externalGroupSliceRefusal({ unit: groupUnit(G), external: true }), null);
-  assert.equal(externalGroupSliceRefusal({ unit: UNIT, external: true }), null);
+test("external group: its own slice takes writes, rotations, deletes and lending — not a profile binding", () => {
+  for (const op of ["create", "overwrite", "delete", "share"] as const)
+    assert.equal(externalGroupSecretRefusal({ unit: groupUnit(G), external: true, op }), null, op);
+  assert.notEqual(externalGroupSecretRefusal({ unit: groupUnit(G), external: true, op: "bind" }), null);
+  // A conversation of it is the guest-slice rule's business, not this one's.
+  assert.equal(externalGroupSecretRefusal({ unit: UNIT, external: true, op: "bind" }), null);
 });
 
 test("external group: a NON-external group's own slice is untouched by the rule", () => {
-  assert.equal(externalGroupSliceRefusal({ unit: groupUnit("comex"), external: false }), null);
-  assert.equal(externalGroupSliceRefusal({ unit: "main", external: false }), null);
+  assert.equal(externalGroupSecretRefusal({ unit: groupUnit("comex"), external: false, op: "bind" }), null);
+  assert.equal(externalGroupSecretRefusal({ unit: "main", external: false, op: "bind" }), null);
 });

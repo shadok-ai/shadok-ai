@@ -224,6 +224,15 @@ matched — was an oracle on the operator's values. And **the [OPEN] below is
 still open**: a member may rotate and delete, never CREATE a name in someone
 else's slice, and the refusal says which decision is missing.*
 
+*Amended 2026-11-28 by the operator: **group secrets on an external door.** A
+secret a member stores on the external GROUP itself (its own vault key, refused
+until then because nothing read it) reaches every conversation's agents, with
+no profile binding. Resolution for a conversation is now its own slice, then its
+group's, and nothing else — the commons and anything lent stay out. Only a
+person can write it (a guest's agent writes its own conversation), and the panel
+warns before the write that every stranger's agent will hold the value and can
+be asked to show it. Invariant 85.*
+
 A guest's agent can store a credential of its own — the point being that the
 person should not have to hand it over again on their next message.
 
@@ -237,7 +246,8 @@ person should not have to hand it over again on their next message.
   decision 4 to its own slice. Reserved names (`MT_CLAUDE_OAUTH_TOKEN`) are
   refused as they are everywhere.
 - **Who reads.** Only that conversation's own agents, as injected env at spawn.
-  No other guest, ever.
+  No other guest, ever. (They also receive the door's GROUP secrets — see the
+  amendment above — which are the operator's, not a guest's.)
 - **[OPERATOR] Who can audit.** The group's **members see the NAMES**, never the
   values — the vault's existing rule — and can rotate and delete. The sealed
   alternative was rejected on purpose: a slice nobody can see or empty is the
