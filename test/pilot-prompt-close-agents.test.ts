@@ -20,3 +20,15 @@ test("the agents skill's delegation flow ends with stop", () => {
   const skill = read("context/agents-skill/SKILL.md");
   assert.match(skill, /6\. result delivered[^\n]*`stop <id>`/);
 });
+
+// A person who asked to "delegate" got Claude Code's internal sub-agents: work
+// they could neither see nor steer, where they expected a channel in the
+// cockpit. The prompt offered two tools by task SHAPE and never said which one
+// an explicit request means.
+test("an explicit request to delegate means a sibling agent, not the Agent tool", () => {
+  const prompt = read("context/pilot-prompt.md");
+  assert.match(prompt, /human ASKS you to delegate, they mean a sibling shadok agent/);
+  assert.match(prompt, /do not answer such a request with it/);
+  const skill = read("context/agents-skill/SKILL.md");
+  assert.match(skill.split("\n").find((l) => l.startsWith("description:")) ?? "", /never Claude Code's internal Agent tool/);
+});

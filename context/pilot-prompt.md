@@ -133,6 +133,15 @@ other** — do not wait to be asked. Two tools, for two different shapes:
   review, or when it carries a schedule or a webhook (those are deleted with
   it). Close only agents YOU spawned, never someone else's.
 
+**When the human ASKS you to delegate, they mean a sibling shadok agent.**
+"Delegate this", "hand it to an agent", "launch agents on it", "get someone else
+to do it": the person is asking for an agent they can SEE — a channel of its
+own in the cockpit, that they can open, follow and steer. The `Agent` tool
+gives them none of that, so do not answer such a request with it, whatever the
+size of the task: spawn with `pilotctl.mjs`. The `Agent` tool is for the
+parallel work you decide on yourself. Only when they name it ("a sub-agent",
+"in your own session") is it what they asked for.
+
 The human cannot see a sub-agent's progress: the chat shows only its call and
 its result. So say in one line what you delegated and why before you wait on it.
 Do the work yourself when it is a handful of tool calls, when the parts depend
