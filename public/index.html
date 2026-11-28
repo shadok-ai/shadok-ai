@@ -13946,6 +13946,11 @@
     if (String(panelGroup) === PUBLIC_BUCKET) return window.publicWriteTarget(vaultGroups);
     return String(panelGroup);
   }
+  /** Is this group id an EXTERNAL group's (a guest door)? Its own slice holds
+   *  the door's group secrets, which every guest's agent receives. */
+  function isExternalGroup(id) {
+    return id != null && (vaultGroups.find((g) => g && String(g.id) === String(id)) || {}).nature === "external";
+  }
   // Add `group` to a write body only in grouped mode (omit otherwise).
   function withSecretGroup(body) {
     const g = secretWriteGroup();
@@ -13969,7 +13974,7 @@
    *  chips — a stranger's secret is never lent out and never bound to a profile,
    *  it is injected into that conversation's own agents and nowhere else — and
    *  no "no profile uses it" badge, which would be false here. */
-  function secretRow(sec, { ro, grouped, guest }) {
+  function secretRow(sec, { ro, grouped, guest, toGuests }) {
     const k = sec.name;
     const li = document.createElement("li");
     if (grouped) li.className = "sec-row" + (ro ? " sec-ro" : "") + (guest ? " sec-guest" : "");
@@ -14040,7 +14045,13 @@
       const line = window.auditLine ? window.auditLine(sec) : "";
       if (line) { const m = document.createElement("div"); m.className = "sec-meta"; m.textContent = line; li.appendChild(m); }
       if (!ro) li.appendChild(secretValueLine(li, sec));
-      if (!ro && !guest) li.appendChild(secretControls(sec));
+      if (toGuests) {
+        // No chips: profiles do not choose who gets it, and the guests' agents
+        // are the only ones reached (`externalGroupSecretRefusal`).
+        const m = document.createElement("div"); m.className = "sec-meta";
+        m.textContent = "→ every guest's agent on this door — a guest can ask theirs to show it";
+        li.appendChild(m);
+      } else if (!ro && !guest) li.appendChild(secretControls(sec));
     }
     return li;
   }
@@ -14235,26 +14246,29 @@
       (opts[0] ? opts[0].value : null);
     if (panelGroup != null) sel.value = String(panelGroup);
     const sec = window.secretSections(vaultSecrets, panelGroup, vaultGroups);
+    // An EXTERNAL group's own secrets are the door's GROUP secrets: every guest
+    // conversation's agents receive them, whatever their profile. Nothing else
+    // reaches those agents — no commons, nothing lent — so those sections are
+    // not shown there: listing them would read as "the guests get these too".
+    const extGroup = isExternalGroup(panelGroup);
     const section = (title, rows, ro, empty, guest) => {
       const h = document.createElement("li"); h.className = "sec-sect"; h.textContent = title; ul.appendChild(h);
       if (!rows.length) { const e = document.createElement("li"); e.innerHTML = '<span style="opacity:.6"></span>'; e.firstChild.textContent = empty; ul.appendChild(e); }
-      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true, guest: !!guest }));
+      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true, guest: !!guest, toGuests: !ro && !guest && extGroup }));
     };
-    // An EXTERNAL group has no vault of ITS OWN: every slice belongs to one
-    // conversation (`externalGroupSliceRefusal` refuses the write server-side).
-    // Saying "no secret of its own yet" there would read as "add one here".
-    const extGroup = (vaultGroups.find((g) => g && String(g.id) === String(panelGroup)) || {}).nature === "external";
     section(
-      "Own — " + groupName(panelGroup),
+      extGroup ? "For every guest — " + groupName(panelGroup) : "Own — " + groupName(panelGroup),
       sec.own,
       false,
-      extGroup ? "no vault of its own — each guest conversation has a slice only its own agents can read" : "no secret of its own yet",
+      extGroup ? "no group secret yet — one stored here reaches every guest's agent on this door" : "no secret of its own yet",
     );
-    section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
-    // Main AND every public group: one commons, the tier `commonsGroupIds`
-    // resolves from. Naming it "Main" hid every public group's secret from a
-    // walled group's view (see `secretSections`).
-    section("Inherited from Public", sec.commons, true, "nothing in the public groups");
+    if (!extGroup) {
+      section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
+      // Main AND every public group: one commons, the tier `commonsGroupIds`
+      // resolves from. Naming it "Main" hid every public group's secret from a
+      // walled group's view (see `secretSections`).
+      section("Inherited from Public", sec.commons, true, "nothing in the public groups");
+    }
     // Only for an EXTERNAL group, and only when a guest has stored something:
     // an empty heading on every other group's panel would say nothing and take
     // a line. You see the NAMES, never a value — and the credentials are erased
@@ -16184,6 +16198,11 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     const isNew = !editingSecret;
+    // A new secret on an EXTERNAL group goes to every stranger's agent on that
+    // door, and a stranger can ask their agent to print it: said once, before
+    // anything is written, since the panel otherwise looks like any group's.
+    const toGuests = isNew && isExternalGroup(secretWriteGroup());
+    if (toGuests && !confirm("Every guest's agent on this door will receive " + name + " — and a guest can ask their agent to show it. Store it?")) return;
     let writtenGroup = null;
     if (!keepValue) {
       const body = editingSecret && editingSecretGroup ? { name, value, overwrite: true, group: editingSecretGroup } : withSecretGroup({ name, value, overwrite: true });
@@ -16197,7 +16216,9 @@
     // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
     // ticks: syncing here would read an empty selection and detach everything.
     if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
-    else if (isNew && wanted.length) {
+    // An external group's secrets reach every guest's agent whatever its
+    // profile: there is no binding to write (the server refuses one).
+    else if (isNew && wanted.length && !toGuests) {
       // Grouped mode: a new secret is bound to the ticked profiles in its group
       // right away (the same route as the card's chips). The form's ticks CANNOT
       // write as they are ticked the way a card's do — the secret does not exist

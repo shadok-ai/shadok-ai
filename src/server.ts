@@ -458,7 +458,7 @@ import {
   GUEST_SECRET_LIMITS,
   guestSecretQuotaRefusal,
   guestSliceWriteRefusal,
-  externalGroupSliceRefusal,
+  externalGroupSecretRefusal,
   isGuestSlice,
 } from "./guest-vault.js";
 import {
@@ -2259,7 +2259,7 @@ function secretCreatedBy(req: Caller & { body?: unknown }): string {
  */
 function secretWriteTarget(
   req: Caller & { body?: unknown; query?: Record<string, unknown> },
-): { ownerGroup: string; callerUnit: string | null } | { refused: string } {
+): { ownerGroup: string; callerUnit: string | null; external?: boolean } | { refused: string } {
   const caller = secretCaller(req);
   // An external agent whose conversation cannot be named writes nowhere.
   if (caller.refused) return { refused: caller.refused };
@@ -2279,13 +2279,11 @@ function secretWriteTarget(
     const requestedGroup = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
     const decision = secretWriteDecision({ ...caller, requestedGroup, groups });
     if (!decision.ok) return { refused: decision.error };
-    // The whole GROUP of an external door is not a slice anybody reads — the
-    // panel offers it like any other walled group, so this is the one place
-    // that says so instead of storing a credential nothing will ever resolve.
+    // The whole GROUP of an external door holds its GROUP SECRETS, which every
+    // conversation's agents receive (`externalGroupSecretRefusal` says what
+    // that rules out). Carried with the target so a route can apply it.
     const nature = groups.find((x) => x.id === unitGroup(decision.ownerGroup))?.nature;
-    const nowhere = externalGroupSliceRefusal({ unit: decision.ownerGroup, external: nature === "external" });
-    if (nowhere) return { refused: nowhere };
-    return { ownerGroup: decision.ownerGroup, callerUnit };
+    return { ownerGroup: decision.ownerGroup, callerUnit, external: nature === "external" };
   }
   return { ownerGroup: secretOwnerGroup({ ...caller, groups }), callerUnit };
 }
@@ -6075,6 +6073,13 @@ async function teardownGroupOrConversations(g: Group): Promise<{ ok: boolean; wa
     if (gone.length)
       recordSecretAudit({ action: "deleted", secrets: gone, actor: "server", via: "system", instance: process.cwd(), detail: `guest conversation slice wiped with group ${g.id.slice(0, 8)}` });
   }
+  // And the door's own GROUP secrets: nothing resolves them once the group is
+  // gone, and a later group can never be given the same id to inherit them.
+  {
+    const gone = deleteVaultSlice(g.id);
+    if (gone.length)
+      recordSecretAudit({ action: "deleted", secrets: gone, actor: "server", via: "system", instance: process.cwd(), detail: `group secrets wiped with external group ${g.id.slice(0, 8)}` });
+  }
   // The agents go first, once: every conversation of this group runs under its
   // own account, and a `userdel` cannot remove an account a process holds open.
   try {
@@ -6370,7 +6375,9 @@ app.put("/secrets/profiles", (req, res) => {
     return res.status(403).json({ error: "Only a person, from the web UI, can choose which profiles receive a secret." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
-  const sealed = guestSliceWriteRefusal({ unit: target.ownerGroup, op: "bind", callerUnit: target.callerUnit });
+  const sealed =
+    guestSliceWriteRefusal({ unit: target.ownerGroup, op: "bind", callerUnit: target.callerUnit }) ??
+    externalGroupSecretRefusal({ unit: target.ownerGroup, external: target.external === true, op: "bind" });
   if (sealed) return res.status(403).json({ error: sealed, name });
   // The binding BEFORE the write, so the audit can name the direction. Read
   // here and not from the body: the client sends the whole set, so "added" and

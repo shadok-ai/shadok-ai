@@ -144,20 +144,22 @@ export function guestSliceWriteRefusal(input: {
 }
 
 /**
- * Why the vault holds no slice for a whole EXTERNAL group, or null when the
- * unit is fine.
+ * Why this mutation of a whole EXTERNAL GROUP's own slice is refused, or null.
  *
- * An external group is never a vault key: its agents resolve their OWN
- * conversation's slice and nothing else (`resolveSecretEntry`). So a secret
- * written under the group id would sit in a tenant no agent ever reads — stored,
- * listed, apparently working, and reaching nobody. That is the worst way for a
- * credential store to be wrong: the operator believes the value is in place and
- * goes looking elsewhere for why it is not.
+ * That slice is the door's GROUP SECRETS: what a member stores there reaches
+ * every conversation's agents (`resolveSecretEntry`, `secretNamesForProfile`)
+ * — the operator's way to give every guest's agent a service key, decided
+ * 2026-11-28. It used to be refused outright, because nothing read it.
  *
- * Refused rather than redirected: there is no conversation to redirect it to —
- * "the group's agents" is a different one for every stranger on the door.
+ * Every agent of the door receives all of it, so binding one to a profile
+ * would be a setting that changes nothing: refused, with the reason. Writing,
+ * rotating, deleting and lending it to another group stay ordinary member
+ * acts. A guest's agent cannot reach it at all — it writes its own
+ * conversation (`secretOwnerGroup`).
  */
-export function externalGroupSliceRefusal(input: { unit: UnitId; external: boolean }): string | null {
+export function externalGroupSecretRefusal(input: { unit: UnitId; external: boolean; op: GuestSliceOp }): string | null {
   if (!input.external || isGuestSlice(input.unit)) return null;
-  return "an external group has no vault of its own — each conversation has a slice only its own agents can read, so a secret stored on the group itself would reach nobody";
+  if (input.op === "bind")
+    return "an external group's secrets reach every guest conversation's agents, whatever their profile — there is no profile to choose";
+  return null;
 }

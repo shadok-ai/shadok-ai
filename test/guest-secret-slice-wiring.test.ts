@@ -93,11 +93,15 @@ test("deleting an external GROUP wipes its conversations' slices, before the acc
   const userdel = body.indexOf('runPrivileged("userdel"');
   assert.ok(slices >= 0, "the group's guest slices are never wiped");
   assert.ok(userdel > slices, "a failing userdel must not be what leaves those values on disk");
+  const own = body.indexOf("deleteVaultSlice(g.id)");
+  assert.ok(own >= 0 && own < userdel, "the door's own group secrets are wiped too, before the accounts");
 });
 
-test("an external GROUP is never itself a vault target", () => {
+test("an external GROUP's own slice is a vault target, and its secrets are never bound to a profile", () => {
   const body = fnBody("function secretWriteTarget(");
-  assert.match(body, /externalGroupSliceRefusal\(\{ unit: decision\.ownerGroup, external: nature === "external" \}\)/);
+  assert.match(body, /return \{ ownerGroup: decision\.ownerGroup, callerUnit, external: nature === "external" \};/);
+  const bind = SRC.slice(SRC.indexOf('app.put("/secrets/profiles"'), SRC.indexOf('app.get("/secrets/audit"'));
+  assert.match(bind, /externalGroupSecretRefusal\(\{ unit: target\.ownerGroup, external: target\.external === true, op: "bind" \}\)/);
 });
 
 test("GET /secrets boxes a guest to its own slice and refuses an unplaceable one", () => {
