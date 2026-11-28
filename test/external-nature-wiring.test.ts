@@ -57,12 +57,14 @@ test("deleting an external group removes EVERY conversation's account", () => {
   assert.match(body, /externalUsersOfGroup\(rows, g\.id\)/);
   // The agents go first, once: `userdel` cannot remove an account a process holds.
   const kill = body.indexOf("killGroupAgents(g.id)", body.indexOf("externalUsersOfGroup"));
-  const del = body.indexOf('runPrivileged("userdel", ["--remove", row.user])');
+  const del = body.indexOf("retireConversationUser(row)");
   assert.ok(kill >= 0 && del > kill, "the agents are killed before the accounts are removed");
-  // A row is dropped only for an account that actually went away — keeping one
-  // for a surviving account is what makes the retry work, and dropping one
-  // early would let a LATER conversation mint the name and inherit the home.
-  assert.match(body, /if \(removed\.length\) saveExternalUsers\(withoutExternalUsers\(loadExternalUsers\(\), removed\)\)/);
+  // Each account goes through the ONE erasure a deleted conversation uses
+  // (test/conversation-teardown.test.ts), which drops a row only for an account
+  // that actually went away — keeping one for a surviving account is what makes
+  // the retry work, and dropping one early would let a LATER conversation mint
+  // the name and inherit the home.
+  assert.match(body, /externalUsersOfGroup\(loadExternalUsers\(\), g\.id\)/);
   // The route uses it.
   assert.match(SRC, /teardown: \(g\) => teardownGroupOrConversations\(g\)/);
 });
