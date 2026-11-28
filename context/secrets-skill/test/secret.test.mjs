@@ -150,3 +150,49 @@ test("runs when invoked through a SYMLINKED skill directory (group HOME)", async
   assert.equal(res.code, 0, res.err);
   assert.equal(res.out.trim(), "A\nB", "no output through the link");
 });
+
+test("set --profile carries the roles, and reports what the server really bound", async () => {
+  const srv = await fakeCockpit(200, {
+    names: ["A"],
+    result: "created",
+    profiles: ["Importer", "Reviewer"],
+  });
+  const res = await run(["set", "A", "--stdin", "--profile", "Importer", "--profile", "Reviewer"], srv.port, "s3cr3t\n");
+  await srv.close();
+  assert.equal(res.code, 0, res.err);
+  assert.deepEqual(srv.seen.paths, ["PUT /secrets"]);
+  assert.deepEqual(srv.seen.body, { name: "A", value: "s3cr3t", profiles: ["Importer", "Reviewer"] });
+  assert.match(res.out, /bound to Importer, Reviewer/);
+  // The roles were named, so the "it reaches nobody yet" line would be wrong.
+  assert.doesNotMatch(res.out, /reaches an agent only once/);
+  assert.doesNotMatch(res.out, /s3cr3t/);
+});
+
+test("a cockpit that IGNORES `profiles` is not reported as a success", async () => {
+  // The script can be newer than the server it calls (invariant 57). The value
+  // IS stored, so this is not "nothing happened" — but claiming "bound" would
+  // be a lie about where a credential went, and the exit code has to say so.
+  const srv = await fakeCockpit(200, { names: ["A"], result: "created" });
+  const res = await run(["set", "A", "--stdin", "--profile", "Importer"], srv.port, "s3cr3t\n");
+  await srv.close();
+  assert.equal(res.code, 1);
+  assert.match(res.out, /stored A in the vault/);
+  assert.match(res.err, /NOT bound/);
+  assert.doesNotMatch(res.err, /s3cr3t/);
+});
+
+test("set --attach --profile is ONE creation bound to both", async () => {
+  const srv = await fakeCockpit(200, {
+    names: ["A"],
+    result: "created",
+    attached: "Shadok-dev",
+    profiles: ["Shadok-dev", "Importer"],
+  });
+  const res = await run(["set", "A", "--stdin", "--attach", "--profile", "Importer"], srv.port, "s3cr3t\n");
+  await srv.close();
+  assert.equal(res.code, 0, res.err);
+  assert.deepEqual(srv.seen.paths, ["PUT /secrets"]);
+  assert.deepEqual(srv.seen.body, { name: "A", value: "s3cr3t", attach: true, profiles: ["Importer"] });
+  assert.match(res.out, /bound to Shadok-dev, Importer/);
+  assert.match(res.out, /attached to your profile \(Shadok-dev\)/);
+});

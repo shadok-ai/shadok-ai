@@ -77,20 +77,34 @@ export function parseArgs(argv) {
   let name;
   let stdin = false;
   let attach = false;
+  // `--profile NAME`, repeatable: the roles that receive the secret. Only the
+  // server decides whether the caller may name them — this just carries them.
+  const profiles = [];
+  let pending = null;
   for (const a of rest) {
-    if (a === "--stdin") stdin = true;
+    if (pending) {
+      if (a.startsWith("-")) throw new UsageError(`secret set: ${pending} needs a profile name`);
+      profiles.push(a);
+      pending = null;
+    } else if (a === "--stdin") stdin = true;
     else if (a === "--attach") attach = true;
-    else if (a.startsWith("-")) throw new UsageError(`secret set: unrecognized argument ${a}`);
+    else if (a === "--profile") pending = a;
+    else if (a.startsWith("--profile=")) {
+      const v = a.slice("--profile=".length);
+      if (!v) throw new UsageError("secret set: --profile needs a profile name");
+      profiles.push(v);
+    } else if (a.startsWith("-")) throw new UsageError(`secret set: unrecognized argument ${a}`);
     else if (name === undefined) name = a;
     else throw new UsageError(`secret set: unrecognized arguments: ${a}`);
   }
+  if (pending) throw new UsageError("secret set: --profile needs a profile name");
   if (name === undefined) throw new UsageError("secret set: the following arguments are required: name");
   if (!stdin) {
     throw new UsageError(
       "secret set: the following arguments are required: --stdin (the value is read from stdin, never from argv)",
     );
   }
-  return { cmd, name, attach };
+  return { cmd, name, attach, profiles: [...new Set(profiles)] };
 }
 
 /** Like `api`, but hands the refusal back instead of exiting on it. */
@@ -155,13 +169,29 @@ export async function main(argv) {
     name: parsed.name,
     value,
     ...(parsed.attach ? { attach: true } : {}),
+    ...(parsed.profiles.length ? { profiles: parsed.profiles } : {}),
   });
   // Never echo the value back: this output lands in the transcript, and may be
   // mirrored to Telegram.
   console.log(`stored ${parsed.name} in the vault`);
+  if (parsed.profiles.length) {
+    // A cockpit OLDER than this skill ignores `profiles` and answers without
+    // the field (invariant 57). Claiming "bound" then would be a lie about
+    // where a credential went, so say the truth and exit non-zero.
+    if (Array.isArray(stored.profiles) && stored.profiles.length)
+      console.log(`bound to ${stored.profiles.join(", ")} — each of those agents gets it at its next spawn.`);
+    else {
+      process.stderr.write(
+        "stored, but the roles were NOT bound: this cockpit is older than the skill. Ask the user to bind it from the vault panel.\n",
+      );
+      process.exitCode = 1;
+    }
+  }
   if (!parsed.attach) {
-    console.log("It reaches an agent only once attached to a profile (web Profiles panel,");
-    console.log("or re-run with --attach to attach it to your own profile).");
+    if (!parsed.profiles.length) {
+      console.log("It reaches an agent only once attached to a profile (web Profiles panel,");
+      console.log("or re-run with --attach for your own profile, --profile NAME for another role).");
+    }
     return;
   }
   let profile = stored.attached;

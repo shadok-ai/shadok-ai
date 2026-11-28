@@ -36,13 +36,34 @@ node ~/.claude/skills/shadok-reload/reload.mjs    # comes back with it in the en
 It is injected as an environment variable **at your next reload**, not into the
 process you are running now — the environment of a live process cannot change.
 
-Two limits, and they are not bugs to work around:
+## Another role needs it — name it when you store it
+
+You provisioned a credential a DIFFERENT agent needs (the one you are about to
+launch, a role that does the nightly import). Name that role in the same
+command — one write, bound at creation:
+
+```bash
+gh auth token | node ~/.claude/skills/shadok-secrets/scripts/secret.mjs set GITHUB_TOKEN --stdin --profile Importer --profile Reviewer
+```
+
+`--profile` is repeatable, and it works **only on the creation**: you are the
+one who obtained the value, so you may say who needs it. Changing a binding
+afterwards is a person's decision, from the vault panel — by then other roles
+depend on it, and it is no longer only yours to move.
+
+Say in your reply which roles you bound it to. They receive it at their **next
+spawn**, so an agent already running needs a reload.
+
+Three limits, and they are not bugs to work around:
 
 - **Only a secret you created.** Any other name — one a human typed, one another
   role stored — is refused. You never held that value, and the vault is shared
   by every profile on this machine.
-- **Only your own profile.** There is no way to attach a secret to someone
-  else's role, the lead included.
+- **Only at creation.** Re-binding an existing secret, yours included, is
+  refused: ask the user, they do it from the vault panel in two clicks.
+- **Never the role strangers run on.** A guest door's guests all run the SAME
+  profile, so a credential there is one handed to every stranger. Refused, and
+  a guest's own agent names no role at all.
 
 If you need a secret you did not create, ask the user: they attach it from the
 web Profiles panel in two clicks.

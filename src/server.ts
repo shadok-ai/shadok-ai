@@ -453,6 +453,7 @@ import {
   loadVault,
   creatorProfile,
   createAttachRefusal,
+  createProfilesRefusal,
   ANY_PROFILE,
   agentOverwriteRefusal,
   secretNameRefusal,
@@ -6453,8 +6454,33 @@ mountFactory(app, {
   audit: factoryAudit,
 });
 
+/**
+ * The roles an EXTERNAL door's guests run under — the one binding target a
+ * creation may not name (`createProfilesRefusal`).
+ *
+ * Both doors, Telegram and WhatsApp, and whether or not they are open: a door
+ * shut today reopens on the same profile, so a credential parked there in the
+ * meantime would be waiting for the first stranger. EXTERNAL only, because that
+ * is where the rule comes from — `guestEnableRefusal` refuses to SAVE such a
+ * door onto a profile that carries a secret (design decision 5), while a
+ * restricted door's guests are known people, for whom the vault panel has
+ * always allowed it.
+ */
+function externalDoorProfiles(): string[] {
+  const cfg = loadConfig();
+  const cwd = process.cwd();
+  const groups = loadGroups();
+  const out: string[] = [];
+  for (const setup of [guestSetupForCwd(cfg, cwd), waGuestSetupForCwd(cfg, cwd)]) {
+    const profile = setup.profile?.trim();
+    if (!profile) continue;
+    if (groups.find((x) => x.id === setup.group)?.nature === "external") out.push(profile);
+  }
+  return out;
+}
+
 app.put("/secrets", (req, res) => {
-  const { name, value, overwrite, attach } = req.body ?? {};
+  const { name, value, overwrite, attach, profiles } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
   const key = name.trim();
@@ -6499,6 +6525,38 @@ app.put("/secrets", (req, res) => {
     const r = createAttachRefusal({ verdict, callerProfile: attachTo });
     if (r) return res.status(403).json({ error: r, name: key });
   }
+  // `profiles: [...]` — the skill's `set --profile`: the same creation naming
+  // the roles that receive the secret, for the case `attach` cannot serve (the
+  // agent provisioned a credential ANOTHER role needs). Decided before
+  // anything is stored, like the attach above, and refused in full rather than
+  // narrowed to the acceptable names: a silently shortened list would read as
+  // "bound" while the role that mattered got nothing.
+  const asked = Array.isArray(profiles)
+    ? [...new Set(profiles.map((p: unknown) => String(p).trim()).filter(Boolean))]
+    : [];
+  if (asked.length) {
+    const r = createProfilesRefusal({
+      verdict,
+      asked,
+      known: loadProfiles().map((p) => p.name),
+      // A guest's agent names no recipient (`createProfilesRefusal`). Read from
+      // the per-session key, never from the body.
+      boxed: !!requestAgent(req, loadChannels())?.boxed,
+      externalDoorProfiles: externalDoorProfiles(),
+    });
+    if (r) return res.status(403).json({ error: r, name: key });
+    // The two refusals `PUT /secrets/profiles` applies, asked with the same
+    // `bind` op so this door and the panel's cannot drift: a guest slice is
+    // never bound to a profile, and an external group's secrets reach every
+    // conversation whatever their profile, so there is no profile to choose.
+    const sealed =
+      guestSliceWriteRefusal({ unit: ownerGroup, op: "bind", callerUnit: target.callerUnit }) ??
+      externalGroupSecretRefusal({ unit: ownerGroup, external: target.external === true, op: "bind" });
+    if (sealed) return res.status(403).json({ error: sealed, name: key });
+  }
+  // One list, so the entry is written once: `--attach --profile X` is one
+  // creation bound to both, not a creation plus a rebind.
+  const bindTo = [...new Set([...(attachTo ? [attachTo] : []), ...asked])];
   if (verdict === "updated") {
     const slice = loadVault()[ownerGroup];
     const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
@@ -6515,7 +6573,7 @@ app.put("/secrets", (req, res) => {
   // client-claimed owner/createdBy is ignored by construction.
   // `createdBy` is also what makes a LATER `PUT /profiles/secret` possible:
   // `creatorProfile` reads it back, and it is never rewritten on an overwrite.
-  setSecret(key, value, ownerGroup, secretCreatedBy(req), attachTo ? [attachTo] : []);
+  setSecret(key, value, ownerGroup, secretCreatedBy(req), bindTo);
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
   // THE GUEST IS TOLD (design decision 6). They cannot see the vault and may
   // well believe a chat message stops existing once it is answered, so a
@@ -6524,9 +6582,20 @@ app.put("/secrets", (req, res) => {
   // each bridge. A CREATION only: saying it again every time the same token is
   // refreshed teaches them to skip the line that matters.
   if (verdict === "created" && isGuestSlice(ownerGroup)) tellGuestSecretKept(callerOf(req).id);
-  if (attachTo)
-    recordSecretAudit({ action: "attached", secrets: [key], ...auditActorOf(req), profile: attachTo, instance: process.cwd() });
-  res.json({ names: secretNames(ownerGroup), result: verdict, ...(attachTo ? { attached: attachTo } : {}) });
+  // One row per role the secret was bound to, not one for the creation: which
+  // agents receive a credential is the whole point of that log.
+  for (const prof of bindTo)
+    recordSecretAudit({ action: "attached", secrets: [key], ...auditActorOf(req), profile: prof, instance: process.cwd() });
+  // `attached` stays the caller's OWN profile and stays a string: the seeded
+  // skill prints it, and a skill is often older than the server (invariant 57).
+  // The roles asked for are reported separately, so a skill that asked for them
+  // can tell a server that honoured them from one that ignored the field.
+  res.json({
+    names: secretNames(ownerGroup),
+    result: verdict,
+    ...(attachTo ? { attached: attachTo } : {}),
+    ...(asked.length ? { profiles: bindTo } : {}),
+  });
 });
 // Edit a secret's SHARING (the groups it is lent to) — the name↔group link
 // lives on the secrets side. Owner-group gated, like every vault write.

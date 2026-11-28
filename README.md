@@ -218,9 +218,14 @@ Enter to skip; you can add it later from the web UI).
   can add it to the vault itself so the next agent doesn't start from nothing —
   write-only, the value piped in rather than typed as an argument, and never
   overwriting an existing name without you saying so. It can also **attach that
-  secret to its own profile** and reload itself to pick it up — but only a
-  secret it stored itself: a value you typed, or one another role stored, stays
-  yours to attach from the panel.
+  secret to its own profile** and reload itself to pick it up — and, when it
+  provisioned the credential for ANOTHER role, name that role in the same
+  command (`--profile Importer`, repeatable). Both are limited to the moment of
+  creation, when it is the only one holding the value: a value you typed, one
+  another role stored, and **re-binding an existing secret** all stay yours to
+  do from the panel. The role an external door's guests run on is refused
+  outright — they all share it, so a credential there is one handed to every
+  stranger — and a guest's own agent names no role at all.
 - **OAuth sign-ins from another machine** — an MCP or CLI sign-in ends on
   `http://localhost:PORT/…`, which your browser cannot reach when the agents run
   in a container or on a remote box. Paste that failed address under *Finish a

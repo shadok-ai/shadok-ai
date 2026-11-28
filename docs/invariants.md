@@ -1116,6 +1116,37 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     — a live process's environment cannot be changed. Unchanged, and worth
     repeating: this is soft isolation. An agent with a shell can still rewrite
     `profiles.json` itself (cf. the profile-guardrail invariant).
+    **And the roles it provisioned a credential FOR — at creation only.** The
+    rule above answers "may this agent keep what it obtained" and left the other
+    half open: an agent that provisions a key ANOTHER role needs had no path at
+    all, and the refusal it met (`PUT /secrets/profiles`, a person's route) named
+    only the panel — so it reported that an agent may hand over nothing, and sent
+    its user asking for a feature half of which already shipped. `PUT /secrets
+    {profiles: [...]}` — the skill's repeatable `--profile` — binds the new entry
+    to roles the caller does not run, and what keeps that inside the boundary is
+    the MOMENT: at a CREATION the caller is the only holder of the value, so
+    naming who needs it grants nobody anything they could not have been handed by
+    hand. `createProfilesRefusal` holds the rest. A later re-bind stays a
+    person's decision, because by then other roles depend on the value and it is
+    no longer only the agent's to move. A GUEST's agent names nobody — its own
+    slice is never bound to a profile anyway (`guestSliceWriteRefusal`), but that
+    refusal is asked FIRST so the answer is about who asked rather than about the
+    target. The role an EXTERNAL door's guests run on receives nothing, and this
+    one is a back door being closed rather than a new rule: `guestEnableRefusal`
+    already refuses to SAVE such a door onto a profile carrying a secret (every
+    guest runs the SAME profile, so a credential there is one handed to every
+    stranger), and without the complement a creation could park one there
+    afterwards. `ANY_PROFILE` (`"*"`) is refused BY NAME, before the existence
+    check it would otherwise fall through: "no profile named *" reads as a
+    misspelling, and that value is not a typo but the one that hands the
+    credential to every agent the secret resolves for.
+    A profile name that does not exist is refused instead of stored,
+    since the binding lives on the ENTRY: it would be kept, resolve to nothing,
+    and read in the panel as a role receiving a credential it never sees. The
+    whole list is refused rather than narrowed to the acceptable names — a
+    shortened one would read as "bound" while the role that mattered got nothing
+    — and the audit writes one `attached` row PER role, because which agents
+    receive a credential is the entire point of that log.
 
 <a id="inv-40"></a>
 
