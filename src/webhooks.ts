@@ -16,9 +16,16 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
  *    replayed against the endpoint.
  *  - The token is compared in constant time, and an unknown id, a disabled
  *    hook and a wrong token all get the SAME 404 — a guesser learns nothing.
- *  - Creating, rotating and deleting a webhook is a PERSON's act (browser-only):
- *    a webhook is a door from the internet into an agent, and an agent opening
- *    one on itself (or a sibling) is exactly what a prompt injection would want.
+ *  - A person in a browser may write a webhook on any agent they may drive. An
+ *    AGENT may write one too, but only ON ITSELF (`webhookCreateVerdict`,
+ *    `webhookWriteVerdict`): never on a sibling, a capped number of them, and
+ *    marked `createdBy: "agent"` so the popin says who opened the door. It was
+ *    person-only at first — an agent opening a door on itself is what a prompt
+ *    injection would want — and that rule left out exactly the agents that
+ *    need it: a guest's agent in an external group has no person in a browser
+ *    to click for it, and it is also the agent a door costs least to open on,
+ *    since everything it can reach is already walled to one conversation.
+ *    `SHADOK_AGENT_WEBHOOKS=0` puts the person-only rule back.
  *  - The request body is UNTRUSTED data: it reaches the agent fenced and
  *    labelled as such, after the webhook's own prompt, size-capped.
  *
@@ -38,6 +45,8 @@ export interface Webhook {
   tokenHash: string;
   enabled: boolean;
   createdAt: number;
+  /** Set when the agent opened this door on itself; absent = a person did. */
+  createdBy?: "agent";
   lastRun?: number;
   /** "ok" | "busy-dropped" | a delivery failure reason. */
   lastOutcome?: string;
@@ -155,11 +164,124 @@ export function callVerdict(
   return { ok: true, hook };
 }
 
+// ── Who may write one ─────────────────────────────────────────────────────
+
+/** How many webhooks an agent may hold that IT created. A person's are not
+ *  counted: the cap is on what an agent can pile up unattended. */
+export const AGENT_WEBHOOK_MAX = 5;
+
+/** `SHADOK_AGENT_WEBHOOKS=0` (or false/no/off) restores the person-only rule. */
+export function agentWebhooksEnabled(env: string | undefined): boolean {
+  return !/^(0|false|no|off)$/i.test((env ?? "").trim());
+}
+
+/** Who is asking: a person in a browser, an agent (its own session id, proved
+ *  by its session key), or neither (a script, a peer). */
+export interface WebhookCaller {
+  browserPerson: boolean;
+  agentId: string | null;
+  /** Agents may write webhooks at all (`agentWebhooksEnabled`). */
+  agentsEnabled: boolean;
+}
+
+export type WebhookRefusal = { ok: false; status: number; error: string };
+
+/**
+ * May this caller create a webhook, and on which agent? Pure.
+ *
+ * An agent's target is ITS OWN session, taken from its key — a `sessionId` in
+ * the body naming anyone else is refused rather than ignored, so a script that
+ * believes it wired a sibling learns it did not. `mayAct` is asked only for a
+ * person: for an agent it would say yes to every sibling of a mono-tenant
+ * instance, which is the door on a sibling this rule exists to keep shut.
+ */
+export function webhookCreateVerdict(input: WebhookCaller & {
+  bodySessionId: string;
+  mayAct: (sessionId: string) => boolean;
+  existing: readonly Pick<Webhook, "sessionId" | "createdBy">[];
+}): { ok: true; sessionId: string; createdBy?: "agent" } | WebhookRefusal {
+  if (input.browserPerson) {
+    if (!input.bodySessionId) return { ok: false, status: 400, error: "sessionId and prompt are required" };
+    if (!input.mayAct(input.bodySessionId)) return { ok: false, status: 403, error: "not your agent" };
+    return { ok: true, sessionId: input.bodySessionId };
+  }
+  if (!input.agentId) return { ok: false, status: 403, error: "same-origin browser only" };
+  if (!input.agentsEnabled) return { ok: false, status: 403, error: "agents may not create webhooks on this instance — ask a person to add it in the agent's Webhooks panel" };
+  if (input.bodySessionId && input.bodySessionId !== input.agentId)
+    return { ok: false, status: 403, error: "an agent can only create a webhook on itself" };
+  const mine = input.existing.filter((w) => w.sessionId === input.agentId && w.createdBy === "agent").length;
+  if (mine >= AGENT_WEBHOOK_MAX)
+    return { ok: false, status: 409, error: `this agent already has ${AGENT_WEBHOOK_MAX} webhooks of its own — delete one first` };
+  return { ok: true, sessionId: input.agentId, createdBy: "agent" };
+}
+
+/**
+ * May this caller edit, rotate or delete `hook`? Pure. An agent writes only a
+ * webhook that targets ITSELF — whoever created it: editing a prompt is no more
+ * than creating a second webhook with that prompt, which it may do. Everything
+ * else answers like a missing webhook, so nothing learns that an id exists.
+ */
+export function webhookWriteVerdict(input: WebhookCaller & {
+  hook: Pick<Webhook, "sessionId"> | undefined;
+  mayAct: (sessionId: string) => boolean;
+}): { ok: true } | WebhookRefusal {
+  const missing: WebhookRefusal = { ok: false, status: 404, error: "no such webhook" };
+  if (input.browserPerson) return input.hook && input.mayAct(input.hook.sessionId) ? { ok: true } : missing;
+  if (!input.agentId || !input.agentsEnabled) return { ok: false, status: 403, error: "same-origin browser only" };
+  return input.hook && input.hook.sessionId === input.agentId ? { ok: true } : missing;
+}
+
+// ── The address a sender is given ─────────────────────────────────────────
+
+/**
+ * An origin worth handing to an outside sender, or null: http(s), no path, and
+ * not this machine's own loopback — `http://localhost:3789` means nothing to a
+ * SaaS. A person's browser knows the cockpit's public address (it is in its
+ * address bar); an agent only ever sees the loopback, so the server remembers
+ * the last one a signed-in browser used (`rememberPublicOrigin`).
+ */
+export function publicOriginOf(origin: unknown): string | null {
+  if (typeof origin !== "string") return null;
+  let u: URL;
+  try { u = new URL(origin.trim()); } catch { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const h = u.hostname.toLowerCase();
+  if (h === "localhost" || h === "[::1]" || h === "0.0.0.0" || /^127\./.test(h)) return null;
+  return u.origin;
+}
+
+/** The URL to POST to, or null when the public address is not known yet. */
+export function webhookUrl(origin: string | null, id: string): string | null {
+  return origin ? `${origin}/hooks/${id}` : null;
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────
 
 function storeFile(): string {
   const enc = process.cwd().replace(/[^a-zA-Z0-9]/g, "-");
   return path.join(os.homedir(), ".shadok-ai", "webhooks", enc + ".json");
+}
+
+/** The cockpit's public address as last seen from a signed-in browser. */
+function originFile(): string {
+  return storeFile().replace(/\.json$/, ".origin");
+}
+
+export function loadPublicOrigin(): string | null {
+  try { return publicOriginOf(fs.readFileSync(originFile(), "utf8")); } catch { return null; }
+}
+
+/** Remember `origin` when it is a public one and differs from what is stored.
+ *  Returns what is now known. Best effort: a failed write changes nothing. */
+export function rememberPublicOrigin(origin: unknown, known: string | null): string | null {
+  const o = publicOriginOf(origin);
+  if (!o || o === known) return known;
+  try {
+    const f = originFile();
+    fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(f, o, { mode: 0o600 });
+  } catch { /* in memory only */ }
+  return o;
 }
 
 export function loadWebhooks(): Webhook[] {

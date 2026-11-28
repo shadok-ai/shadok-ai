@@ -259,10 +259,19 @@ Enter to skip; you can add it later from the web UI).
   it never speaks for you). Calls to the same webhook are queued and run one
   after the other; a busy agent is retried for ~10 min. A sender that can only
   take a URL may pass `?token=…` instead of the header. Pause, rotate the token
-  (↻) or delete it from the same popin. Only a person in the browser can create
-  or change a webhook — never an agent. An unknown id, a paused webhook and a
+  (↻) or delete it from the same popin. An unknown id, a paused webhook and a
   wrong token all answer the same `404`. Closing the agent deletes its
   webhooks: the URL stops answering and the token is dead.
+
+  **An agent can give itself a webhook**: ask it ("tell me when the form gets a
+  submission") and it creates one with the `shadok-scheduler` skill, then hands
+  you the URL and the token. It can only open one **on itself** — never on
+  another agent —, at most 5 of its own, and the popin marks them *created by
+  the agent*. That is what lets a guest's agent (open DMs, where nobody sits in
+  the cockpit for that person) wire an outside service by itself. The URL it
+  gives is the address the cockpit was last opened at in a browser;
+  `SHADOK_PUBLIC_URL=https://…` sets it explicitly. `SHADOK_AGENT_WEBHOOKS=0`
+  goes back to webhooks only a person can create.
 - **Per-agent stats** — the agent's ⋯ menu has a **📊 Stats** view: token usage
   over the last hour / 24 h / 7 days / 30 days, split in a tooltip into input,
   output, cache-write and cache-read, with a **notional cost** beside each window.
@@ -1951,7 +1960,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged; GET `/crons/env?session=<id>` — the variable NAMES a guard for that session would receive, values never included, so an agent can check its own guard before trusting it), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged; GET `/crons/env?session=<id>` — the variable NAMES a guard for that session would receive, values never included, so an agent can check its own guard before trusting it), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes by a browser person, or by an agent on ITSELF (`x-shadok-session-key`, at most 5 of its own, `SHADOK_AGENT_WEBHOOKS=0` forbids); answers carry `path` and, when the public address is known, `url`; the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent

@@ -1,5 +1,10 @@
 # Webhooks drafted by an agent — design (v2 on #464)
 
+> **Not built, and superseded** by
+> [`2026-11-28-agent-defined-webhooks.md`](2026-11-28-agent-defined-webhooks.md):
+> its one invariant — only a person's click makes a webhook callable — cannot
+> serve an agent whose person is not in the cockpit. Kept for its reasoning.
+
 **Date:** 2026-11-11
 **Builds on:** `docs/superpowers/specs/2026-11-10-webhooks.md` (PR #464 — the base
 webhook feature). This design does not land until #464 does.
