@@ -3005,13 +3005,23 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     external group — which is never a vault key — and turned the factory's
     secret scan, which names the secret a tree matched, into an oracle on the
     operator's values.
-    **A group of an external door is not a slice.** A write aimed at the group
-    id would be stored, listed and read by nobody, because its agents only ever
-    resolve their own conversation. That is the worst way for a credential store
-    to be wrong — the operator believes the value is in place — so it is refused
-    (`externalGroupSliceRefusal`) rather than redirected: there is no
-    conversation to redirect it to, "the group's agents" being a different one
-    for every stranger on the door.
+    **The external GROUP's own slice is the door's group secrets — the one tier
+    above a conversation, and only a person writes it.** It started out
+    refused (`externalGroupSliceRefusal`): nothing resolved it, so a value
+    written there was stored, listed and read by nobody, the worst way for a
+    credential store to be wrong. The operator then asked for the opposite
+    (2026-11-28): one service key every guest's agent on a door needs, without
+    making the door a restricted group where the guests would share one space.
+    So a conversation now resolves its own slice, then its group's, and still
+    nothing else — no shared-in, no commons, no Main — and receives every name
+    of both with no profile binding (`secretNamesForProfile`; a bind on the
+    group slice is refused by `externalGroupSecretRefusal`, since it would
+    choose nothing). The inward seal holds because of who can write that slice:
+    a guest's agent writes its OWN conversation (`secretOwnerGroup` derives it
+    from the session), so only a member, from the panel, puts a value there,
+    and the panel says before the write what it costs — every stranger's agent
+    holds the value, and a stranger can ask theirs to show it. A conversation's
+    own entry wins a name both hold, which reaches that conversation alone.
     **The lifetime splits the other way from invariant 84.** There, the Unix
     user and the HOME belong to the conversation and survive their agent's
     deletion. Here the slice belongs to the AGENT and dies with it
@@ -3033,4 +3043,5 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     someone else's slice: handing a credential to a guest is a different act and
     is still open in the design.
     Design: `docs/superpowers/specs/2026-11-26-external-groups-per-conversation-isolation-design.md`,
-    decisions 4, 6 and 7 (step 4 of 5).
+    decisions 4, 6 and 7 (step 4 of 5); the group tier is the amendment at the
+    top of decision 6.

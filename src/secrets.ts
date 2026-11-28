@@ -129,13 +129,20 @@ export function resolveSecretEntry(
 ): SecretEntry | undefined {
   const mine = ownOf(ownOf(vault, unit), name);
   if (mine) return mine;
-  // A GUEST CONVERSATION's slice resolves to ITSELF and nothing else — no
-  // shared-in, no public commons, no Main (design decision 4: "an external
-  // agent's resolution chain is its own slice and nothing else"). The refusal
-  // lives here, in the one selection rule, so no caller can forget it: every
-  // tier below hands a credential to an agent nobody chose to give it to, and
-  // in an external group that agent is a stranger's.
-  if (isGuestSlice(unit)) return undefined;
+  // A GUEST CONVERSATION's slice resolves to ITSELF, then to its own EXTERNAL
+  // GROUP's slice, and nothing else — no shared-in, no public commons, no Main.
+  // The refusal lives here, in the one selection rule, so no caller can forget
+  // it: every tier below hands a credential to an agent nobody chose to give it
+  // to, and in an external group that agent is a stranger's.
+  //
+  // The group tier is the one exception, and it is an operator's deliberate
+  // act (decision 2026-11-28, amending design decision 4): a secret a MEMBER
+  // stores on the external group itself is for every conversation of that door
+  // — a service key every guest's agent needs. Only a person can write there
+  // (a guest's agent writes its own conversation, `secretOwnerGroup`), and
+  // what it costs is said where it is written: every stranger's agent holds
+  // the value, and a stranger can ask their agent to show it.
+  if (isGuestSlice(unit)) return ownOf(ownOf(vault, unitGroup(unit)), name);
   // When two groups share the same name with the caller, the winner is
   // insertion-order-deterministic: the first such group in `Object.entries` order.
   for (const [gid, gv] of Object.entries(vault)) {
@@ -196,8 +203,14 @@ export function secretNamesForProfile(
   // reason it must be: those names resolve from the profile, which is shared by
   // every stranger on the door, and an external door already refuses a profile
   // that carries secrets (`guestEnableRefusal`).
-  if (isGuestSlice(unit))
-    return filterReserved(Object.keys(vault[unit] ?? {}).filter((n) => Object.hasOwn(vault[unit], n)));
+  //
+  // Plus every name of its EXTERNAL GROUP's own slice (see `resolveSecretEntry`),
+  // likewise without a binding: a group secret there is for every conversation
+  // of the door, and the profile is the same one for all of them anyway.
+  if (isGuestSlice(unit)) {
+    const names = (slice: GroupVault | undefined) => Object.keys(slice ?? {}).filter((n) => Object.hasOwn(slice ?? {}, n));
+    return filterReserved([...new Set([...names(vault[unit]), ...names(vault[unitGroup(unit)])])]);
+  }
   const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
   const names = new Set<string>();
   for (const slice of Object.values(vault)) {
@@ -333,22 +346,22 @@ export function visibleSecrets(
   // viewer is a member of its group (`Viewer.onlySession`), so without this it
   // would come through `ownGroupIds` below and read every stranger's NAMES on
   // the door. A name is not a value, and it is still someone else's.
+  // Its group's own slice is listed too, as lent to it (`shared`): those are
+  // in its environment, and an agent told it holds nothing would ask the person
+  // for a key it already has. The conversation's own entry wins a shared name,
+  // as it does at resolution.
   if (ownUnit && isGuestSlice(ownUnit)) {
-    const slice = vault[ownUnit] ?? {};
-    return Object.keys(slice)
-      .filter((n) => Object.hasOwn(slice, n) && !RESERVED_SECRET_NAMES.has(n))
-      .map((name) => {
+    const out = new Map<string, VisibleSecret>();
+    const add = (slice: GroupVault | undefined, owner: string, source: "own" | "shared") => {
+      for (const name of Object.keys(slice ?? {})) {
+        if (!slice || !Object.hasOwn(slice, name) || RESERVED_SECRET_NAMES.has(name) || out.has(name)) continue;
         const e = slice[name];
-        return {
-          name,
-          source: "own" as const,
-          ownerGroup: ownUnit,
-          createdBy: e.createdBy,
-          createdAt: e.createdAt,
-          updatedAt: e.updatedAt,
-        };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+        out.set(name, { name, source, ownerGroup: owner, createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt });
+      }
+    };
+    add(vault[ownUnit], ownUnit, "own");
+    add(vault[unitGroup(ownUnit)], unitGroup(ownUnit), "shared");
+    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2, guest: 3 };
   const chosen = new Map<string, VisibleSecret>();
