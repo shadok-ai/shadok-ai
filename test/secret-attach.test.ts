@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { secretAttachVerdict } from "../src/profiles.js";
-import { creatorProfile, createAttachRefusal, secretNamesForProfile, type Vault, type SecretEntry } from "../src/secrets.js";
+import fs from "node:fs";
+import { ANY_PROFILE, createAttachRefusal, createProfilesRefusal, creatorProfile, secretNamesForProfile, type SecretEntry, type Vault } from "../src/secrets.js";
 import { parseArgs } from "../context/secrets-skill/scripts/secret.mjs";
 
 // The whole point of this feature, and its whole danger, live in one function:
@@ -82,11 +83,12 @@ test("an empty name is refused", () => {
 // ── The skill's command line ─────────────────────────────────────────────
 
 test("set --attach is opt-in, and --stdin stays mandatory with it", () => {
-  assert.deepEqual(parseArgs(["set", "TOK", "--stdin"]), { cmd: "set", name: "TOK", attach: false });
+  assert.deepEqual(parseArgs(["set", "TOK", "--stdin"]), { cmd: "set", name: "TOK", attach: false, profiles: [] });
   assert.deepEqual(parseArgs(["set", "TOK", "--stdin", "--attach"]), {
     cmd: "set",
     name: "TOK",
     attach: true,
+    profiles: [],
   });
   // Storing a credential for the team and granting it to yourself are two
   // different acts: the second must be asked for.
@@ -157,4 +159,164 @@ test("the bind lives on the group's entry, so a same-named secret elsewhere is n
   };
   assert.deepEqual(secretNamesForProfile(vault, "1", "Shadok-Marketing"), ["RESEND_KEY"]);
   assert.deepEqual(secretNamesForProfile(vault, "2", "Shadok-Marketing"), []);
+});
+
+// ── Naming OTHER roles at creation (`--profile`) ───────────────────────────
+// The wider half of the same boundary: `createAttachRefusal` binds to the
+// caller's own profile, `createProfilesRefusal` to roles it does not run. What
+// makes it safe is still provenance plus the MOMENT — a creation, where the
+// caller is the only holder of the value.
+
+test("naming roles at CREATION is allowed: the caller is the only one holding the value", () => {
+  assert.equal(
+    createProfilesRefusal({
+      verdict: "created",
+      asked: ["Importer", "Reviewer"],
+      known: ["Importer", "Reviewer", "Shadok-dev"],
+      boxed: false,
+      externalDoorProfiles: [],
+    }),
+    null,
+  );
+});
+
+test("asking for nothing decides nothing — an ordinary `set` is untouched", () => {
+  for (const verdict of ["created", "updated", "refused"] as const)
+    assert.equal(
+      createProfilesRefusal({ verdict, asked: [], known: [], boxed: true, externalDoorProfiles: ["Guest"] }),
+      null,
+    );
+});
+
+test("re-binding an EXISTING secret is refused — by then it is not only yours to move", () => {
+  const r = createProfilesRefusal({
+    verdict: "updated",
+    asked: ["Importer"],
+    known: ["Importer"],
+    boxed: false,
+    externalDoorProfiles: [],
+  });
+  assert.match(r ?? "", /created/);
+});
+
+test("a GUEST's agent names no role: a stranger does not decide who gets a credential", () => {
+  // Its own slice is never bound to a profile either (`guestSliceWriteRefusal`),
+  // but this refusal is asked FIRST so the answer is about who asked.
+  const r = createProfilesRefusal({
+    verdict: "created",
+    asked: ["Importer"],
+    known: ["Importer"],
+    boxed: true,
+    externalDoorProfiles: [],
+  });
+  assert.match(r ?? "", /guest/i);
+});
+
+test("an unknown role is refused, and NAMED — a stored binding that reaches nobody is worse", () => {
+  const r = createProfilesRefusal({
+    verdict: "created",
+    asked: ["Importer", "Typo"],
+    known: ["Importer"],
+    boxed: false,
+    externalDoorProfiles: [],
+  });
+  assert.match(r ?? "", /"Typo"/);
+  // Refused in FULL: a list narrowed to the acceptable names would read as
+  // "bound" while the role that mattered got nothing.
+  assert.doesNotMatch(r ?? "", /^$/);
+});
+
+test("the role an EXTERNAL door's guests run on receives nothing — the save-time rule's back door", () => {
+  // `guestEnableRefusal` refuses to SAVE an external door onto a profile that
+  // carries a secret (every guest runs the same profile). Without this, a
+  // creation could park one there afterwards and walk around that check.
+  const r = createProfilesRefusal({
+    verdict: "created",
+    asked: ["Concierge"],
+    known: ["Concierge", "Importer"],
+    boxed: false,
+    externalDoorProfiles: ["Concierge"],
+  });
+  assert.match(r ?? "", /stranger/i);
+  // A door profile among valid ones still sinks the whole call.
+  assert.notEqual(
+    createProfilesRefusal({
+      verdict: "created",
+      asked: ["Importer", "Concierge"],
+      known: ["Concierge", "Importer"],
+      boxed: false,
+      externalDoorProfiles: ["Concierge"],
+    }),
+    null,
+  );
+});
+
+// A field accepted is not a field USED (invariant 24): `profiles` is a plain
+// key on a JSON body, and nothing in the types proves the handler read it.
+test("PUT /secrets really wires the named roles: refusal, seal, store and audit", () => {
+  const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const start = src.indexOf('app.put("/secrets", (req, res) => {');
+  assert.ok(start > 0);
+  const body = src.slice(start, src.indexOf("\n});\n", start));
+  // Read off the body, decided by the pure core, with the box read from the key.
+  assert.match(body, /const \{ name, value, overwrite, attach, profiles \} = req\.body/);
+  assert.match(body, /createProfilesRefusal\(\{/);
+  assert.match(body, /boxed: !!requestAgent\(req, loadChannels\(\)\)\?\.boxed/);
+  assert.match(body, /externalDoorProfiles: externalDoorProfiles\(\)/);
+  // The same two seals the panel's own route applies, with the same `bind` op.
+  assert.match(body, /guestSliceWriteRefusal\(\{ unit: ownerGroup, op: "bind"/);
+  assert.match(body, /externalGroupSecretRefusal\(\{ unit: ownerGroup[\s\S]*?op: "bind" \}\)/);
+  // ONE write, carrying both halves of the binding.
+  assert.match(body, /setSecret\(key, value, ownerGroup, secretCreatedBy\(req\), bindTo\)/);
+  // One audit row per role: which agents receive a credential is the point of
+  // that log, so a second role must not land unrecorded.
+  assert.match(body, /for \(const prof of bindTo\)\s*\n\s*recordSecretAudit\(\{ action: "attached"/);
+});
+
+test("the external-door profiles are read from BOTH doors, open or shut", () => {
+  const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  const start = src.indexOf("function externalDoorProfiles(): string[] {");
+  assert.ok(start > 0);
+  const body = src.slice(start, src.indexOf("\n}\n", start));
+  assert.match(body, /guestSetupForCwd\(cfg, cwd\), waGuestSetupForCwd\(cfg, cwd\)/);
+  // EXTERNAL only: that is where the rule comes from, and a restricted door's
+  // guests are known people, for whom the panel has always allowed it.
+  assert.match(body, /nature === "external"/);
+  // No `joined`/open test anywhere in it: a door shut today reopens on the
+  // same profile, and a credential parked there would wait for the stranger.
+  assert.doesNotMatch(body, /joined|guestsOpen/);
+});
+
+test("the skill carries the roles: `--profile` is repeatable, and needs a value", () => {
+  assert.deepEqual(parseArgs(["set", "K", "--stdin", "--profile", "Importer", "--profile=Reviewer"]), {
+    cmd: "set",
+    name: "K",
+    attach: false,
+    profiles: ["Importer", "Reviewer"],
+  });
+  // Deduped, so a repeated name is not two audit rows.
+  assert.deepEqual(parseArgs(["set", "K", "--stdin", "--profile", "A", "--profile", "A"]).profiles, ["A"]);
+  // A flag swallowing the next flag is how `--profile --stdin` would store a
+  // role named "--stdin" and drop the required pipe.
+  assert.throws(() => parseArgs(["set", "K", "--stdin", "--profile", "--attach"]), /profile name/);
+  assert.throws(() => parseArgs(["set", "K", "--stdin", "--profile"]), /profile name/);
+  assert.throws(() => parseArgs(["set", "K", "--stdin", "--profile="]), /profile name/);
+  // The name is still the one positional, not the first thing after a flag.
+  assert.equal(parseArgs(["set", "K", "--stdin", "--profile", "A"]).name, "K");
+});
+
+test('"*" is refused BY NAME, not as a typo: it is the one value that reaches everyone', () => {
+  // `ANY_PROFILE` injects into every agent the secret resolves for — for a
+  // commons secret, every agent on the instance. It is not a profile name, so
+  // the existence check would answer "no profile named *", which reads as a
+  // misspelling instead of a boundary.
+  const r = createProfilesRefusal({
+    verdict: "created",
+    asked: ["Importer", ANY_PROFILE],
+    known: ["Importer"],
+    boxed: false,
+    externalDoorProfiles: [],
+  });
+  assert.match(r ?? "", /every profile/i);
+  assert.doesNotMatch(r ?? "", /no profile named/);
 });

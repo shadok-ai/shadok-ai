@@ -26,7 +26,9 @@ import { isGuestSlice } from "./guest-vault.js";
  * In a secret's `profiles`: "every profile" — injected into EVERY agent the
  * secret resolves for (own group, shared-in, commons), with or without a
  * profile. Only a person may set it (`PUT /secrets/profiles`): it widens a
- * credential to agents nobody picked one by one.
+ * credential to agents nobody picked one by one — so a creation that NAMES its
+ * roles refuses this one by name (`createProfilesRefusal`), rather than letting
+ * it fall through the "no such profile" answer, which would read as a typo.
  */
 export const ANY_PROFILE = "*";
 
@@ -696,6 +698,75 @@ export function createAttachRefusal(opts: { verdict: SecretWrite; callerProfile:
     return "attach is only possible when creating a secret, never on an overwrite";
   if (!opts.callerProfile)
     return "this agent has no profile, so it has nothing to attach a secret to";
+  return null;
+}
+
+/**
+ * Pure: may a `PUT /secrets` that NAMED the roles its new secret is injected
+ * into go ahead? The twin of `createAttachRefusal`, one step wider — that one
+ * binds to the caller's OWN profile, this one to roles it does not run.
+ *
+ * Why this is allowed at all when `PUT /secrets/profiles` is a person's route:
+ * at CREATION the caller is the only one holding the value, because it obtained
+ * the credential itself, and saying who needs it is part of the act of
+ * provisioning one. Refusing it sent an agent to ask a person to open the vault
+ * panel for a secret nobody else knew existed — and the refusal did not even
+ * name `attach`, so it read as "an agent may not hand over a secret at all".
+ * Changing a binding AFTERWARDS stays a person's decision: by then other roles
+ * depend on the value, and an agent rebinding it would be moving a credential
+ * that is no longer only its own.
+ *
+ * The two walls, in the order they are asked:
+ *  - a GUEST's agent names nobody. A stranger's conversation may store a
+ *    credential for itself, in its own slice, which is never bound to a profile
+ *    anyway (`guestSliceWriteRefusal`) — but WHICH roles of this instance
+ *    receive it is not a stranger's call. Asked FIRST so the refusal answers
+ *    the question that was put (who asked), instead of letting the slice's
+ *    structural refusal answer about the target.
+ *  - the role an EXTERNAL door's guests run under receives nothing. That is the
+ *    complement of `guestEnableRefusal`'s own rule (design decision 5): saving
+ *    such a door REFUSES a profile that carries a secret, because every guest
+ *    runs the SAME profile, so a credential on it is a credential handed to
+ *    every stranger. Without this, a creation could put one there afterwards
+ *    and walk straight around the check the save makes.
+ *
+ * `ANY_PROFILE` ("*") is refused by name, before the "no such profile" answer
+ * it would otherwise fall through: it is not a typo, it is the one value that
+ * hands the credential to every agent the secret resolves for.
+ *
+ * A profile that does not exist is refused rather than stored: the binding
+ * lives on the vault ENTRY, so an unknown name would be kept, resolve to
+ * nothing, and read in the panel as a role receiving a credential it never
+ * sees.
+ */
+export function createProfilesRefusal(opts: {
+  verdict: SecretWrite;
+  /** The roles asked for, trimmed and deduped. Empty = nothing to decide. */
+  asked: readonly string[];
+  /** Every profile that exists on this instance (`loadProfiles`). */
+  known: readonly string[];
+  /** The caller is a guest's agent, boxed to its own conversation. */
+  boxed: boolean;
+  /**
+   * The roles an EXTERNAL door's guests run under — both doors, open or shut: a
+   * door that is closed today reopens on the same profile, and a credential
+   * parked there in the meantime would be waiting for the first stranger.
+   */
+  externalDoorProfiles: readonly string[];
+}): string | null {
+  if (!opts.asked.length) return null;
+  if (opts.verdict !== "created")
+    return "the roles that receive a secret are chosen when it is created; afterwards a person changes the binding, from the vault panel";
+  if (opts.boxed)
+    return "a guest's agent keeps a credential for its own conversation, and never chooses which roles of this instance receive it";
+  if (opts.asked.includes(ANY_PROFILE))
+    return `"${ANY_PROFILE}" is every profile on this instance: widening a credential to agents nobody picked one by one is a person's decision, from the vault panel`;
+  const unknown = opts.asked.filter((p) => !opts.known.includes(p));
+  if (unknown.length)
+    return `no profile named ${unknown.map((p) => `"${p}"`).join(", ")} — a binding to a role that does not exist would be stored and reach nobody`;
+  const door = opts.asked.find((p) => opts.externalDoorProfiles.includes(p));
+  if (door)
+    return `"${door}" is the role an external door's guests run on: every guest runs the SAME profile, so a credential on it is one handed to every stranger. Let each conversation keep its own.`;
   return null;
 }
 
